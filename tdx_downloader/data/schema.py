@@ -80,15 +80,16 @@ def parse_time_window(start: str | pd.Timestamp, end: str | pd.Timestamp) -> tup
 
 def resolve_timeframe_root(data_root: str | Path, timeframe: str) -> Path:
     normalized = ensure_supported_timeframe(timeframe)
-    root = Path(data_root).expanduser()
+    root = canonical_data_root(data_root)
     target_dir = TIMEFRAME_DIR_NAMES[normalized]
-    known_dirs = set(TIMEFRAME_DIR_NAMES.values())
-    root_name = root.name.lower()
-    if root_name == target_dir:
-        return root
-    if root_name in known_dirs:
-        return root.parent / target_dir
     return root / target_dir
+
+
+def canonical_data_root(data_root: str | Path) -> Path:
+    root = Path(data_root).expanduser()
+    if root.name.lower() in set(TIMEFRAME_DIR_NAMES.values()):
+        return root.parent
+    return root
 
 
 def normalize_bars(frame: pd.DataFrame, fallback_symbol: str = "") -> pd.DataFrame:

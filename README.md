@@ -20,16 +20,43 @@ python -m pip install -r requirements.txt
 streamlit run app.py --server.port 8522
 ```
 
+新的轻量 Web 控制台参考 sub2api 的前后端分离方式，避免 Streamlit 每次交互重跑整页：
+
+```bash
+python -m tdx_downloader.web_api
+cd web
+npm install
+npm run dev
+```
+
+访问 `http://127.0.0.1:5173`。API 服务默认在 `http://127.0.0.1:8622`，Vite 开发服务会把 `/api` 转发到该服务。
+
 CLI：
 
 ```bash
-python -m tdx_downloader.cli inventory-data --data-root data/market/daily
+python -m tdx_downloader.cli inventory-data
 python -m tdx_downloader.cli plan-data \
   --symbols 000001.SZ,600519.SH \
   --timeframes 1d,5m,60m \
   --start 2026-05-01 \
-  --end 2026-06-01 \
-  --data-root data/market/daily
+  --end 2026-06-01
+```
+
+本机 Mac + Parallels 默认数据目录：
+
+```bash
+python -m tdx_downloader.cli prepare-data \
+  --symbols 000001.SZ \
+  --timeframes 5m \
+  --start 2026-06-01 \
+  --end 2026-06-02
+```
+
+默认写入：
+
+```text
+/Volumes/ccOUT 1/tdx-data/daily/qfq/<symbol>.parquet
+/Volumes/ccOUT 1/tdx-data/<timeframe>/qfq/<symbol>.parquet
 ```
 
 ## Streamlit Cloud 部署
@@ -50,15 +77,37 @@ python -m tdx_downloader.cli plan-data \
 - VM：`Windows 11`
 - Windows Python：`C:\Users\Public\venvs\tdx-downloader\Scripts\python.exe`
 - Windows 仓库：默认由 macOS 共享路径推导，可用 `TDX_PARALLELS_REPO` 覆盖
+- 外置盘共享：`/Volumes/ccOUT 1` 已配置为 Parallels Host Shared Folder，Windows 侧路径为 `\\psf\ccOUT 1`
+- 通达信默认目录：`C:\new_tdx64`，可用 `TDX_TQCENTER_PATH` 覆盖 `PYPlugins/user` 路径，可用 `TDX_TERMINAL_PATH` 覆盖 `TdxW.exe`
+- Windows 执行会话：必须通过 `prlctl exec --current-user` 进入当前登录用户会话；普通 `prlctl exec` 会落到 SYSTEM/Session 0，`tqcenter` 无法连接已登录的通达信客户端。
+
+如果重建 VM，需要先加外置盘共享：
+
+```bash
+prlctl set "Windows 11" --shf-host-add "ccOUT 1" --path "/Volumes/ccOUT 1" --mode rw --enable --shf-host-automount on
+```
+
+Windows 侧必须启动并登录通达信客户端；程序会尝试在当前用户会话启动 `TdxW.exe`，但不会替用户登录。分钟线取数还依赖 Windows 通达信本地已具备对应分钟缓存；若 `tdx-doctor` 返回 `no_data`，先在 Windows 通达信内补齐对应分钟数据。
+
+诊断：
+
+```bash
+python -m tdx_downloader.cli tdx-doctor \
+  --symbols 000001.SZ \
+  --timeframes 1d,5m \
+  --start 2026-06-01 \
+  --end 2026-06-02 \
+  --runtime parallels
+```
 
 ## 数据目录
 
-默认数据目录为当前项目下：
+默认数据目录为 `/Volumes/ccOUT 1/tdx-data`：
 
 ```text
-data/market/daily/<adjust>/<symbol>.parquet
-data/market/<timeframe>/<adjust>/<symbol>.parquet
-data/market/metadata/market_data_catalog.sqlite
+/Volumes/ccOUT 1/tdx-data/daily/<adjust>/<symbol>.parquet
+/Volumes/ccOUT 1/tdx-data/<timeframe>/<adjust>/<symbol>.parquet
+/Volumes/ccOUT 1/tdx-data/metadata/market_data_catalog.sqlite
 ```
 
 `1d` 写入 `daily` 目录；分钟周期写入对应周期目录。

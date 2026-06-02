@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -14,7 +15,7 @@ from tdx_downloader.data.tdx_parallels import (
     run_parallels_tdx_command,
 )
 
-DEFAULT_DATA_ROOT = "data/market/daily"
+DEFAULT_DATA_ROOT = "/Volumes/ccOUT 1/tdx-data"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -28,6 +29,7 @@ def main(argv: list[str] | None = None) -> None:
     doctor_parser.add_argument("--end", required=True)
     doctor_parser.add_argument("--adjust", default="qfq")
     doctor_parser.add_argument("--tdx-path", default="")
+    doctor_parser.add_argument("--output", choices=["table", "json"], default="table")
     _add_runtime_args(doctor_parser)
 
     fetch_parser = subparsers.add_parser("fetch", help="force fetch one timeframe from TDX")
@@ -39,6 +41,7 @@ def main(argv: list[str] | None = None) -> None:
     fetch_parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
     fetch_parser.add_argument("--tdx-path", default="")
     fetch_parser.add_argument("--batch-size", type=int, default=100)
+    fetch_parser.add_argument("--output", choices=["table", "json"], default="table")
     _add_runtime_args(fetch_parser)
 
     prepare_parser = subparsers.add_parser("prepare-data", help="audit local cache and fetch only missing/bad bars")
@@ -52,6 +55,7 @@ def main(argv: list[str] | None = None) -> None:
     prepare_parser.add_argument("--batch-size", type=int, default=100)
     prepare_parser.add_argument("--min-coverage-ratio", type=float, default=None)
     prepare_parser.add_argument("--allow-incomplete-after-update", action="store_true")
+    prepare_parser.add_argument("--output", choices=["table", "json"], default="table")
     _add_runtime_args(prepare_parser)
 
     plan_parser = subparsers.add_parser("plan-data", help="audit local cache and print the fetch plan")
@@ -84,7 +88,7 @@ def main(argv: list[str] | None = None) -> None:
             adjust=args.adjust,
             tqcenter_path=args.tdx_path,
         )
-        print(result.to_string(index=False))
+        _print_frame(result, args.output)
         return
 
     repo = MarketDataRepository(Path(args.data_root), adjust=args.adjust)
@@ -102,7 +106,7 @@ def main(argv: list[str] | None = None) -> None:
             tqcenter_path=args.tdx_path,
             batch_size=max(int(args.batch_size), 1),
         )
-        print(result.to_string(index=False))
+        _print_frame(result, args.output)
         return
 
     service = DataManagementService(Path(args.data_root), adjust=args.adjust)
@@ -118,7 +122,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     if args.command == "prepare-data":
         result = service.download(config, mode="smart")
-        print(result.table.to_string(index=False))
+        _print_frame(result.table, args.output)
         return
     if args.command == "plan-data":
         print(service.download_plan(config).to_string(index=False))
@@ -163,7 +167,7 @@ def _run_in_parallels(args: argparse.Namespace) -> None:
 
 def _forward_args(args: argparse.Namespace) -> list[str]:
     forwarded = [args.command, "--runtime", "local"]
-    for name in ("symbols", "timeframes", "timeframe", "start", "end", "adjust", "data_root", "tdx_path"):
+    for name in ("symbols", "timeframes", "timeframe", "start", "end", "adjust", "data_root", "tdx_path", "output"):
         if not hasattr(args, name):
             continue
         value = str(getattr(args, name))
@@ -181,6 +185,14 @@ def _forward_args(args: argparse.Namespace) -> list[str]:
 
 def _split_csv(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in str(value).split(",") if item.strip())
+
+
+def _print_frame(frame, output: str) -> None:
+    if output == "json":
+        payload = frame.astype(object).where(frame.notna(), None).to_dict("records")
+        print(json.dumps(payload, ensure_ascii=False, default=str))
+        return
+    print(frame.to_string(index=False))
 
 
 if __name__ == "__main__":

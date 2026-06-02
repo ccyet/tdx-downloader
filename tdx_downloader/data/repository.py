@@ -25,6 +25,7 @@ from tdx_downloader.data.inventory import (
 )
 from tdx_downloader.data.schema import (
     SUPPORTED_TIMEFRAMES,
+    canonical_data_root,
     ensure_supported_timeframe,
     normalize_symbol,
     parse_time_window,
@@ -166,7 +167,7 @@ class MarketDataRepository:
     """本地行情仓库入口；统一读取分钟线、日线和写入 parquet。"""
 
     def __init__(self, data_root: str | Path, adjust: str = "qfq") -> None:
-        self.data_root = Path(data_root).expanduser()
+        self.data_root = canonical_data_root(data_root)
         self.adjust = adjust
 
     def available_symbols(self, timeframe: str) -> list[str]:

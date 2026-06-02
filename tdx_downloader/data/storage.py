@@ -8,6 +8,7 @@ import pyarrow as pa
 from tdx_downloader.data.schema import (
     CANONICAL_COLUMNS,
     TIMEFRAME_DIR_NAMES,
+    canonical_data_root,
     empty_bars,
     empty_download_result,
     normalize_bars,
@@ -18,12 +19,7 @@ from tdx_downloader.data.schema import (
 
 
 def resolve_daily_root(data_root: str | Path) -> Path:
-    root = Path(data_root).expanduser()
-    if root.name.lower() == "daily":
-        return root
-    if root.name.lower() in set(TIMEFRAME_DIR_NAMES.values()):
-        return root.parent / "daily"
-    return root / "daily"
+    return canonical_data_root(data_root) / TIMEFRAME_DIR_NAMES["1d"]
 
 
 def load_local_bars(
