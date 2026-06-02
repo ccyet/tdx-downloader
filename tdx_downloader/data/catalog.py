@@ -198,6 +198,14 @@ def _init_catalog(connection: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_market_data_status "
         "ON market_data_files(status, asset_type, timeframe)"
     )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_market_data_filter_order "
+        "ON market_data_files(asset_type, timeframe, data_kind, indicator, status, stock_code)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_market_data_symbol_adjust "
+        "ON market_data_files(stock_code, adjust, timeframe, status)"
+    )
 
 
 def _catalog_root(data_root: str | Path) -> Path:

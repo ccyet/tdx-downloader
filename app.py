@@ -1,29 +1,45 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import date, timedelta
 from html import escape
 import io
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from tdx_downloader.data.manager import (
     DataCacheSnapshot,
     DataDownloadConfig,
     DataDownloadResult,
     DataManagementService,
+    download_summary,
     normalize_symbol_tuple,
     shortcut_symbols,
 )
 from tdx_downloader.data.catalog import ASSET_TYPE_LABELS, asset_type_label, data_kind_label, indicator_label
 from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES
 
-DEFAULT_DATA_ROOT = str(Path.cwd() / "data" / "market" / "daily")
+DEFAULT_DATA_ROOT = "/Volumes/ccOUT 1/tdx-data/daily"
+DEFAULT_TDX_PATH_CANDIDATES = (
+    "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user",
+    "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/sys",
+)
 NAV_ITEMS = ("数据范围", "下载任务", "本地缓存", "执行记录", "设置")
+SYMBOL_PREVIEW_PAGE_SIZE = 10
+NAV_DESCRIPTIONS = {
+    "数据范围": "配置代码、周期、时间窗和补齐方式。",
+    "下载任务": "查看下载计划和最近一次执行结果。",
+    "本地缓存": "按资产类型与周期查看本地缓存。",
+    "执行记录": "查看下载过程事件和写入结果。",
+    "设置": "查看当前运行路径、TDX 参数和校验策略。",
+}
+DATA_RANGE_ANCHOR_ID = "tdx-data-range-panel"
+WORKSPACE_ANCHOR_ID = "tdx-workspace-panel"
 STATUS_LABELS = {
     "cached": "可用",
     "missing_file": "缺文件",
@@ -40,8 +56,8 @@ STATUS_LABELS = {
 ASSET_TYPE_OPTIONS = tuple(ASSET_TYPE_LABELS)
 CACHE_ASSET_TABS = (("etf", "ETF"), ("stock", "个股"), ("index", "指数"), ("other", "其他"))
 DATA_MANAGER_TIMEFRAMES = list(SUPPORTED_TIMEFRAMES)
-DEFAULT_TIMEFRAMES = ("5m",)
-TIMEFRAME_DEFAULT_VERSION = "single-5m"
+DEFAULT_TIMEFRAMES = ("1d",)
+TIMEFRAME_DEFAULT_VERSION = "single-1d"
 SYMBOL_UPLOAD_COLUMNS = ("stock_code", "symbol", "code", "ticker", "证券代码", "代码")
 SOURCE_OPTIONS = ("常用样例", "上传代码集", "手动输入", "当前缓存全部", "缓存按资产类型", "宽基指数", "ETF样例")
 CACHE_SOURCE_OPTIONS = {"当前缓存全部", "缓存按资产类型"}
@@ -172,16 +188,16 @@ def main() -> None:
 
     with st.sidebar:
         _render_sidebar_brand()
-        nav = str(st.radio("工作区", NAV_ITEMS, index=0, key="dm_nav"))
+        nav = _render_sidebar_navigation()
         st.divider()
         st.subheader("运行参数")
         data_root = _directory_picker("行情根目录", DEFAULT_DATA_ROOT, key="dm_data_root_picker")
         adjust = st.selectbox("复权", ["qfq", "hfq", ""], index=0, key="dm_adjust")
-        use_default_tdx_path = st.checkbox("使用系统默认 TDX 路径", value=True, key="dm_tdx_default_path")
+        use_default_tdx_path = st.checkbox("使用系统默认 TDX 路径", value=False, key="dm_use_default_tdx_path")
         tdx_path = (
             ""
             if use_default_tdx_path
-            else str(_directory_picker("TDX PYPlugins/user", Path.home(), key="dm_tdx_path_picker"))
+            else str(_directory_picker("TDX PYPlugins/user", _default_tdx_path(), key="dm_tdx_path_picker_v2"))
         )
         batch_size = int(
             st.number_input("TDX 批次大小", min_value=1, max_value=500, value=100, step=10, key="dm_batch_size")
@@ -192,6 +208,7 @@ def main() -> None:
 
     _render_header()
     service = DataManagementService(data_root, adjust=adjust)
+    _render_panel_anchor(DATA_RANGE_ANCHOR_ID)
     layout_cols = st.columns([1.55, 1], gap="large")
     with layout_cols[0]:
         with st.container(border=True):
@@ -203,6 +220,7 @@ def main() -> None:
         batch_size=batch_size,
         strict_after_update=strict_after_update,
     )
+    _scroll_to_selected_panel(nav)
     with layout_cols[1]:
         with st.container(border=True):
             _render_action_bar(service, scope=scope, config=config)
@@ -238,6 +256,59 @@ def _render_sidebar_brand() -> None:
     )
 
 
+def _default_tdx_path() -> Path:
+    for candidate in DEFAULT_TDX_PATH_CANDIDATES:
+        path = Path(candidate)
+        if (path / "tqcenter.py").exists():
+            return path
+    if sys.platform == "darwin":
+        return Path(DEFAULT_TDX_PATH_CANDIDATES[0])
+    return Path.home()
+
+
+def _render_sidebar_navigation() -> str:
+    current = str(st.session_state.get("dm_nav", NAV_ITEMS[0]))
+    if current not in NAV_ITEMS:
+        current = NAV_ITEMS[0]
+        st.session_state["dm_nav"] = current
+    st.markdown('<div class="sidebar-nav-title">面板导航</div>', unsafe_allow_html=True)
+    for item in NAV_ITEMS:
+        clicked = st.button(
+            item,
+            key=f"dm_nav_button_{item}",
+            help=NAV_DESCRIPTIONS[item],
+            type="primary" if item == current else "secondary",
+            use_container_width=True,
+        )
+        st.caption(NAV_DESCRIPTIONS[item])
+        if clicked:
+            st.session_state["dm_nav"] = item
+            st.rerun()
+    return current
+
+
+def _render_panel_anchor(anchor_id: str) -> None:
+    st.markdown(f'<div id="{anchor_id}" class="panel-anchor"></div>', unsafe_allow_html=True)
+
+
+def _scroll_to_selected_panel(nav: str) -> None:
+    target_id = DATA_RANGE_ANCHOR_ID if nav == "数据范围" else WORKSPACE_ANCHOR_ID
+    components.html(
+        f"""
+        <script>
+        const target = window.parent.document.getElementById("{target_id}");
+        if (target) {{
+            requestAnimationFrame(() => target.scrollIntoView({{
+                block: "start",
+                behavior: "smooth"
+            }}));
+        }}
+        </script>
+        """,
+        height=0,
+    )
+
+
 def _render_header() -> None:
     st.markdown(
         """
@@ -245,11 +316,6 @@ def _render_header() -> None:
             <div>
                 <h1>数据下载与缓存管理</h1>
                 <p>面向 TDX 行情的独立工作台：先定范围，再预览计划，最后批量写入本地 parquet 缓存。</p>
-            </div>
-            <div class="header-status">
-                <span>本地缓存优先</span>
-                <span>批量下载</span>
-                <span>SQLite 索引</span>
             </div>
         </section>
         """,
@@ -259,8 +325,26 @@ def _render_header() -> None:
 
 def _directory_picker(label: str, default: str | Path, *, key: str, disabled: bool = False) -> Path:
     selected_key = f"{key}_selected_path"
+    input_key = f"{key}_path_input"
+    default_key = f"{key}_default_path"
     default_path = Path(default).expanduser()
-    st.session_state.setdefault(selected_key, str(default_path))
+
+    previous_default = st.session_state.get(default_key)
+    default_text = str(default_path)
+    if previous_default is not None and previous_default != default_text:
+        if st.session_state.get(selected_key) == previous_default:
+            st.session_state[selected_key] = default_text
+        if st.session_state.get(input_key) == previous_default:
+            st.session_state[input_key] = default_text
+    elif key.startswith("dm_tdx_path_picker") and default_text != str(Path.home()):
+        home_text = str(Path.home())
+        if st.session_state.get(selected_key) == home_text:
+            st.session_state[selected_key] = default_text
+        if st.session_state.get(input_key) == home_text:
+            st.session_state[input_key] = default_text
+    st.session_state[default_key] = default_text
+    st.session_state.setdefault(selected_key, default_text)
+    st.session_state.setdefault(input_key, st.session_state[selected_key])
 
     st.markdown(f"**{label}**")
     action_cols = st.columns([1.7, 1])
@@ -279,43 +363,57 @@ def _directory_picker(label: str, default: str | Path, *, key: str, disabled: bo
             else:
                 if selected is not None:
                     st.session_state[selected_key] = str(selected)
+                    st.session_state[input_key] = str(selected)
     with action_cols[1]:
         if st.button("默认", key=f"{key}_reset", disabled=disabled, help="恢复默认文件夹", use_container_width=True):
             st.session_state[selected_key] = str(default_path)
-    st.caption("已选文件夹")
-    st.code(_display_path(st.session_state[selected_key]), language="text")
-    return Path(st.session_state[selected_key]).expanduser()
+            st.session_state[input_key] = str(default_path)
+    path_value = st.text_input(
+        f"{label}路径",
+        key=input_key,
+        disabled=disabled,
+        label_visibility="collapsed",
+        placeholder="输入文件夹路径",
+    ).strip()
+    selected_path = Path(path_value or str(default_path)).expanduser()
+    st.session_state[selected_key] = str(selected_path)
+    st.caption("当前路径")
+    st.code(_display_path(str(selected_path)), language="text")
+    return selected_path
 
 
 def _open_native_directory_dialog(initial_directory: str | Path, title: str) -> Path | None:
+    if sys.platform != "darwin":
+        raise RuntimeError("当前系统暂不支持弹窗选择文件夹，请直接输入路径。")
+
+    script = """
+on run argv
+    set dialogPrompt to item 1 of argv
+    set defaultPath to item 2 of argv
+    set chosenFolder to choose folder with prompt dialogPrompt default location (POSIX file defaultPath)
+    return POSIX path of chosenFolder
+end run
+"""
     try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception as exc:
-        raise RuntimeError("当前 Python 环境缺少 tkinter，无法弹出系统选择框。") from exc
+        result = subprocess.run(
+            ["osascript", "-e", script, title, str(_existing_directory(Path(initial_directory)))],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("文件夹选择窗口超时，请重新点击选择。") from exc
+    except OSError as exc:
+        raise RuntimeError("无法打开系统文件夹选择窗口。") from exc
 
-    root: tk.Tk | None = None
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        try:
-            root.attributes("-topmost", True)
-        except tk.TclError:
-            pass
-        return _resolve_native_directory_choice(initial_directory, title, filedialog.askdirectory)
-    except tk.TclError as exc:
-        raise RuntimeError("当前会话没有可用桌面窗口，无法弹出系统选择框。") from exc
-    finally:
-        if root is not None:
-            root.destroy()
+    stderr = result.stderr.strip()
+    if result.returncode != 0:
+        if "User canceled" in stderr or "用户已取消" in stderr:
+            return None
+        raise RuntimeError(stderr or "系统文件夹选择失败。")
 
-
-def _resolve_native_directory_choice(
-    initial_directory: str | Path,
-    title: str,
-    askdirectory: Callable[..., str],
-) -> Path | None:
-    selected = askdirectory(title=title, initialdir=str(_existing_directory(Path(initial_directory))), mustexist=False)
+    selected = result.stdout.strip()
     if not selected:
         return None
     return Path(selected).expanduser()
@@ -541,14 +639,11 @@ def _render_source_constituents(
             st.caption(f"补充代码已合并 {len(manual_symbols)} 个；合计已选 {len(combined_symbols)} 个。")
         return
     if symbols_to_show:
-        preview_limit = 80
-        preview = _symbol_preview_frame(symbols_to_show[:preview_limit], name_by_symbol=name_by_symbol)
-        if len(preview) <= 20:
-            st.markdown(_symbol_preview_html(preview), unsafe_allow_html=True)
-        else:
-            st.dataframe(preview, use_container_width=True, hide_index=True, height=_symbol_preview_height(len(preview)))
-        if len(symbols_to_show) > preview_limit:
-            st.caption(f"当前来源共 {len(symbols_to_show)} 个代码，仅显示前 {preview_limit} 个。")
+        _render_symbol_preview_paginated(
+            symbols_to_show,
+            name_by_symbol=name_by_symbol,
+            key=f"dm_source_preview_{source}",
+        )
     elif source == "上传代码集":
         st.info("上传 CSV/TXT 后展示解析出的代码。")
     elif source == "手动输入":
@@ -593,24 +688,73 @@ def _render_cache_source_summary(
     if not keyword.strip() and len(symbols) > 80:
         st.info("当前匹配数量较大，不展示任意明细；请用代码/名称筛选缩小范围，或直接执行全量任务。")
         return
-    preview_limit = 20
     st.markdown("##### 命中示例")
-    st.markdown(_symbol_preview_html(_symbol_preview_frame(symbols[:preview_limit], name_by_symbol=name_by_symbol)), unsafe_allow_html=True)
-    if len(symbols) > preview_limit:
-        st.caption(f"当前匹配 {len(symbols)} 个代码，仅显示前 {preview_limit} 个命中示例。")
+    _render_symbol_preview_paginated(symbols, name_by_symbol=name_by_symbol, key="dm_cache_source_preview")
 
 
-def _symbol_preview_frame(symbols: tuple[str, ...], *, name_by_symbol: dict[str, str] | None = None) -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {"序号": index, "代码": symbol, "名称": _symbol_name(symbol, name_by_symbol or {})}
-            for index, symbol in enumerate(symbols, start=1)
-        ]
+def _render_symbol_preview_paginated(
+    symbols: tuple[str, ...],
+    *,
+    name_by_symbol: dict[str, str] | None = None,
+    key: str,
+    page_size: int = SYMBOL_PREVIEW_PAGE_SIZE,
+) -> None:
+    signature_key = f"{key}_signature"
+    page_key = f"{key}_page"
+    signature = (len(symbols), symbols[:page_size], symbols[-page_size:])
+    if st.session_state.get(signature_key) != signature:
+        st.session_state[signature_key] = signature
+        st.session_state[page_key] = 1
+
+    page_symbols, current_page, total_pages, start_index = _symbol_preview_page(
+        symbols,
+        int(st.session_state.get(page_key, 1)),
+        page_size=page_size,
+    )
+    st.session_state[page_key] = current_page
+
+    if total_pages > 1:
+        nav_cols = st.columns([1, 1, 2.2])
+        if nav_cols[0].button("上一页", key=f"{key}_prev", disabled=current_page <= 1, use_container_width=True):
+            st.session_state[page_key] = max(1, current_page - 1)
+            st.rerun()
+        if nav_cols[1].button("下一页", key=f"{key}_next", disabled=current_page >= total_pages, use_container_width=True):
+            st.session_state[page_key] = min(total_pages, current_page + 1)
+            st.rerun()
+        nav_cols[2].caption(f"第 {current_page}/{total_pages} 页 · 每页最多 {page_size} 个 · 共 {len(symbols)} 个")
+
+    st.markdown(
+        _symbol_preview_html(
+            _symbol_preview_frame(page_symbols, name_by_symbol=name_by_symbol, start_index=start_index)
+        ),
+        unsafe_allow_html=True,
     )
 
 
-def _symbol_preview_height(row_count: int) -> int:
-    return min(220, 38 + max(row_count, 1) * 36)
+def _symbol_preview_page(
+    symbols: tuple[str, ...],
+    page: int,
+    *,
+    page_size: int = SYMBOL_PREVIEW_PAGE_SIZE,
+) -> tuple[tuple[str, ...], int, int, int]:
+    total_pages = max(1, (len(symbols) + page_size - 1) // page_size)
+    current_page = min(max(page, 1), total_pages)
+    start = (current_page - 1) * page_size
+    return symbols[start : start + page_size], current_page, total_pages, start + 1
+
+
+def _symbol_preview_frame(
+    symbols: tuple[str, ...],
+    *,
+    name_by_symbol: dict[str, str] | None = None,
+    start_index: int = 1,
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"序号": index, "代码": symbol, "名称": _symbol_name(symbol, name_by_symbol or {})}
+            for index, symbol in enumerate(symbols, start=start_index)
+        ]
+    )
 
 
 def _symbol_preview_html(frame: pd.DataFrame) -> str:
@@ -671,7 +815,7 @@ def _render_action_bar(
     with action_cols[0]:
         scan_clicked = st.button("扫描缓存", use_container_width=True, help="只刷新本地缓存状态，不下载。")
     with action_cols[1]:
-        plan_clicked = st.button("预览下载计划", use_container_width=True, help="可选步骤，只预览将下载哪些数据，不写入。")
+        plan_clicked = st.button("预览计划", use_container_width=True, help="可选步骤，只预览将下载哪些数据，不写入。")
     with action_cols[2]:
         run_clicked = st.button("执行下载", type="primary", use_container_width=True, help="按当前执行方式下载并写入缓存。")
     with action_cols[3]:
@@ -733,12 +877,7 @@ def _render_workspace(
 ) -> None:
     if nav == "数据范围":
         return
-    descriptions = {
-        "下载任务": "查看下载计划和最近一次执行结果。",
-        "本地缓存": "按资产类型与周期查看本地缓存。",
-        "执行记录": "查看下载过程事件和写入结果。",
-        "设置": "查看当前运行路径、TDX 参数和校验策略。",
-    }
+    _render_panel_anchor(WORKSPACE_ANCHOR_ID)
     st.markdown(
         f"""
         <section class="workspace-header">
@@ -746,7 +885,7 @@ def _render_workspace(
                 <span class="workspace-kicker">工作区</span>
                 <h2>{escape(nav)}</h2>
             </div>
-            <p>{escape(descriptions.get(nav, ""))}</p>
+            <p>{escape(NAV_DESCRIPTIONS.get(nav, ""))}</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -777,7 +916,7 @@ def _render_download_workspace() -> None:
             if isinstance(plan, pd.DataFrame) and not plan.empty:
                 _render_plan(plan)
             else:
-                _render_empty_state("暂无下载计划", "点击右侧“预览下载计划”后，这里会显示待下载和已缓存明细。")
+                _render_empty_state("暂无下载计划", "点击右侧“预览计划”后，这里会显示待下载和已缓存明细。")
     with workspace_cols[1]:
         with st.container(border=True):
             st.markdown("##### 最近执行")
@@ -875,7 +1014,7 @@ def _scan_cache(service: DataManagementService, *, scope: dict[str, object], tdx
 
 def _generate_plan(service: DataManagementService, config: DataDownloadConfig) -> None:
     if not config.symbols:
-        st.error("预览下载计划需要标的代码。")
+        st.error("预览计划需要标的代码。")
         return
     with st.spinner("正在生成补齐计划"):
         st.session_state["dm_plan"] = service.download_plan(config)
@@ -896,7 +1035,18 @@ def _run_download(service: DataManagementService, config: DataDownloadConfig, *,
         tracker.update(event)
 
     with st.spinner("正在执行数据任务"):
-        result = service.download(config, mode=mode, progress_callback=on_progress)
+        try:
+            if _should_use_parallels_runtime():
+                on_progress({"stage": "tdx_request_start", "message": "通过 Parallels/Windows 调用通达信"})
+                result = _run_download_via_parallels_cli(service, config, mode=mode)
+                on_progress({"stage": "tdx_request_done", "message": "Parallels/Windows 通达信任务完成"})
+            else:
+                result = service.download(config, mode=mode, progress_callback=on_progress)
+        except RuntimeError as exc:
+            status_box.error("任务失败")
+            st.error(str(exc))
+            st.session_state["dm_events"] = events
+            return
     progress.progress(1.0)
     status_box.success("任务完成")
     st.session_state["dm_result"] = result
@@ -907,6 +1057,136 @@ def _run_download(service: DataManagementService, config: DataDownloadConfig, *,
         tdx_path=config.tqcenter_path,
     )
     st.session_state["dm_plan"] = service.download_plan(config)
+
+
+def _should_use_parallels_runtime() -> bool:
+    return sys.platform == "darwin"
+
+
+def _run_download_via_parallels_cli(
+    service: DataManagementService,
+    config: DataDownloadConfig,
+    *,
+    mode: str,
+) -> DataDownloadResult:
+    if mode == "smart":
+        table = _run_parallels_cli_table(_parallels_prepare_command(service, config))
+    elif mode == "force":
+        frames = [
+            _force_cli_frame(
+                _run_parallels_cli_table(_parallels_fetch_command(service, config, timeframe)),
+                timeframe=timeframe,
+                adjust=service.adjust,
+            )
+            for timeframe in config.timeframes
+        ]
+        table = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    else:
+        raise RuntimeError(f"未知下载方式：{mode}")
+    return DataDownloadResult(table=table, summary=download_summary(table))
+
+
+def _run_parallels_cli_table(command: list[str]) -> pd.DataFrame:
+    try:
+        result = subprocess.run(command, cwd=Path(__file__).resolve().parent, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        raise RuntimeError(f"无法启动 Parallels/Windows 通达信任务：{exc}") from exc
+    if result.returncode != 0:
+        detail = "\n".join(part for part in (result.stderr.strip(), result.stdout.strip()) if part).strip()
+        raise RuntimeError(f"Parallels/Windows 通达信任务失败：{_clean_parallels_cli_error(detail)}")
+    return _parse_cli_table(result.stdout)
+
+
+def _clean_parallels_cli_error(detail: str) -> str:
+    text = detail.strip()
+    if not text:
+        return "未返回错误详情"
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    quality_line = next((line for line in reversed(lines) if "本地行情数据未通过质量门禁" in line), "")
+    if quality_line:
+        message = quality_line.split("ValueError:", 1)[-1].strip()
+        return (
+            f"{message}\n"
+            "Windows 通达信没有返回当前窗口所需数据。若选择分钟周期，请先在 Windows 通达信内下载对应日期的分钟 K 线，"
+            "或改用 1d / 已存在的分钟数据日期范围。"
+        )
+    exception_line = next(
+        (
+            line
+            for line in reversed(lines)
+            if line.startswith(("RuntimeError:", "ValueError:", "ModuleNotFoundError:", "ImportError:"))
+        ),
+        "",
+    )
+    if exception_line:
+        return exception_line.split(":", 1)[-1].strip()
+    return text.replace("Traceback (most recent call last):", "").strip()
+
+
+def _parse_cli_table(stdout: str) -> pd.DataFrame:
+    text = stdout.strip()
+    if not text:
+        return pd.DataFrame()
+    normalized = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+    try:
+        return pd.read_csv(io.StringIO(normalized), sep=r"\s{2,}", engine="python")
+    except Exception as exc:
+        raise RuntimeError(f"Parallels/Windows 任务已返回，但结果表解析失败：{exc}") from exc
+
+
+def _parallels_prepare_command(service: DataManagementService, config: DataDownloadConfig) -> list[str]:
+    command = _parallels_base_command(service, config, "prepare-data")
+    command.extend(["--timeframes", ",".join(config.timeframes)])
+    if config.min_coverage_ratio is not None:
+        command.extend(["--min-coverage-ratio", str(config.min_coverage_ratio)])
+    if not config.strict_after_update:
+        command.append("--allow-incomplete-after-update")
+    return command
+
+
+def _parallels_fetch_command(service: DataManagementService, config: DataDownloadConfig, timeframe: str) -> list[str]:
+    command = _parallels_base_command(service, config, "fetch")
+    command.extend(["--timeframe", timeframe])
+    return command
+
+
+def _parallels_base_command(
+    service: DataManagementService,
+    config: DataDownloadConfig,
+    command: str,
+) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "tdx_downloader.cli",
+        command,
+        "--runtime",
+        "parallels",
+        "--symbols",
+        ",".join(config.symbols),
+        "--start",
+        config.start,
+        "--end",
+        config.end,
+        "--adjust",
+        service.adjust,
+        "--data-root",
+        str(service.data_root),
+        "--tdx-path",
+        config.tqcenter_path,
+        "--batch-size",
+        str(config.batch_size),
+    ]
+
+
+def _force_cli_frame(frame: pd.DataFrame, *, timeframe: str, adjust: str) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=["stock_code", "timeframe", "adjust", "action", "rows_written", "new_rows"])
+    result = frame.rename(columns={"symbol": "stock_code", "rows": "rows_written"}).copy()
+    result["timeframe"] = timeframe
+    result["adjust"] = adjust
+    result["action"] = "fetched"
+    return result
 
 
 def _render_snapshot(snapshot: DataCacheSnapshot) -> None:
@@ -1303,7 +1583,6 @@ def _apply_styles() -> None:
         .app-header {
             display: flex;
             align-items: flex-end;
-            justify-content: space-between;
             gap: 24px;
             padding: 10px 2px 18px;
         }
@@ -1319,22 +1598,6 @@ def _apply_styles() -> None:
             color: var(--tdx-muted);
             font-size: 0.98rem;
             line-height: 1.6;
-        }
-        .header-status {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            justify-content: flex-end;
-            padding-bottom: 4px;
-        }
-        .header-status span {
-            border: 1px solid var(--tdx-border);
-            background: var(--tdx-surface);
-            color: #344054;
-            border-radius: 999px;
-            padding: 6px 10px;
-            font-size: 0.82rem;
-            font-weight: 650;
         }
         .brand-block {
             display: flex;
@@ -1363,6 +1626,12 @@ def _apply_styles() -> None:
             color: var(--tdx-muted);
             font-size: 0.82rem;
             margin-top: 2px;
+        }
+        .sidebar-nav-title {
+            color: var(--tdx-text);
+            font-size: 0.9rem;
+            font-weight: 760;
+            margin: 4px 0 8px;
         }
         .action-panel-title {
             display: flex;
@@ -1471,6 +1740,9 @@ def _apply_styles() -> None:
             font-size: 0.78rem;
             font-weight: 760;
         }
+        .panel-anchor {
+            scroll-margin-top: 12px;
+        }
         .empty-state {
             border: 1px dashed #cbd5e1;
             background: #fbfcfd;
@@ -1504,10 +1776,18 @@ def _apply_styles() -> None:
             font-size: 1.35rem;
         }
         .stButton > button {
+            align-items: center;
             border-radius: 6px;
             border: 1px solid #cbd5e1;
+            display: flex;
             font-weight: 600;
+            justify-content: center;
             min-height: 42px;
+            text-align: center;
+            white-space: nowrap;
+        }
+        .stButton > button p {
+            margin: 0;
             white-space: nowrap;
         }
         .stButton > button[kind="primary"] {
@@ -1571,9 +1851,6 @@ def _apply_styles() -> None:
             .app-header {
                 align-items: flex-start;
                 flex-direction: column;
-            }
-            .header-status {
-                justify-content: flex-start;
             }
             .workspace-header {
                 align-items: flex-start;

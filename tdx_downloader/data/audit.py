@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from tdx_downloader.data.filters import limit_open_dates
 from tdx_downloader.data.schema import (
@@ -250,19 +251,23 @@ def _audit_symbol_file(
     if not path.exists():
         return _audit_record(base, status="missing_file", message="本地 parquet 不存在。")
     try:
-        raw = pd.read_parquet(path)
+        parquet_file = pq.ParquetFile(path)
     except Exception as exc:  # noqa: BLE001
-        return _audit_record(base, status="read_error", message=f"parquet 读取失败：{exc}")
+        return _audit_record(base, status="read_error", message=f"parquet 元数据读取失败：{exc}")
 
-    missing_columns = sorted(set(CANONICAL_COLUMNS).difference(raw.columns))
+    missing_columns = sorted(set(CANONICAL_COLUMNS).difference(parquet_file.schema.names))
     if missing_columns:
         return _audit_record(
             base,
             status="missing_columns",
-            rows_total=len(raw),
+            rows_total=_parquet_num_rows(parquet_file),
             missing_columns=",".join(missing_columns),
             message="缺少标准行情字段。",
         )
+    try:
+        raw = pd.read_parquet(path, columns=list(CANONICAL_COLUMNS))
+    except Exception as exc:  # noqa: BLE001
+        return _audit_record(base, status="read_error", message=f"parquet 读取失败：{exc}")
 
     checked = raw.copy()
     checked["stock_code"] = checked["stock_code"].map(normalize_symbol)
@@ -318,7 +323,7 @@ def _audit_symbol_file(
     return _audit_record(
         base,
         status=status,
-        rows_total=len(raw),
+        rows_total=_parquet_num_rows(parquet_file),
         rows_in_window=len(in_window),
         **coverage,
         start=in_window["date"].min() if not in_window.empty else pd.NaT,
@@ -366,10 +371,10 @@ def _symbol_gap_episodes(
             status="missing_file",
         )
     try:
-        raw = pd.read_parquet(path)
+        parquet_file = pq.ParquetFile(path)
     except Exception:  # noqa: BLE001
         return []
-    if sorted(set(CANONICAL_COLUMNS).difference(raw.columns)):
+    if sorted(set(CANONICAL_COLUMNS).difference(parquet_file.schema.names)):
         return _gap_episodes_for_dates(
             pd.DataFrame(columns=["date"]),
             timeframe,
@@ -379,6 +384,10 @@ def _symbol_gap_episodes(
             base=base,
             status="missing_columns",
         )
+    try:
+        raw = pd.read_parquet(path, columns=list(CANONICAL_COLUMNS))
+    except Exception:  # noqa: BLE001
+        return []
 
     normalized = normalize_bars(raw, symbol)
     raw_in_window = normalized.loc[normalized["date"].between(start_ts, end_ts)]
@@ -424,6 +433,11 @@ def _audit_record(base: dict[str, object], **overrides: object) -> dict[str, obj
     }
     record.update(overrides)
     return record
+
+
+def _parquet_num_rows(parquet_file: pq.ParquetFile) -> int:
+    metadata = parquet_file.metadata
+    return int(metadata.num_rows) if metadata is not None else 0
 
 
 def _drop_zero_liquidity_bars(bars: pd.DataFrame) -> pd.DataFrame:

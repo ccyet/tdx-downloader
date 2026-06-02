@@ -6,6 +6,8 @@ import sqlite3
 import pandas as pd
 
 from tdx_downloader.data.catalog import query_catalog
+from tdx_downloader.data.audit import audit_local_data, data_gap_episodes
+from tdx_downloader.data.inventory import inventory_local_data
 from tdx_downloader.data.manager import DataDownloadConfig, DataManagementService, shortcut_symbols
 from tdx_downloader.data.storage import write_local_bars
 
@@ -86,6 +88,8 @@ def test_data_management_service_summarizes_cache_snapshot(tmp_path: Path) -> No
     with sqlite3.connect(snapshot.catalog_path) as connection:
         indexes = pd.read_sql_query("PRAGMA index_list(market_data_files)", connection)
     assert "idx_market_data_lookup" in indexes["name"].tolist()
+    assert "idx_market_data_filter_order" in indexes["name"].tolist()
+    assert "idx_market_data_symbol_adjust" in indexes["name"].tolist()
     by_timeframe = snapshot.by_timeframe.set_index("timeframe")
     assert by_timeframe.loc["60m", "cached_count"] == 1
     assert by_timeframe.loc["60m", "unavailable_count"] == 2
@@ -116,6 +120,71 @@ def test_data_management_service_force_download_uses_batch_and_progress(tmp_path
     assert fake.market_calls[0]["stock_list"] == ["000001.SZ"]
     assert "fetch_start" in [event["stage"] for event in events]
     assert "write_done" in [event["stage"] for event in events]
+
+
+def test_inventory_uses_parquet_metadata_for_standard_cache_files(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    data_root = tmp_path / "market" / "daily"
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=_bars())
+
+    def fail_read_parquet(*_: object, **__: object) -> pd.DataFrame:
+        raise AssertionError("inventory should not read parquet data columns for standard cache files")
+
+    monkeypatch.setattr("tdx_downloader.data.inventory.pd.read_parquet", fail_read_parquet)
+
+    result = inventory_local_data(
+        data_root=data_root,
+        adjust="qfq",
+        timeframes=("1d",),
+        symbols=("000001.SZ",),
+    )
+
+    assert result.loc[0, "status"] == "cached"
+    assert result.loc[0, "rows"] == 2
+    assert result.loc[0, "start"] == pd.Timestamp("2026-05-25 10:30:00")
+    assert result.loc[0, "end"] == pd.Timestamp("2026-05-25 11:30:00")
+
+
+def test_audit_and_gap_calculation_read_only_canonical_parquet_columns(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    data_root = tmp_path / "market" / "daily"
+    root = data_root / "qfq"
+    root.mkdir(parents=True)
+    bars = _bars().copy()
+    bars["unused_factor"] = [1.0, 2.0]
+    bars.to_parquet(root / "000001.SZ.parquet", index=False)
+    original_read_parquet = pd.read_parquet
+    observed_columns: list[tuple[str, ...] | None] = []
+
+    def tracked_read_parquet(*args: object, **kwargs: object) -> pd.DataFrame:
+        columns = kwargs.get("columns")
+        observed_columns.append(tuple(columns) if columns is not None else None)
+        return original_read_parquet(*args, **kwargs)
+
+    monkeypatch.setattr("tdx_downloader.data.audit.pd.read_parquet", tracked_read_parquet)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("000001.SZ",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+    gaps = data_gap_episodes(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("000001.SZ",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "ok"
+    assert gaps.empty
+    assert observed_columns
+    assert all(columns == tuple(["date", "stock_code", "open", "high", "low", "close", "volume", "amount"]) for columns in observed_columns)
 
 
 def test_data_management_service_download_rejects_unknown_mode(tmp_path: Path) -> None:

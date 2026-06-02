@@ -19,6 +19,9 @@ dependencies = [
 [project.scripts]
 tdx-downloader = "tdx_downloader.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["tdx_downloader*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

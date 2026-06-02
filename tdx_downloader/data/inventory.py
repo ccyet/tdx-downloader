@@ -149,6 +149,16 @@ def _inventory_symbol_file(
             missing_columns=",".join(missing_columns),
             message=f"缺少标准行情字段：{', '.join(missing_columns)}。",
         )
+    fast_summary = _metadata_identity_summary(parquet_file, symbol=symbol)
+    if fast_summary is not None:
+        return _inventory_record(
+            base,
+            status="cached",
+            rows=fast_summary["rows"],
+            start=fast_summary["start"],
+            end=fast_summary["end"],
+            message="本地 parquet 可用于读取；库存扫描已使用 parquet 元数据快速确认。",
+        )
     try:
         identity = pd.read_parquet(path, columns=["date", "stock_code"])
     except Exception as exc:  # noqa: BLE001
@@ -169,6 +179,47 @@ def _inventory_symbol_file(
 def _parquet_num_rows(parquet_file: pq.ParquetFile) -> int:
     metadata = parquet_file.metadata
     return int(metadata.num_rows) if metadata is not None else 0
+
+
+def _metadata_identity_summary(parquet_file: pq.ParquetFile, *, symbol: str) -> dict[str, object] | None:
+    """标准缓存文件用 parquet 统计信息取行数和窗口，避免库存扫描读整列。"""
+    metadata = parquet_file.metadata
+    if metadata is None or metadata.num_rows <= 0:
+        return None
+    if normalize_symbol(symbol) != symbol:
+        return None
+    date_index = _schema_column_index(parquet_file, "date")
+    symbol_index = _schema_column_index(parquet_file, "stock_code")
+    if date_index is None or symbol_index is None:
+        return None
+
+    starts: list[pd.Timestamp] = []
+    ends: list[pd.Timestamp] = []
+    for row_group_index in range(metadata.num_row_groups):
+        row_group = metadata.row_group(row_group_index)
+        if not _row_group_symbol_matches(row_group.column(symbol_index).statistics, symbol=symbol):
+            return None
+        stats = row_group.column(date_index).statistics
+        if stats is None or not stats.has_min_max or stats.null_count:
+            return None
+        starts.append(pd.Timestamp(stats.min))
+        ends.append(pd.Timestamp(stats.max))
+    if not starts or not ends:
+        return None
+    return {"rows": int(metadata.num_rows), "start": min(starts), "end": max(ends)}
+
+
+def _schema_column_index(parquet_file: pq.ParquetFile, column: str) -> int | None:
+    try:
+        return parquet_file.schema.names.index(column)
+    except ValueError:
+        return None
+
+
+def _row_group_symbol_matches(stats: object, *, symbol: str) -> bool:
+    if stats is None or not getattr(stats, "has_min_max", False) or getattr(stats, "null_count", 0):
+        return False
+    return normalize_symbol(getattr(stats, "min", "")) == symbol and normalize_symbol(getattr(stats, "max", "")) == symbol
 
 
 def _valid_inventory_identity(identity: pd.DataFrame) -> pd.DataFrame:

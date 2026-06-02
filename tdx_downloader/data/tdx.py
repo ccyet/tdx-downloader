@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import importlib
+import ctypes
 import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
+import time
 from typing import Any
 
 import pandas as pd
@@ -24,7 +27,17 @@ from tdx_downloader.data.schema import (
 
 TDX_TQCENTER_ENV_VAR = "TDX_TQCENTER_PATH"
 TDX_ALLOW_MAC_TQCENTER_ENV_VAR = "TDX_ALLOW_MAC_TQCENTER"
+TDX_TERMINAL_PATH_ENV_VAR = "TDX_TERMINAL_PATH"
+TDX_AUTOSTART_ENV_VAR = "TDX_AUTOSTART"
 TDX_REQUEST_BATCH_SIZE = 100
+TDX_TERMINAL_START_WAIT_SECONDS = 5
+DEFAULT_WINDOWS_TDX_ROOTS = (
+    Path(r"C:\new_tdx64"),
+    Path(r"C:\new_tdx"),
+    Path(r"C:\tdx"),
+    Path(r"D:\new_tdx64"),
+    Path(r"D:\new_tdx"),
+)
 REFRESHABLE_KLINE_PERIODS = {"1m", "5m"}
 TDX_PERIOD_MAP = {"1d": "1d", "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "60m": "1h"}
 DERIVABLE_FROM_5M_TIMEFRAMES = {"15m", "30m", "60m"}
@@ -78,6 +91,9 @@ def fetch_tdx_bars(
     if not normalized_symbols:
         return empty_bars()
 
+    request_start, request_end = (
+        (start, end) if normalized_timeframe == "1d" else _expanded_intraday_window(start, end)
+    )
     _emit_progress(
         progress_callback,
         stage="tdx_request_start",
@@ -91,14 +107,26 @@ def fetch_tdx_bars(
     bars = _fetch_tdx_period_bars(
         tq,
         symbols=normalized_symbols,
-        start=start,
-        end=end,
+        start=request_start,
+        end=request_end,
         period=period,
         dividend_type=dividend_type,
         batch_size=normalized_batch_size,
         progress_callback=progress_callback,
         timeframe=normalized_timeframe,
     )
+    if normalized_timeframe == "5m":
+        bars = _fill_missing_5m_from_1m(
+            tq,
+            symbols=normalized_symbols,
+            bars=bars,
+            start=request_start,
+            end=request_end,
+            dividend_type=dividend_type,
+            batch_size=normalized_batch_size,
+            progress_callback=progress_callback,
+            timeframe=normalized_timeframe,
+        )
     if normalized_timeframe not in DERIVABLE_FROM_5M_TIMEFRAMES:
         _emit_progress(
             progress_callback,
@@ -119,7 +147,7 @@ def fetch_tdx_bars(
         )
         return bars
 
-    fallback_start, fallback_end = _expanded_5m_aggregation_window(start, end)
+    fallback_start, fallback_end = _expanded_intraday_window(start, end)
     _emit_progress(
         progress_callback,
         stage="tdx_fallback_start",
@@ -127,12 +155,11 @@ def fetch_tdx_bars(
         period="5m",
         symbol_count=len(missing_symbols),
     )
-    five_minute_bars = _fetch_tdx_period_bars(
+    five_minute_bars = _fetch_5m_bars_with_1m_fallback(
         tq,
         symbols=missing_symbols,
         start=fallback_start,
         end=fallback_end,
-        period="5m",
         dividend_type=dividend_type,
         batch_size=normalized_batch_size,
         progress_callback=progress_callback,
@@ -141,8 +168,8 @@ def fetch_tdx_bars(
     derived = _aggregate_5m_bars(
         five_minute_bars,
         timeframe=normalized_timeframe,
-        start=start,
-        end=end,
+        start=fallback_start,
+        end=fallback_end,
     )
     if bars.empty:
         result = derived
@@ -253,7 +280,7 @@ def diagnose_tdx_source(
 def _diagnosis_request_window(timeframe: str, start: str, end: str) -> tuple[str, str]:
     """日 K 诊断按整天取样，避免分钟起点把当天 00:00 日线排除。"""
     if timeframe != "1d":
-        return start, end
+        return _expanded_intraday_window(start, end)
     return str(pd.Timestamp(start).normalize().date()), str(pd.Timestamp(end).normalize().date())
 
 
@@ -300,7 +327,7 @@ def _fetch_tdx_period_bars(
             period=period,
             start_time=_format_market_time(start),
             end_time=_format_market_time(end),
-            count=-1,
+            count=_tdx_request_count(period, start=start, end=end),
             dividend_type=dividend_type,
             fill_data=False,
         )
@@ -325,10 +352,82 @@ def _fetch_tdx_period_bars(
     return pd.concat(frames, ignore_index=True).sort_values(["stock_code", "date"]).reset_index(drop=True)
 
 
-def _expanded_5m_aggregation_window(start: str, end: str) -> tuple[str, str]:
-    """高周期由 5m 聚合时按整段交易日取数，避免起点裁掉首根高周期 K 的组成 5m。"""
+def _expanded_intraday_window(start: str, end: str) -> tuple[str, str]:
+    """分钟周期按整段交易日取数，避免日期控件把 00:00 当作分钟线边界。"""
     start_ts, end_ts = parse_time_window(start, end)
     return f"{start_ts.date()} 09:30:00", f"{end_ts.date()} 15:00:00"
+
+
+def _fetch_5m_bars_with_1m_fallback(
+    tq: Any,
+    *,
+    symbols: list[str],
+    start: str,
+    end: str,
+    dividend_type: str,
+    batch_size: int,
+    progress_callback: ProgressCallback | None,
+    timeframe: str,
+) -> pd.DataFrame:
+    bars = _fetch_tdx_period_bars(
+        tq,
+        symbols=symbols,
+        start=start,
+        end=end,
+        period="5m",
+        dividend_type=dividend_type,
+        batch_size=batch_size,
+        progress_callback=progress_callback,
+        timeframe=timeframe,
+    )
+    return _fill_missing_5m_from_1m(
+        tq,
+        symbols=symbols,
+        bars=bars,
+        start=start,
+        end=end,
+        dividend_type=dividend_type,
+        batch_size=batch_size,
+        progress_callback=progress_callback,
+        timeframe=timeframe,
+    )
+
+
+def _fill_missing_5m_from_1m(
+    tq: Any,
+    *,
+    symbols: list[str],
+    bars: pd.DataFrame,
+    start: str,
+    end: str,
+    dividend_type: str,
+    batch_size: int,
+    progress_callback: ProgressCallback | None,
+    timeframe: str,
+) -> pd.DataFrame:
+    missing_symbols = _symbols_missing_bars(symbols, bars)
+    if not missing_symbols:
+        return bars
+    _emit_progress(
+        progress_callback,
+        stage="tdx_fallback_start",
+        timeframe=timeframe,
+        period="1m",
+        symbol_count=len(missing_symbols),
+    )
+    one_minute_bars = _fetch_tdx_period_bars(
+        tq,
+        symbols=missing_symbols,
+        start=start,
+        end=end,
+        period="1m",
+        dividend_type=dividend_type,
+        batch_size=batch_size,
+        progress_callback=progress_callback,
+        timeframe=timeframe,
+    )
+    derived = _aggregate_1m_bars(one_minute_bars, timeframe="5m", start=start, end=end)
+    return _merge_bar_frames(bars, derived)
 
 
 def _symbols_missing_bars(symbols: list[str], bars: pd.DataFrame) -> list[str]:
@@ -340,11 +439,27 @@ def _symbols_missing_bars(symbols: list[str], bars: pd.DataFrame) -> list[str]:
 
 def _aggregate_5m_bars(bars: pd.DataFrame, *, timeframe: str, start: str, end: str) -> pd.DataFrame:
     """把 TDX 5m K 线聚合成 15/30/60m；只保留组成数量完整的目标 K。"""
+    return _aggregate_intraday_bars(bars, timeframe=timeframe, start=start, end=end, base_minutes=5)
+
+
+def _aggregate_1m_bars(bars: pd.DataFrame, *, timeframe: str, start: str, end: str) -> pd.DataFrame:
+    """把 TDX 1m K 线聚合成 5m，用于当前插件原生 5m 为空时的显式补救。"""
+    return _aggregate_intraday_bars(bars, timeframe=timeframe, start=start, end=end, base_minutes=1)
+
+
+def _aggregate_intraday_bars(
+    bars: pd.DataFrame,
+    *,
+    timeframe: str,
+    start: str,
+    end: str,
+    base_minutes: int,
+) -> pd.DataFrame:
     if bars.empty:
         return empty_bars()
     minutes = int(ensure_supported_timeframe(timeframe).removesuffix("m"))
-    if minutes <= 5 or minutes % 5 != 0:
-        raise ValueError("5m 聚合只支持 15m、30m、60m。")
+    if minutes <= base_minutes or minutes % base_minutes != 0:
+        raise ValueError(f"{base_minutes}m 聚合不支持 {timeframe}。")
     data = bars.copy()
     data["date"] = pd.to_datetime(data["date"], errors="coerce")
     data["_bucket_end"] = _intraday_bucket_ends(data["date"], minutes)
@@ -366,7 +481,7 @@ def _aggregate_5m_bars(bars: pd.DataFrame, *, timeframe: str, start: str, end: s
         .reset_index()
         .rename(columns={"_bucket_end": "date"})
     )
-    complete_count = minutes // 5
+    complete_count = minutes // base_minutes
     grouped = grouped.loc[grouped["bar_count"].ge(complete_count)].copy()
     if grouped.empty:
         return empty_bars()
@@ -375,6 +490,19 @@ def _aggregate_5m_bars(bars: pd.DataFrame, *, timeframe: str, start: str, end: s
     if grouped.empty:
         return empty_bars()
     return grouped[CANONICAL_COLUMNS].sort_values(["stock_code", "date"]).reset_index(drop=True)
+
+
+def _merge_bar_frames(primary: pd.DataFrame, fallback: pd.DataFrame) -> pd.DataFrame:
+    if primary.empty:
+        return fallback
+    if fallback.empty:
+        return primary
+    return (
+        pd.concat([primary, fallback], ignore_index=True)
+        .sort_values(["stock_code", "date"])
+        .drop_duplicates(subset=["stock_code", "date"], keep="last")
+        .reset_index(drop=True)
+    )
 
 
 def _intraday_bucket_ends(values: pd.Series, minutes: int) -> pd.Series:
@@ -428,6 +556,7 @@ def _load_tq(tqcenter_path: str = "") -> Any:
     if _TQ_CLIENT is not None:
         return _TQ_CLIENT
 
+    _start_tdx_terminal_if_needed(tqcenter_path)
     errors: list[str] = []
     for path in _candidate_import_paths(tqcenter_path):
         resolved = path.resolve()
@@ -471,17 +600,25 @@ def _mac_local_tq_disabled() -> bool:
 def _candidate_import_paths(tqcenter_path: str = "") -> list[Path]:
     raw_value = (tqcenter_path or os.getenv(TDX_TQCENTER_ENV_VAR, "")).strip()
     if not raw_value or raw_value.lower() == "tdx":
-        return []
+        return _default_windows_tqcenter_paths()
 
     def expand(candidate: Path) -> list[Path]:
         normalized = candidate
         if normalized.name.lower() == "tqcenter.py":
             normalized = normalized.parent
-        if normalized.name.lower() == "user" and normalized.parent.name.lower() == "pyplugins":
-            return [normalized]
-        if normalized.name.lower() == "pyplugins":
-            return [normalized / "user", normalized]
-        return [normalized / "PYPlugins" / "user", normalized]
+        candidates: list[Path] = []
+        for path in (normalized, *normalized.parents):
+            name = path.name.lower()
+            parent_name = path.parent.name.lower()
+            if name == "user" and parent_name == "pyplugins":
+                candidates.extend([path, path.parent / "sys", path.parent])
+                continue
+            if name == "pyplugins":
+                candidates.extend([path / "user", path / "sys", path])
+                continue
+            candidates.extend([path / "PYPlugins" / "user", path / "PYPlugins" / "sys"])
+        candidates.append(normalized)
+        return candidates
 
     paths: list[Path] = []
     seen: set[str] = set()
@@ -498,6 +635,105 @@ def _candidate_import_paths(tqcenter_path: str = "") -> list[Path]:
     return paths
 
 
+def _default_windows_tqcenter_paths() -> list[Path]:
+    if sys.platform != "win32":
+        return []
+    paths: list[Path] = []
+    for root in DEFAULT_WINDOWS_TDX_ROOTS:
+        paths.extend([root / "PYPlugins" / "user", root / "PYPlugins" / "sys"])
+    return paths
+
+
+def _start_tdx_terminal_if_needed(tqcenter_path: str = "") -> None:
+    if sys.platform != "win32" or os.getenv(TDX_AUTOSTART_ENV_VAR, "1").strip() == "0":
+        return
+    if _tdx_terminal_is_running():
+        return
+    executable = _find_tdx_terminal(tqcenter_path)
+    if executable is None:
+        return
+    try:
+        subprocess.Popen(
+            [str(executable)],
+            cwd=str(executable.parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"TDX 客户端启动失败：{executable}。{exc}") from exc
+    time.sleep(TDX_TERMINAL_START_WAIT_SECONDS)
+
+
+def _tdx_terminal_is_running() -> bool:
+    command = ["tasklist", "/FI", "IMAGENAME eq TdxW.exe"]
+    session_id = _current_windows_session_id()
+    if session_id is not None:
+        command.extend(["/FI", f"SESSION eq {session_id}"])
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        check=False,
+    )
+    return b"tdxw.exe" in (result.stdout or b"").lower()
+
+
+def _current_windows_session_id() -> int | None:
+    if sys.platform != "win32":
+        return None
+    session_id = ctypes.c_ulong()
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    if not kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session_id)):
+        return None
+    return int(session_id.value)
+
+
+def _find_tdx_terminal(tqcenter_path: str = "") -> Path | None:
+    configured = os.getenv(TDX_TERMINAL_PATH_ENV_VAR, "").strip().strip('"')
+    if configured:
+        executable = Path(configured)
+        if not executable.exists():
+            raise RuntimeError(f"{TDX_TERMINAL_PATH_ENV_VAR} 指向的 TDX 客户端不存在：{executable}")
+        return executable
+    for root in _candidate_tdx_roots(tqcenter_path):
+        executable = root / "TdxW.exe"
+        if executable.exists():
+            return executable
+    return None
+
+
+def _candidate_tdx_roots(tqcenter_path: str = "") -> list[Path]:
+    raw_value = (tqcenter_path or os.getenv(TDX_TQCENTER_ENV_VAR, "")).strip()
+    roots: list[Path] = []
+    if raw_value and raw_value.lower() != "tdx":
+        for item in raw_value.split(os.pathsep):
+            text = item.strip().strip('"')
+            if not text:
+                continue
+            path = Path(text)
+            if path.name.lower() == "tqcenter.py":
+                path = path.parent
+            if path.name.lower() == "user" and path.parent.name.lower() == "pyplugins":
+                path = path.parent.parent
+            elif path.name.lower() == "pyplugins":
+                path = path.parent
+            roots.append(path)
+    if sys.platform == "win32":
+        roots.extend(DEFAULT_WINDOWS_TDX_ROOTS)
+    return _unique_paths(roots)
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
 def _ensure_initialized(tq: Any) -> None:
     global _INITIALIZED_CLIENT
     if _INITIALIZED_CLIENT is tq:
@@ -505,7 +741,10 @@ def _ensure_initialized(tq: Any) -> None:
     try:
         tq.initialize(__file__)
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("TDX 初始化失败。请确认本机通达信终端已启动并登录。") from exc
+        raise RuntimeError(
+            "TDX 初始化失败。请确认 Windows 通达信终端已启动并登录；"
+            "默认路径为 C:\\new_tdx64，可用 TDX_TQCENTER_PATH 或 TDX_TERMINAL_PATH 覆盖。"
+        ) from exc
     _INITIALIZED_CLIENT = tq
 
 
@@ -624,6 +863,19 @@ def _emit_progress(callback: ProgressCallback | None, **payload: object) -> None
 def _format_market_time(value: str) -> str:
     parsed = pd.Timestamp(pd.to_datetime(value))
     return parsed.strftime("%Y%m%d%H%M%S" if _has_explicit_time(value) else "%Y%m%d")
+
+
+def _tdx_request_count(period: str, *, start: str, end: str) -> int:
+    start_ts, end_ts = parse_time_window(start, end)
+    inclusive_days = max((end_ts.normalize() - start_ts.normalize()).days + 1, 1)
+    if period == "1d":
+        return inclusive_days + 10
+    minutes_by_period = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
+    minutes = minutes_by_period.get(period)
+    if minutes is None:
+        return max(inclusive_days * 240, 1)
+    bars_per_day = max(240 // minutes, 1)
+    return inclusive_days * bars_per_day + bars_per_day
 
 
 def _has_explicit_time(value: str) -> bool:

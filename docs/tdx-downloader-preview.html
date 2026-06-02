@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TDX Downloader 预览</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --surface: #ffffff;
+      --surface-soft: #f8fafc;
+      --text: #111827;
+      --muted: #5f6b7a;
+      --border: #d8dee9;
+      --green: #0f766e;
+      --green-soft: #e7f5f2;
+      --red: #b91c1c;
+      --red-soft: #fef2f2;
+      --blue: #1d4ed8;
+      --blue-soft: #e8f0ff;
+      --amber: #b45309;
+      --amber-soft: #fff7ed;
+      --ink: #0f172a;
+      --shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0;
+    }
+
+    .page {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 0 auto;
+      padding: 34px 0 52px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 20px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border-radius: 8px;
+      background: var(--ink);
+      color: #fff;
+      font-weight: 800;
+      font-size: 14px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: clamp(22px, 3vw, 34px);
+      line-height: 1.2;
+      font-weight: 760;
+    }
+
+    .brand p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      border: 1px solid #b7ded8;
+      background: var(--green-soft);
+      color: var(--green);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.45fr 1fr;
+      gap: 20px;
+      align-items: stretch;
+      margin-bottom: 20px;
+    }
+
+    .panel,
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .panel {
+      padding: 24px;
+    }
+
+    .panel h2,
+    .section h2 {
+      margin: 0 0 14px;
+      font-size: 19px;
+      line-height: 1.25;
+    }
+
+    .lead {
+      margin: 0 0 22px;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 15px;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .metric {
+      border: 1px solid var(--border);
+      background: var(--surface-soft);
+      border-radius: 8px;
+      padding: 14px;
+      min-height: 92px;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 24px;
+      line-height: 1.1;
+      color: var(--ink);
+      margin-bottom: 8px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .path-box {
+      display: grid;
+      gap: 10px;
+    }
+
+    .path-row {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 13px 14px;
+      background: var(--surface-soft);
+    }
+
+    .path-row label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      font-weight: 700;
+    }
+
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      color: #1f2937;
+      overflow-wrap: anywhere;
+    }
+
+    .section {
+      margin-top: 20px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      padding: 16px;
+      min-height: 142px;
+      box-shadow: none;
+    }
+
+    .card .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 760;
+      margin-bottom: 14px;
+    }
+
+    .tag.ok {
+      background: var(--green-soft);
+      color: var(--green);
+    }
+
+    .tag.warn {
+      background: var(--amber-soft);
+      color: var(--amber);
+    }
+
+    .tag.info {
+      background: var(--blue-soft);
+      color: var(--blue);
+    }
+
+    .tag.fail {
+      background: var(--red-soft);
+      color: var(--red);
+    }
+
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      line-height: 1.35;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.58;
+      font-size: 13px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      display: table;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    th {
+      background: #eef2f7;
+      color: #344054;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .command {
+      background: #0b1220;
+      color: #e5e7eb;
+      border-radius: 8px;
+      padding: 16px;
+      overflow-x: auto;
+      line-height: 1.65;
+      font-size: 12px;
+      border: 1px solid #1e293b;
+    }
+
+    .command code {
+      color: inherit;
+    }
+
+    .footer {
+      margin-top: 26px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 920px) {
+      .hero,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .metrics {
+        grid-template-columns: 1fr;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">TDX</div>
+        <div>
+          <h1>TDX Downloader 链路预览</h1>
+          <p>Mac 调度 Windows 通达信，数据落到外置盘目录。</p>
+        </div>
+      </div>
+      <div class="status-pill"><span class="status-dot"></span>日线下载链路已验证</div>
+    </header>
+
+    <section class="hero">
+      <div class="panel">
+        <h2>当前结果</h2>
+        <p class="lead">
+          macOS 通过 Parallels 进入 Windows 当前登录用户会话执行 Python，连接已登录的通达信客户端，
+          并把结果写回 `/Volumes/ccOUT 1/tdx-data`。普通 SYSTEM 会话会导致 `tqcenter` 无法连接，已在调度层规避。
+        </p>
+        <div class="metrics">
+          <div class="metric">
+            <strong>24</strong>
+            <span>自动化测试通过</span>
+          </div>
+          <div class="metric">
+            <strong>2</strong>
+            <span>000001.SZ 日线样本行数</span>
+          </div>
+          <div class="metric">
+            <strong>32K</strong>
+            <span>catalog SQLite 索引库已生成</span>
+          </div>
+        </div>
+      </div>
+
+      <aside class="panel path-box">
+        <h2>路径对齐</h2>
+        <div class="path-row">
+          <label>Mac 数据目录</label>
+          <code>/Volumes/ccOUT 1/tdx-data</code>
+        </div>
+        <div class="path-row">
+          <label>Windows 共享路径</label>
+          <code>\\psf\ccOUT 1\tdx-data</code>
+        </div>
+        <div class="path-row">
+          <label>Windows Python</label>
+          <code>C:\Users\Public\venvs\tdx-downloader\Scripts\python.exe</code>
+        </div>
+        <div class="path-row">
+          <label>通达信目录</label>
+          <code>C:\new_tdx64</code>
+        </div>
+      </aside>
+    </section>
+
+    <section class="section">
+      <h2>链路状态</h2>
+      <div class="grid">
+        <div class="card">
+          <span class="tag ok">通过</span>
+          <h3>Parallels 调度</h3>
+          <p>使用 `prlctl exec --current-user`，进入 Windows 当前用户会话，避免 Session 0。</p>
+        </div>
+        <div class="card">
+          <span class="tag ok">通过</span>
+          <h3>TDX 初始化</h3>
+          <p>`tdx-doctor` 已显示 `TQ数据接口初始化成功`，日线样本请求成功。</p>
+        </div>
+        <div class="card">
+          <span class="tag ok">通过</span>
+          <h3>目标目录写入</h3>
+          <p>已写入 `/Volumes/ccOUT 1/tdx-data/daily/qfq/000001.SZ.parquet`。</p>
+        </div>
+        <div class="card">
+          <span class="tag warn">外部状态</span>
+          <h3>5m 分钟线</h3>
+          <p>接口可调用，但 Windows 通达信当前未返回 5m 本地缓存，诊断为 `no_data`。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>数据文件</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>周期</th>
+            <th>状态</th>
+            <th>行数</th>
+            <th>时间范围</th>
+            <th>文件</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1d</td>
+            <td>cached</td>
+            <td>2</td>
+            <td>2026-06-01 至 2026-06-02</td>
+            <td><code>/Volumes/ccOUT 1/tdx-data/daily/qfq/000001.SZ.parquet</code></td>
+          </tr>
+          <tr>
+            <td>5m</td>
+            <td>missing_file</td>
+            <td>0</td>
+            <td>无本地分钟缓存</td>
+            <td><code>/Volumes/ccOUT 1/tdx-data/5m/qfq/000001.SZ.parquet</code></td>
+          </tr>
+          <tr>
+            <td>metadata</td>
+            <td>generated</td>
+            <td>-</td>
+            <td>索引库</td>
+            <td><code>/Volumes/ccOUT 1/tdx-data/metadata/market_data_catalog.sqlite</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>性能优化</h2>
+      <div class="grid">
+        <div class="card">
+          <span class="tag info">索引</span>
+          <h3>查询排序索引</h3>
+          <p>新增 `idx_market_data_filter_order`，覆盖资产类型、周期、数据类型、指标、状态、代码。</p>
+        </div>
+        <div class="card">
+          <span class="tag info">索引</span>
+          <h3>代码复权索引</h3>
+          <p>新增 `idx_market_data_symbol_adjust`，加速按代码、复权、周期和状态查找。</p>
+        </div>
+        <div class="card">
+          <span class="tag info">扫描</span>
+          <h3>库存扫描元数据化</h3>
+          <p>标准 parquet 文件优先读取 row group 统计信息，不再为了行数和时间范围读取整列。</p>
+        </div>
+        <div class="card">
+          <span class="tag info">计算</span>
+          <h3>审计读取裁剪</h3>
+          <p>审计和缺口计算只读取标准行情列，避免无关列参与 IO 和内存占用。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>复现命令</h2>
+      <pre class="command"><code>python -m tdx_downloader.cli tdx-doctor \
+  --symbols 000001.SZ \
+  --timeframes 1d,5m \
+  --start '2026-06-01 09:30:00' \
+  --end '2026-06-02 15:00:00' \
+  --runtime parallels
+
+python -m tdx_downloader.cli fetch \
+  --symbols 000001.SZ \
+  --timeframe 1d \
+  --start 2026-06-01 \
+  --end 2026-06-02 \
+  --runtime parallels</code></pre>
+    </section>
+
+    <p class="footer">
+      生成时间：2026-06-02。此页为当前本机验证状态预览；分钟线状态取决于 Windows 通达信本地分钟数据缓存。
+    </p>
+  </main>
+</body>
+</html>
