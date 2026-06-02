@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 import subprocess
 import sys
+from typing import Any
 
 import pandas as pd
 
@@ -22,8 +24,22 @@ def download_with_runtime(
     progress_callback=None,
 ) -> DataDownloadResult:
     if should_use_parallels_runtime():
-        return download_with_parallels_cli(service, config, mode=mode)
+        if mode == "smart" and not plan_requires_tdx_fetch(service, config):
+            _emit_progress(
+                progress_callback,
+                stage="tdx_connection_skipped",
+                message="本地缓存已覆盖当前任务，无需连接 Windows 通达信。",
+            )
+            return service.download(config, mode=mode, progress_callback=progress_callback)
+        return download_with_parallels_cli(service, config, mode=mode, progress_callback=progress_callback)
     return service.download(config, mode=mode, progress_callback=progress_callback)
+
+
+def plan_requires_tdx_fetch(service: DataManagementService, config: DataDownloadConfig) -> bool:
+    table = service.download_plan(config)
+    if table.empty or "action" not in table.columns:
+        return False
+    return bool(table["action"].fillna("").astype(str).eq("fetch").any())
 
 
 def download_with_parallels_cli(
@@ -31,10 +47,14 @@ def download_with_parallels_cli(
     config: DataDownloadConfig,
     *,
     mode: str,
+    progress_callback=None,
 ) -> DataDownloadResult:
+    verify_parallels_tdx_connection(service, config, progress_callback=progress_callback)
     if mode == "smart":
+        _emit_progress(progress_callback, stage="parallels_command_start", message="Windows 侧开始执行智能补齐。")
         table = run_parallels_cli_table(parallels_prepare_command(service, config))
     elif mode == "force":
+        _emit_progress(progress_callback, stage="parallels_command_start", message="Windows 侧开始执行强制刷新。")
         frames = [
             force_cli_frame(
                 run_parallels_cli_table(parallels_fetch_command(service, config, timeframe)),
@@ -46,7 +66,44 @@ def download_with_parallels_cli(
         table = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     else:
         raise RuntimeError(f"未知下载方式：{mode}")
-    return DataDownloadResult(table=table, summary=download_summary(table))
+    summary = download_summary(table)
+    _emit_progress(
+        progress_callback,
+        stage="parallels_command_done",
+        message=f"Windows 侧任务返回：{int(summary.get('fetched_count', 0))} 项 fetch，写入 {int(summary.get('rows_written', 0))} 行。",
+    )
+    return DataDownloadResult(table=table, summary=summary)
+
+
+def verify_parallels_tdx_connection(
+    service: DataManagementService,
+    config: DataDownloadConfig,
+    *,
+    progress_callback=None,
+) -> pd.DataFrame:
+    _emit_progress(
+        progress_callback,
+        stage="tdx_connection_check",
+        message="Windows 侧初始化 tqcenter 并发起样本请求，确认通达信真实可连接。",
+    )
+    diagnosis = run_parallels_cli_table(parallels_doctor_command(service, config))
+    if diagnosis.empty or "status" not in diagnosis.columns:
+        raise RuntimeError("TDX 连接检查未返回有效诊断结果。")
+    failing = diagnosis.loc[diagnosis["status"].astype(str).isin({"init_error", "request_error", "invalid_symbols"})]
+    if not failing.empty:
+        message = str(failing.iloc[0].get("message", "TDX 连接检查失败。"))
+        raise RuntimeError(f"TDX 连接检查失败：{message}")
+    first = diagnosis.iloc[0]
+    _emit_progress(
+        progress_callback,
+        stage="tdx_connection_ok",
+        timeframe=str(first.get("timeframe", "")),
+        message=(
+            f"TDX 连接已验证：{first.get('timeframe', '')} "
+            f"{first.get('status', '')}，样本 {int(float(first.get('rows') or 0))} 行。"
+        ),
+    )
+    return diagnosis
 
 
 def run_parallels_cli_table(command: list[str]) -> pd.DataFrame:
@@ -96,11 +153,53 @@ def parse_cli_table(stdout: str) -> pd.DataFrame:
     text = stdout.strip()
     if not text:
         return pd.DataFrame()
+    records = extract_json_records(text)
+    if records is not None:
+        return pd.DataFrame(records)
     normalized = "\n".join(line.strip() for line in text.splitlines() if line.strip())
     try:
         return pd.read_csv(io.StringIO(normalized), sep=r"\s{2,}", engine="python")
     except Exception as exc:
         raise RuntimeError(f"Parallels/Windows 任务已返回，但结果表解析失败：{exc}") from exc
+
+
+def extract_json_records(text: str) -> list[dict[str, Any]] | None:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "[":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, list):
+            return [record for record in payload if isinstance(record, dict)]
+    return None
+
+
+def parallels_doctor_command(service: DataManagementService, config: DataDownloadConfig) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "tdx_downloader.cli",
+        "tdx-doctor",
+        "--runtime",
+        "parallels",
+        "--symbols",
+        config.symbols[0],
+        "--timeframes",
+        ",".join(config.timeframes),
+        "--start",
+        config.start,
+        "--end",
+        config.end,
+        "--adjust",
+        service.adjust,
+        "--tdx-path",
+        config.tqcenter_path,
+        "--output",
+        "json",
+    ]
 
 
 def parallels_prepare_command(service: DataManagementService, config: DataDownloadConfig) -> list[str]:
@@ -145,6 +244,8 @@ def parallels_base_command(
         config.tqcenter_path,
         "--batch-size",
         str(config.batch_size),
+        "--output",
+        "json",
     ]
 
 
@@ -156,3 +257,8 @@ def force_cli_frame(frame: pd.DataFrame, *, timeframe: str, adjust: str) -> pd.D
     result["adjust"] = adjust
     result["action"] = "fetched"
     return result
+
+
+def _emit_progress(callback, **payload: object) -> None:
+    if callback is not None:
+        callback(payload)

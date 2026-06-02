@@ -45,6 +45,13 @@ TASK_HISTORY_LIMIT = 50
 
 STAGE_LABELS = {
     "task_start": "任务启动",
+    "parallels_task_start": "Windows 调度",
+    "parallels_command_start": "Windows 执行",
+    "parallels_command_done": "Windows 返回",
+    "tdx_connection_check": "连接检查",
+    "tdx_connection_ok": "连接成功",
+    "tdx_connection_skipped": "未连接 TDX",
+    "task_summary": "结果汇总",
     "audit_start": "审计缓存",
     "audit_done": "审计完成",
     "fetch_start": "请求 TDX",
@@ -332,10 +339,17 @@ def _run_download_task(task_id: str, payload: DownloadPayload, mode: str) -> Non
 
     try:
         if should_use_parallels_runtime():
-            _append_event(task_id, {"stage": "tdx_request_start", "message": "通过 Parallels/Windows 调用通达信。"})
+            _append_event(task_id, {"stage": "parallels_task_start", "message": "按任务计划调度 Parallels/Windows。"})
         result = download_with_runtime(service, config, mode=mode, progress_callback=on_progress)
         if should_use_parallels_runtime():
-            _append_event(task_id, {"stage": "tdx_request_done", "message": "Parallels/Windows 通达信任务完成。"})
+            rows_written = int(float(result.summary.get("rows_written") or 0))
+            fetched_count = int(float(result.summary.get("fetched_count") or 0))
+            message = (
+                f"Parallels/Windows 下载完成：{fetched_count} 项 fetch，写入 {rows_written} 行。"
+                if fetched_count or rows_written
+                else "本地缓存已覆盖当前任务，未建立 TDX 取数连接。"
+            )
+            _append_event(task_id, {"stage": "task_summary", "message": message})
         table_payload = {"summary": _json_dict(result.summary), "records": _records(result.table)}
         _append_event(task_id, {"stage": "task_done", "message": "下载任务完成。"})
         _update_task(task_id, status="succeeded", finished_at=_now_text(), result=table_payload)
