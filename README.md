@@ -20,6 +20,17 @@ python -m pip install -r requirements.txt
 streamlit run app.py --server.port 8522
 ```
 
+新的轻量 Web 控制台参考 sub2api 的前后端分离方式，避免 Streamlit 每次交互重跑整页：
+
+```bash
+python -m tdx_downloader.web_api
+cd web
+npm install
+npm run dev
+```
+
+访问 `http://127.0.0.1:5173`。API 服务默认在 `http://127.0.0.1:8622`，Vite 开发服务会把 `/api` 转发到该服务。
+
 CLI：
 
 ```bash
