@@ -24,7 +24,7 @@ from tdx_downloader.data.manager import (
 from tdx_downloader.data.catalog import ASSET_TYPE_LABELS, asset_type_label, data_kind_label, indicator_label
 from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES
 
-DEFAULT_DATA_ROOT = "/Volumes/ccOUT 1/tdx-data/daily"
+DEFAULT_DATA_ROOT = "/Volumes/ccOUT 1/tdx-data"
 DEFAULT_TDX_PATH_CANDIDATES = (
     "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user",
     "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/sys",

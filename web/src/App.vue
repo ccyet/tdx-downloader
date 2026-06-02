@@ -388,6 +388,12 @@
               <div class="kv-row"><span>索引状态</span><strong>{{ overview?.catalog_exists ? '存在' : '未生成' }}</strong></div>
               <div class="kv-row"><span>数据上限</span><strong>表格最多显示 500 条记录</strong></div>
             </div>
+            <div class="timeframe-map">
+              <div v-for="row in timeframeStorageRows" :key="row.timeframe">
+                <span>{{ row.timeframe }}</span>
+                <strong :title="row.path">{{ compactPath(row.path) }}</strong>
+              </div>
+            </div>
           </Panel>
         </section>
       </main>
@@ -463,6 +469,15 @@ const STATUS_LABELS: Record<string, string> = {
   fetch: '待下载',
   fetched: '已下载'
 }
+const TIMEFRAME_DIR_NAMES: Record<string, string> = {
+  '1d': 'daily',
+  '1m': '1m',
+  '5m': '5m',
+  '15m': '15m',
+  '30m': '30m',
+  '60m': '60m'
+}
+const KNOWN_TIMEFRAME_DIRS = new Set(Object.values(TIMEFRAME_DIR_NAMES))
 const sidebarCollapsed = ref(false)
 const activeView = ref('dashboard')
 const config = ref<ConfigPayload | null>(null)
@@ -488,7 +503,7 @@ const cacheFilters = reactive({
 })
 
 const settings = reactive({
-  data_root: '/Volumes/ccOUT 1/tdx-data/daily',
+  data_root: '/Volumes/ccOUT 1/tdx-data',
   adjust: 'qfq',
   tdx_path: '/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user',
   start: '',
@@ -553,6 +568,12 @@ const displayTimeframeRows = computed(() =>
     (left: Record<string, any>, right: Record<string, any>) =>
       timeframeRank(String(left.timeframe || '')) - timeframeRank(String(right.timeframe || ''))
   )
+)
+const timeframeStorageRows = computed(() =>
+  sortTimeframes(config.value?.timeframes || Object.keys(TIMEFRAME_DIR_NAMES)).map((timeframe) => ({
+    timeframe,
+    path: joinPath(settings.data_root, timeframeDirectoryName(timeframe))
+  }))
 )
 const dashboardKeyStats = computed(() => [
   { label: '资产类型', value: `${formatInt(summary.value.asset_type_count)} 类` },
@@ -651,6 +672,7 @@ async function loadConfig() {
 async function loadOverview(refresh: boolean) {
   loadingOverview.value = true
   try {
+    settings.data_root = normalizeDataRoot(settings.data_root)
     const params = new URLSearchParams({
       data_root: settings.data_root,
       adjust: settings.adjust,
@@ -735,7 +757,7 @@ async function pickDirectory(field: DirectoryField) {
       title: `选择${labels[field]}`
     })
     if (!data.path || data.cancelled) return
-    settings[field] = data.path
+    settings[field] = field === 'data_root' ? normalizeDataRoot(data.path) : data.path
     showNotice('success', '目录已选择', `${labels[field]} 已更新。`)
   } catch (error) {
     showError('选择目录失败', error)
@@ -751,6 +773,7 @@ function applySymbolGroup() {
 }
 
 function payload() {
+  settings.data_root = normalizeDataRoot(settings.data_root)
   return {
     ...settings,
     symbols: parsedSymbols.value,
@@ -760,6 +783,7 @@ function payload() {
 }
 
 function saveSettings() {
+  settings.data_root = normalizeDataRoot(settings.data_root)
   window.localStorage.setItem(
     SETTINGS_STORAGE_KEY,
     JSON.stringify({
@@ -776,6 +800,7 @@ function saveSettings() {
 function resetSettings() {
   window.localStorage.removeItem(SETTINGS_STORAGE_KEY)
   Object.assign(settings, config.value?.defaults || {})
+  settings.data_root = normalizeDataRoot(settings.data_root)
   selectedTimeframe.value = config.value?.defaults?.timeframes?.[0] || '1d'
   showNotice('info', '已恢复默认', '已恢复 API 提供的默认路径和运行参数。')
 }
@@ -784,7 +809,9 @@ function restoreSettings() {
   const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY)
   if (!raw) return
   try {
-    Object.assign(settings, JSON.parse(raw))
+    const saved = JSON.parse(raw)
+    if (saved.data_root) saved.data_root = normalizeDataRoot(saved.data_root)
+    Object.assign(settings, saved)
   } catch {
     window.localStorage.removeItem(SETTINGS_STORAGE_KEY)
   }
@@ -819,6 +846,26 @@ function parseSymbols(text: string) {
 function compactPath(path: string) {
   if (!path) return '未设置'
   return path.length > 34 ? `${path.slice(0, 16)}...${path.slice(-14)}` : path
+}
+
+function normalizeDataRoot(path: string) {
+  const text = String(path || '').trim().replace(/\/+$/, '')
+  if (!text) return ''
+  const parts = text.split('/')
+  const last = parts[parts.length - 1]?.toLowerCase() || ''
+  if (parts.length > 1 && KNOWN_TIMEFRAME_DIRS.has(last)) {
+    return parts.slice(0, -1).join('/') || '/'
+  }
+  return text
+}
+
+function timeframeDirectoryName(timeframe: string) {
+  return TIMEFRAME_DIR_NAMES[timeframe] || timeframe
+}
+
+function joinPath(root: string, child: string) {
+  const normalizedRoot = normalizeDataRoot(root).replace(/\/+$/, '')
+  return `${normalizedRoot}/${child}`.replace(/^\/\//, '/')
 }
 
 function formatInt(value: unknown) {

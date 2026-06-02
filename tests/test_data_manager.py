@@ -122,6 +122,17 @@ def test_data_management_service_force_download_uses_batch_and_progress(tmp_path
     assert "write_done" in [event["stage"] for event in events]
 
 
+def test_write_local_bars_separates_timeframe_directories_from_data_root(tmp_path: Path) -> None:
+    data_root = tmp_path / "market"
+
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=_bars())
+    write_local_bars(data_root=data_root, timeframe="5m", adjust="qfq", bars=_bars())
+
+    assert (data_root / "daily" / "qfq" / "000001.SZ.parquet").exists()
+    assert (data_root / "5m" / "qfq" / "000001.SZ.parquet").exists()
+    assert not (data_root / "qfq" / "000001.SZ.parquet").exists()
+
+
 def test_inventory_uses_parquet_metadata_for_standard_cache_files(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     data_root = tmp_path / "market" / "daily"
     write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=_bars())

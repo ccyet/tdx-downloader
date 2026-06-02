@@ -52,6 +52,8 @@ STAGE_LABELS = {
     "tdx_connection_ok": "连接成功",
     "tdx_connection_skipped": "未连接 TDX",
     "task_summary": "结果汇总",
+    "catalog_refresh_start": "刷新索引",
+    "catalog_refresh_done": "索引完成",
     "audit_start": "审计缓存",
     "audit_done": "审计完成",
     "fetch_start": "请求 TDX",
@@ -350,6 +352,17 @@ def _run_download_task(task_id: str, payload: DownloadPayload, mode: str) -> Non
                 else "本地缓存已覆盖当前任务，未建立 TDX 取数连接。"
             )
             _append_event(task_id, {"stage": "task_summary", "message": message})
+        _append_event(task_id, {"stage": "catalog_refresh_start", "message": "开始刷新缓存资产索引。"})
+        snapshot = service.cache_snapshot(
+            timeframes=SUPPORTED_TIMEFRAMES,
+            symbols=None,
+            tdx_path=payload.tdx_path,
+            rebuild_catalog=True,
+        )
+        _append_event(
+            task_id,
+            {"stage": "catalog_refresh_done", "message": f"缓存资产索引已刷新：{len(snapshot.catalog)} 条。"},
+        )
         table_payload = {"summary": _json_dict(result.summary), "records": _records(result.table)}
         _append_event(task_id, {"stage": "task_done", "message": "下载任务完成。"})
         _update_task(task_id, status="succeeded", finished_at=_now_text(), result=table_payload)

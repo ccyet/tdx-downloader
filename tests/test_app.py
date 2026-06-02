@@ -45,6 +45,8 @@ def test_app_renders_standalone_tdx_downloader_controls() -> None:
     assert not app.exception
     assert any("TDX Downloader" in item.value for item in app.markdown)
     assert any(item.label == "行情根目录路径" for item in app.text_input)
+    data_root_input = next(item for item in app.text_input if item.label == "行情根目录路径")
+    assert data_root_input.value == "/Volumes/ccOUT 1/tdx-data"
     assert any(item.label == "TDX PYPlugins/user路径" for item in app.text_input)
     assert sum(1 for button in app.button if button.label == "选择文件夹") >= 2
     assert any(item.label == "代码来源" for item in app.selectbox)

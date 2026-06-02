@@ -26,14 +26,14 @@ class _Args:
     allow_incomplete_after_update = False
 
 
-def test_default_data_root_points_to_external_tdx_data_daily_dir() -> None:
-    assert DEFAULT_DATA_ROOT == "/Volumes/ccOUT 1/tdx-data/daily"
+def test_default_data_root_points_to_external_tdx_data_root() -> None:
+    assert DEFAULT_DATA_ROOT == "/Volumes/ccOUT 1/tdx-data"
 
 
 def test_mac_volume_path_maps_to_parallels_mac_volume_share() -> None:
-    mapped = mac_path_to_parallels_shared_path("/Volumes/ccOUT 1/tdx-data/daily")
+    mapped = mac_path_to_parallels_shared_path("/Volumes/ccOUT 1/tdx-data")
 
-    assert mapped == r"\\psf\ccOUT 1\tdx-data\daily"
+    assert mapped == r"\\psf\ccOUT 1\tdx-data"
 
 
 def test_parallels_mounted_windows_drive_path_maps_back_to_drive_letter() -> None:
@@ -46,7 +46,7 @@ def test_forward_args_maps_default_data_root_for_windows_side_cli() -> None:
     forwarded = _forward_args(_Args())
 
     assert "--data-root" in forwarded
-    assert forwarded[forwarded.index("--data-root") + 1] == r"\\psf\ccOUT 1\tdx-data\daily"
+    assert forwarded[forwarded.index("--data-root") + 1] == r"\\psf\ccOUT 1\tdx-data"
 
 
 def test_forward_args_maps_selected_parallels_tdx_path_to_windows_drive() -> None:

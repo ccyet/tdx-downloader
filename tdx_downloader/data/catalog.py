@@ -6,7 +6,7 @@ import sqlite3
 
 import pandas as pd
 
-from tdx_downloader.data.schema import TIMEFRAME_DIR_NAMES, normalize_symbol
+from tdx_downloader.data.schema import canonical_data_root, normalize_symbol
 
 CATALOG_FILE_NAME = "market_data_catalog.sqlite"
 CATALOG_COLUMNS = [
@@ -209,10 +209,7 @@ def _init_catalog(connection: sqlite3.Connection) -> None:
 
 
 def _catalog_root(data_root: str | Path) -> Path:
-    root = Path(data_root).expanduser()
-    if root.name.lower() in set(TIMEFRAME_DIR_NAMES.values()):
-        return root.parent
-    return root
+    return canonical_data_root(data_root)
 
 
 def _symbol_name_map(symbol_metadata: pd.DataFrame | None) -> dict[str, str]:

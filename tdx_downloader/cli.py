@@ -15,7 +15,7 @@ from tdx_downloader.data.tdx_parallels import (
     run_parallels_tdx_command,
 )
 
-DEFAULT_DATA_ROOT = "/Volumes/ccOUT 1/tdx-data/daily"
+DEFAULT_DATA_ROOT = "/Volumes/ccOUT 1/tdx-data"
 
 
 def main(argv: list[str] | None = None) -> None:

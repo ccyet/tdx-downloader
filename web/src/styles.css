@@ -507,6 +507,40 @@ main {
   line-height: 1.15;
 }
 
+.timeframe-map {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.timeframe-map div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 9px 10px;
+}
+
+.timeframe-map span {
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.timeframe-map strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .stat-grid,
 .mini-grid {
   display: grid;
