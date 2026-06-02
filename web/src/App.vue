@@ -65,27 +65,63 @@
             <span v-if="overview && !overview.catalog_exists" class="hint-text">还没有 SQLite 索引，先扫描缓存。</span>
           </div>
 
-          <div class="stat-grid">
-            <MetricCard title="缓存标的" :value="formatInt(summary.symbol_count)" detail="SQLite catalog" tone="green" icon="database" />
-            <MetricCard title="可用缓存" :value="formatInt(summary.data_inventory_cached_count)" detail="质量门禁通过" tone="blue" icon="key" />
-            <MetricCard title="缺口项" :value="formatInt(summary.data_inventory_unavailable_count)" detail="缺文件或质量异常" tone="red" icon="alert" />
-            <MetricCard title="总行数" :value="formatInt(summary.data_inventory_total_rows)" detail="本地 parquet" tone="amber" icon="layers" />
-            <MetricCard title="周期数" :value="formatInt(summary.timeframe_count)" detail="1d / 1m / 5m" tone="indigo" icon="clock" />
-            <MetricCard title="文件体积" :value="formatBytes(summary.data_inventory_total_file_size_bytes)" detail="行情缓存" tone="purple" icon="archive" />
-            <MetricCard title="运行链路" :value="runtimeLabel" detail="下载任务后台执行" tone="green" icon="link" />
-            <MetricCard title="最近任务" :value="latestTaskText" detail="执行记录" tone="red" icon="activity" />
+          <div class="asset-overview-grid">
+            <article class="overview-hero-card">
+              <div class="asset-card-head">
+                <div class="asset-icon"><Icon name="database" /></div>
+                <div>
+                  <span>缓存资产总览</span>
+                  <strong>{{ formatInt(summary.symbol_count) }} 标的</strong>
+                </div>
+              </div>
+              <div class="dashboard-key-stats">
+                <div v-for="item in dashboardKeyStats" :key="item.label" class="dashboard-key-stat">
+                  <span>{{ item.label }}</span>
+                  <strong>{{ item.value }}</strong>
+                </div>
+              </div>
+            </article>
+
+            <article
+              v-for="asset in assetOverviewCards"
+              :key="asset.value"
+              :class="['asset-summary-card', asset.tone]"
+            >
+              <div class="asset-card-head">
+                <div class="asset-icon"><Icon :name="asset.icon" /></div>
+                <div>
+                  <span>缓存资产</span>
+                  <strong>{{ asset.label }}</strong>
+                </div>
+                <em>{{ formatInt(asset.coveredTimeframeCount) }} / {{ formatInt(asset.totalTimeframeCount) }} 周期</em>
+              </div>
+              <div class="asset-main-metric">
+                <strong>{{ formatInt(asset.symbolCount) }}</strong>
+                <span>标的 · {{ formatInt(asset.rows) }} 行 · {{ formatInt(asset.cachedPeriodItems) }} / {{ formatInt(asset.totalPeriodItems) }} 周期项可用</span>
+              </div>
+              <div class="timeframe-strip">
+                <div
+                  v-for="period in asset.periods"
+                  :key="period.timeframe"
+                  :class="['timeframe-chip', { active: period.cachedCount > 0 }]"
+                >
+                  <span>{{ period.timeframe }}</span>
+                  <strong>{{ formatInt(period.cachedCount) }} / {{ formatInt(period.totalCount) }}</strong>
+                </div>
+              </div>
+            </article>
           </div>
 
           <div class="content-grid two">
-            <Panel title="按资产类型拆分" subtitle="缓存资产">
-              <div v-if="assetRows.length" class="split-list">
-                <div v-for="row in assetRows" :key="row.asset_type" class="split-row">
-                  <strong>{{ row.asset_type_label || row.asset_type }}</strong>
+            <Panel title="周期覆盖概览" subtitle="缓存资产">
+              <div v-if="displayTimeframeRows.length" class="split-list">
+                <div v-for="row in displayTimeframeRows" :key="row.timeframe" class="split-row">
+                  <strong>{{ row.timeframe }}</strong>
                   <span>{{ formatInt(row.cached_count) }} 可用</span>
                   <em>{{ formatInt(row.unavailable_count) }} 缺口 · {{ formatInt(row.rows) }} 行</em>
                 </div>
               </div>
-              <EmptyState v-else title="暂无缓存拆分" body="扫描缓存后展示 ETF、个股、指数等分类。" />
+              <EmptyState v-else title="暂无周期覆盖" body="扫描缓存后展示不同周期的可用资产数量。" />
             </Panel>
 
             <div class="view-stack">
@@ -397,6 +433,12 @@ interface NoticePayload {
 
 type DirectoryField = 'data_root' | 'tdx_path'
 
+const IMPORTANT_ASSET_TYPES = [
+  { value: 'etf', label: 'ETF', tone: 'blue', icon: 'archive' },
+  { value: 'stock', label: '个股', tone: 'green', icon: 'key' },
+  { value: 'index', label: '指数', tone: 'indigo', icon: 'layers' }
+]
+
 const navItems = [
   { key: 'dashboard', label: '总览', title: 'TDX 数据运营工作台', description: '查看缓存资产、运行环境和最近任务。', icon: 'dashboard' },
   { key: 'download', label: '下载任务', title: '下载任务', description: '配置代码、周期、时间窗并在后台执行。', icon: 'download' },
@@ -459,6 +501,8 @@ const settings = reactive({
 const activeMeta = computed(() => navItems.find((item) => item.key === activeView.value) || navItems[0])
 const summary = computed(() => overview.value?.summary || {})
 const assetRows = computed(() => overview.value?.by_asset_type || [])
+const timeframeRows = computed(() => overview.value?.by_timeframe || [])
+const datasetRows = computed(() => overview.value?.by_dataset || [])
 const readinessRows = computed(() => overview.value?.readiness || [])
 const displayReadinessRows = computed(() => readinessRows.value.map((row: Record<string, any>) => displayRecord(row)))
 const cacheRows = computed(() => overview.value?.records || [])
@@ -498,6 +542,53 @@ const latestTask = computed(() => tasks.value[0])
 const latestTaskText = computed(() => latestTask.value ? latestTask.value.status : '无')
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value) || tasks.value[0] || null)
 const parsedSymbols = computed(() => parseSymbols(symbolsText.value))
+const overviewTimeframes = computed(() =>
+  sortTimeframes([
+    ...timeframeRows.value.map((row: Record<string, any>) => row.timeframe),
+    ...datasetRows.value.map((row: Record<string, any>) => row.timeframe)
+  ])
+)
+const displayTimeframeRows = computed(() =>
+  [...timeframeRows.value].sort(
+    (left: Record<string, any>, right: Record<string, any>) =>
+      timeframeRank(String(left.timeframe || '')) - timeframeRank(String(right.timeframe || ''))
+  )
+)
+const dashboardKeyStats = computed(() => [
+  { label: '资产类型', value: `${formatInt(summary.value.asset_type_count)} 类` },
+  {
+    label: '可用周期项',
+    value: `${formatInt(summary.value.data_inventory_cached_count)} / ${formatInt(summary.value.data_inventory_row_count)}`
+  },
+  { label: '缺口项', value: formatInt(summary.value.data_inventory_unavailable_count) },
+  { label: '总行数', value: formatInt(summary.value.data_inventory_total_rows) },
+  { label: '文件体积', value: formatBytes(summary.value.data_inventory_total_file_size_bytes) },
+  { label: '运行链路', value: runtimeLabel.value }
+])
+const assetOverviewCards = computed(() =>
+  IMPORTANT_ASSET_TYPES.map((asset) => {
+    const rows = datasetRows.value.filter((row: Record<string, any>) => row.asset_type === asset.value)
+    const aggregate = assetRows.value.find((row: Record<string, any>) => row.asset_type === asset.value) || {}
+    const periods = overviewTimeframes.value.map((timeframe) => {
+      const timeframeDatasetRows = rows.filter((row: Record<string, any>) => row.timeframe === timeframe)
+      const cachedCount = sumDatasetCount(timeframeDatasetRows, (row) => row.status === 'cached')
+      const totalCount = sumDatasetCount(timeframeDatasetRows)
+      return { timeframe, cachedCount, totalCount }
+    })
+    const symbolCount = Math.max(0, ...periods.map((period) => period.totalCount))
+    const coveredTimeframeCount = periods.filter((period) => period.cachedCount > 0).length
+    return {
+      ...asset,
+      symbolCount,
+      rows: numberValue(aggregate.rows),
+      periods,
+      coveredTimeframeCount,
+      totalTimeframeCount: periods.length,
+      cachedPeriodItems: sumDatasetCount(rows, (row) => row.status === 'cached'),
+      totalPeriodItems: sumDatasetCount(rows)
+    }
+  })
+)
 
 const readinessColumns = [
   { key: 'timeframe', label: '周期' },
@@ -748,8 +839,31 @@ function formatBytes(value: unknown) {
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
 }
 
+function numberValue(value: unknown) {
+  const numberValue = Number(value || 0)
+  return Number.isFinite(numberValue) ? numberValue : 0
+}
+
 function uniqueStrings(values: unknown[]) {
   return Array.from(new Set(values.map((value) => String(value || '')).filter(Boolean))).sort()
+}
+
+function sortTimeframes(values: unknown[]) {
+  return uniqueStrings(values).sort((left, right) => timeframeRank(left) - timeframeRank(right) || left.localeCompare(right))
+}
+
+function timeframeRank(value: string) {
+  const preferredOrder = ['1d', '1m', '5m', '15m', '30m', '60m']
+  const preferredIndex = preferredOrder.indexOf(value)
+  if (preferredIndex >= 0) return preferredIndex
+  const match = /^(\d+)([md])$/.exec(value)
+  if (!match) return Number.MAX_SAFE_INTEGER
+  const count = Number(match[1])
+  return match[2] === 'd' ? 1000 + count : 100 + count
+}
+
+function sumDatasetCount(rows: Array<Record<string, any>>, predicate: (row: Record<string, any>) => boolean = () => true) {
+  return rows.filter(predicate).reduce((total, row) => total + numberValue(row.count), 0)
 }
 
 function displayRecord(row: Record<string, any>) {
