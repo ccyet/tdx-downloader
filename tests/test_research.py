@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from tdx_downloader.research.history import HistorySearchConfig, search_history
-from tdx_downloader.research.review import ReviewConfig, analyze_price_review, rank_review_results
+from tdx_downloader.research.review import (
+    ReviewConfig,
+    analyze_price_review,
+    build_equal_weight_series,
+    rank_review_results,
+    render_multi_review_text,
+    render_multi_video_script_text,
+)
 from tdx_downloader.research.similarity import CrossSectionSearchConfig, search_cross_section
 
 
@@ -85,3 +93,44 @@ def test_review_ranking_uses_local_bars_without_external_sources() -> None:
 
     assert ranking["代码"].tolist()[0] == "000001.SZ"
     assert {"排名", "代码", "股票", "强弱等级", "区间收益", "最大回撤", "锐评结论"}.issubset(ranking.columns)
+
+
+def test_review_text_outputs_ranking_framework() -> None:
+    strong = _bars("000001.SZ", [10, 10.5, 11, 12, 13, 14])
+    weak = _bars("000002.SZ", [10, 9.8, 9.5, 9.7, 9.6, 9.4])
+    bars = pd.concat([strong, weak], ignore_index=True)
+    results = [
+        analyze_price_review(bars, ReviewConfig(symbol="000001.SZ", start="2026-01-01", end="2026-01-08")),
+        analyze_price_review(bars, ReviewConfig(symbol="000002.SZ", start="2026-01-01", end="2026-01-08")),
+    ]
+
+    review_text = render_multi_review_text(results, stock_names={"000001.SZ": "强势样例", "000002.SZ": "弱势样例"})
+    script_text = render_multi_video_script_text(results, stock_names={"000001.SZ": "强势样例", "000002.SZ": "弱势样例"})
+
+    assert "研究端排序复盘" in review_text
+    assert "排序总表" in review_text
+    assert "逐个锐评" in review_text
+    assert "强势样例（000001.SZ）" in review_text
+    assert "视频脚本视角" in script_text
+    assert "强势样例（000001.SZ）" in script_text
+
+
+def test_build_equal_weight_series_normalizes_without_dataframe_apply(monkeypatch: pytest.MonkeyPatch) -> None:
+    bars = pd.concat(
+        [
+            _bars("000001.SZ", [10, 11, 12]),
+            _bars("000002.SZ", [20, 21, 22]),
+        ],
+        ignore_index=True,
+    )
+
+    def fail_apply(*_: object, **__: object) -> None:
+        raise AssertionError("等权序列不应退回 DataFrame.apply 逐行处理。")
+
+    monkeypatch.setattr(pd.DataFrame, "apply", fail_apply)
+
+    result = build_equal_weight_series(bars, ("000001.SZ", "000002.SZ"), label="等权组合")
+
+    assert result.warning == ""
+    assert result.coverage == 1.0
+    assert result.frame["stock_code"].tolist() == ["等权组合", "等权组合", "等权组合"]

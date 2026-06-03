@@ -747,23 +747,27 @@ main {
   font-size: 12px;
 }
 
-.ai-interface {
+.ai-interface,
+.text-output {
   display: grid;
   gap: 12px;
 }
 
-.ai-interface label {
+.ai-interface label,
+.text-output label {
   display: grid;
   gap: 7px;
 }
 
-.ai-interface label > span {
+.ai-interface label > span,
+.text-output label > span {
   color: #475569;
   font-size: 12px;
   font-weight: 800;
 }
 
-.ai-interface textarea {
+.ai-interface textarea,
+.text-output textarea {
   width: 100%;
   border: 1px solid #dbe5ef;
   border-radius: 12px;

@@ -37,7 +37,14 @@ from tdx_downloader.data.parallels_runtime import download_with_runtime, should_
 from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES
 from tdx_downloader.data.storage import load_local_bars
 from tdx_downloader.research.history import HistorySearchConfig, search_history
-from tdx_downloader.research.review import ReviewConfig, analyze_price_review, build_comparison_stats, rank_review_results
+from tdx_downloader.research.review import (
+    ReviewConfig,
+    analyze_price_review,
+    build_comparison_stats,
+    rank_review_results,
+    render_multi_review_text,
+    render_multi_video_script_text,
+)
 from tdx_downloader.research.review_ai import build_multi_review_ai_evidence, build_review_ai_messages
 from tdx_downloader.research.similarity import CrossSectionSearchConfig, search_cross_section
 
@@ -387,6 +394,18 @@ def _register_routes(app: FastAPI) -> None:
                 warnings=warnings,
             )
             messages = build_review_ai_messages(evidence)
+            review_text = render_multi_review_text(
+                results,
+                comparisons,
+                stock_names=payload.stock_names,
+                direction_by_symbol=payload.direction_by_symbol,
+            )
+            video_script_text = render_multi_video_script_text(
+                results,
+                comparisons,
+                stock_names=payload.stock_names,
+                direction_by_symbol=payload.direction_by_symbol,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
@@ -413,6 +432,10 @@ def _register_routes(app: FastAPI) -> None:
             "ai": {
                 "evidence": _json_dict(evidence),
                 "messages": [_json_dict(message) for message in messages],
+            },
+            "text": {
+                "review": review_text,
+                "video_script": video_script_text,
             },
         }
 

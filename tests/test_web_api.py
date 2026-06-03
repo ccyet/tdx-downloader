@@ -262,3 +262,5 @@ def test_api_research_review_ranks_local_cache(tmp_path) -> None:
     assert data["ai"]["evidence"]["comparisons"][0]["标的"] == "000300.SH"
     assert data["ai"]["messages"][0]["role"] == "system"
     assert "critique" in data["ai"]["messages"][0]["content"]
+    assert "研究端排序复盘" in data["text"]["review"]
+    assert "视频脚本视角" in data["text"]["video_script"]

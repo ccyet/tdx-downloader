@@ -222,6 +222,90 @@ def rank_review_results(
     return ranking[columns]
 
 
+def render_review_text(
+    result: ReviewResult,
+    comparisons: pd.DataFrame | None = None,
+    *,
+    stock_names: dict[str, str] | None = None,
+    direction_by_symbol: dict[str, str] | None = None,
+) -> str:
+    if result.window.empty:
+        return "\n".join(f"- {warning}" for warning in result.warnings) or "- 没有可复盘的数据。"
+    return render_multi_review_text(
+        [result],
+        comparisons,
+        stock_names=stock_names,
+        direction_by_symbol=direction_by_symbol,
+    )
+
+
+def render_multi_review_text(
+    results: list[ReviewResult] | tuple[ReviewResult, ...],
+    comparisons: pd.DataFrame | None = None,
+    *,
+    stock_names: dict[str, str] | None = None,
+    direction_by_symbol: dict[str, str] | None = None,
+) -> str:
+    valid = [result for result in results if not result.window.empty]
+    if not valid:
+        return "- 没有可复盘的数据。"
+    ranking = rank_review_results(
+        valid,
+        comparisons,
+        stock_names=stock_names,
+        direction_by_symbol=direction_by_symbol,
+    )
+    returns = pd.Series([result.overview.get("return") for result in valid], dtype="float64").dropna()
+    best = ranking.iloc[0] if not ranking.empty else None
+    worst = ranking.iloc[-1] if not ranking.empty else None
+    lines = [
+        "**研究端排序复盘**",
+        f"**市场总环境**：{_market_environment_text(comparisons)}",
+        (
+            f"本次共复盘 {len(valid)} 个对象，平均区间收益 "
+            f"{_percent(returns.mean()) if not returns.empty else '-'}。"
+            f"排序第一是 {_ranking_row_title(best)}，最后是 {_ranking_row_title(worst)}。"
+        ),
+        "**排序总表**：",
+        _ranking_table_markdown(ranking),
+        "**逐个锐评**：",
+    ]
+    lines.extend(_ranked_review_paragraph(row) for _, row in ranking.iterrows())
+    lines.append("**关键转折点复盘**：")
+    lines.extend(_turning_point_lines(ranking))
+    lines.append("**明日验证**：")
+    lines.extend(_tomorrow_check_lines(ranking))
+    lines.append(
+        "**收束**："
+        f"重点看 {_ranking_row_title(best)} 的超额和承接；"
+        f"弱项看 {_ranking_row_title(worst)} 的破位、回撤和负超额。"
+    )
+    warnings = [warning for result in results for warning in result.warnings]
+    lines.extend(f"**提示**：{warning}" for warning in warnings)
+    return "\n\n".join(lines)
+
+
+def render_multi_video_script_text(
+    results: list[ReviewResult] | tuple[ReviewResult, ...],
+    comparisons: pd.DataFrame | None = None,
+    *,
+    stock_names: dict[str, str] | None = None,
+    direction_by_symbol: dict[str, str] | None = None,
+) -> str:
+    valid = [result for result in results if not result.window.empty]
+    if not valid:
+        return ""
+    ranking = rank_review_results(
+        valid,
+        comparisons,
+        stock_names=stock_names,
+        direction_by_symbol=direction_by_symbol,
+    )
+    lines = ["**视频脚本视角**："]
+    lines.extend(_video_script_block(row) for _, row in ranking.iterrows())
+    return "\n\n".join(lines)
+
+
 def _review_window(
     bars: pd.DataFrame,
     symbol: str,
@@ -428,6 +512,118 @@ def _tomorrow_check(turning_point: str, nature: str, grade: str) -> str:
     if grade in {"刷子", "路边"}:
         return f"观察{turning_point}附近是否继续反复。"
     return f"重点看{turning_point}后是否止跌。"
+
+
+def _market_environment_text(comparisons: pd.DataFrame | None) -> str:
+    if comparisons is None or comparisons.empty or "对比收益" not in comparisons.columns:
+        return "对比数据不足，先按个体超额、回撤和关键位置排序。"
+    values = pd.to_numeric(comparisons["对比收益"], errors="coerce").dropna()
+    if values.empty:
+        return "对比数据不足，先按个体超额、回撤和关键位置排序。"
+    average_return = float(values.mean())
+    return f"对标平均收益 {_percent(average_return)}，当前更像{_index_phase_label(average_return)}。"
+
+
+def _ranking_row_title(row: pd.Series | None) -> str:
+    if row is None:
+        return "-"
+    symbol = str(row.get("代码", "") or "").strip()
+    name = str(row.get("股票", "") or "").strip()
+    return f"{name}（{symbol}）" if name else symbol
+
+
+def _ranking_table_markdown(ranking: pd.DataFrame) -> str:
+    if ranking.empty:
+        return "没有可排序对象。"
+    columns = [
+        "排名",
+        "代码",
+        "股票",
+        "所属方向",
+        "对标指数",
+        "指数阶段",
+        "强弱等级",
+        "区间收益",
+        "最大回撤",
+        "相对超额",
+        "关键转折点",
+        "当前性质",
+        "锐评结论",
+        "明日验证",
+    ]
+    header = "| " + " | ".join(columns) + " |"
+    divider = "|" + "|".join("---:" if column == "排名" else "---" for column in columns) + "|"
+    rows: list[str] = []
+    for _, row in ranking.iterrows():
+        values: list[str] = []
+        for column in columns:
+            value = row.get(column, "-")
+            if column in {"区间收益", "最大回撤", "相对超额"}:
+                value = _percent(value)
+            values.append(str(value if str(value).strip() else "-").replace("\n", " "))
+        rows.append("| " + " | ".join(values) + " |")
+    return "\n".join([header, divider, *rows])
+
+
+def _ranked_review_paragraph(row: pd.Series) -> str:
+    title = _ranking_row_title(row)
+    return "\n".join(
+        [
+            f"**{title}**",
+            _ranking_reason(row),
+            (
+                f"数据：收益 {_percent(row['区间收益'])}，回撤 {_percent(row['最大回撤'])}，"
+                f"超额 {_percent(row['相对超额'])}。"
+            ),
+            f"结论：{row['当前性质']}，卡在{row['关键转折点']}，{row['锐评结论']}",
+        ]
+    )
+
+
+def _ranking_reason(row: pd.Series) -> str:
+    grade = str(row.get("强弱等级", "") or "")
+    excess = _numeric(row.get("相对超额"), default=float("nan"))
+    drawdown = _numeric(row.get("最大回撤"), default=float("nan"))
+    if grade in {"夯爆了", "人上人"} and np.isfinite(excess) and excess >= 0:
+        return "强度靠前，有超额也有承接。"
+    if grade == "立棍单打":
+        return "相对独立，强弱更多来自自身节奏。"
+    if np.isfinite(drawdown) and drawdown <= -0.15:
+        return "涨幅有表现，但回撤体验拖累排序。"
+    if grade in {"路边", "NPC"}:
+        return "超额和承接还不突出，先按跟随行情看。"
+    if grade == "拉完了":
+        return "区间破位或明显跑输，先降级观察。"
+    return "按收益、回撤、上涨K占比和相对超额综合排序。"
+
+
+def _turning_point_lines(ranking: pd.DataFrame) -> list[str]:
+    if ranking.empty:
+        return ["- 暂无关键转折点。"]
+    return [
+        f"- {_ranking_row_title(row)}：当前卡在{row['关键转折点']}，性质是{row['当前性质']}。"
+        for _, row in ranking.iterrows()
+    ]
+
+
+def _tomorrow_check_lines(ranking: pd.DataFrame) -> list[str]:
+    if ranking.empty:
+        return ["- 暂无明日验证条件。"]
+    return [f"- {_ranking_row_title(row)}：{row['明日验证']}" for _, row in ranking.iterrows()]
+
+
+def _video_script_block(row: pd.Series) -> str:
+    return "\n".join(
+        [
+            f"**{_ranking_row_title(row)}**",
+            f"一句话：{row['锐评结论']}",
+            (
+                f"数据：收益 {_percent(row['区间收益'])}，回撤 {_percent(row['最大回撤'])}，"
+                f"超额 {_percent(row['相对超额'])}。"
+            ),
+            f"结局：{row['当前性质']}，卡点在{row['关键转折点']}。",
+        ]
+    )
 
 
 def _aligned_close_frame(target: pd.DataFrame, comparison: pd.DataFrame) -> pd.DataFrame:

@@ -466,6 +466,19 @@
               <Panel title="关键波段" subtitle="首位标的">
                 <DataTable :rows="displaySegmentRows" :columns="segmentColumns" empty="暂无关键波段。" />
               </Panel>
+              <Panel title="复盘文本" subtitle="默认输出">
+                <div v-if="reviewText || videoScriptText" class="text-output">
+                  <label>
+                    <span>排序复盘</span>
+                    <textarea :value="reviewText" rows="10" readonly></textarea>
+                  </label>
+                  <label>
+                    <span>视频脚本</span>
+                    <textarea :value="videoScriptText" rows="7" readonly></textarea>
+                  </label>
+                </div>
+                <EmptyState v-else title="暂无复盘文本" body="生成复盘后展示默认排序复盘和视频脚本。" />
+              </Panel>
               <Panel title="AI 锐评接口" subtitle="证据与提示词">
                 <div v-if="reviewResult?.ai" class="ai-interface">
                   <div class="kv-list compact">
@@ -792,6 +805,8 @@ const displaySegmentRows = computed(() =>
 )
 const aiMessagesText = computed(() => JSON.stringify(reviewResult.value?.ai?.messages || [], null, 2))
 const aiEvidenceText = computed(() => JSON.stringify(reviewResult.value?.ai?.evidence || {}, null, 2))
+const reviewText = computed(() => String(reviewResult.value?.text?.review || ''))
+const videoScriptText = computed(() => String(reviewResult.value?.text?.video_script || ''))
 const uniqueCacheTimeframes = computed(() => uniqueStrings(cacheRows.value.map((row: Record<string, any>) => row.timeframe)))
 const uniqueCacheStatuses = computed(() =>
   uniqueStrings(cacheRows.value.map((row: Record<string, any>) => row.status)).map((value) => ({
