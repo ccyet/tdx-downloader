@@ -507,7 +507,7 @@
             </Panel>
           </section>
 
-          <section v-else class="content-grid two">
+          <section v-else class="content-grid two research-review-grid">
             <Panel title="多股复盘" subtitle="排序锐评">
               <form class="task-form" @submit.prevent="runReviewSearch">
                 <div class="inline-fields span-full">

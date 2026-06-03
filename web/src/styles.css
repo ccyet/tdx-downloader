@@ -640,6 +640,10 @@ main {
   grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
 }
 
+.research-review-grid {
+  align-items: start;
+}
+
 .form-grid {
   grid-template-columns: minmax(340px, 0.8fr) minmax(0, 1.2fr);
 }
