@@ -7,6 +7,7 @@ import pandas as pd
 from tdx_downloader.data import parallels_runtime
 from tdx_downloader.data.manager import DataDownloadConfig, DataDownloadResult
 from tdx_downloader.data.parallels_runtime import (
+    download_with_parallels_cli,
     download_with_runtime,
     parse_cli_table,
     parallels_doctor_command,
@@ -92,6 +93,50 @@ def test_parallels_commands_request_json_output() -> None:
     assert prepare[prepare.index("--output") + 1] == "json"
     assert doctor[-2:] == ["--output", "json"]
     assert "--data-root" not in doctor
+
+
+def test_parallels_download_splits_large_symbol_lists(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class Service:
+        data_root = Path("/Volumes/ccOUT 1/tdx-data")
+        adjust = "qfq"
+
+    commands: list[list[str]] = []
+
+    def skip_connection_check(*_: object, **__: object) -> pd.DataFrame:
+        return pd.DataFrame({"status": ["ok"]})
+
+    def fake_run_table(command: list[str]) -> pd.DataFrame:
+        commands.append(command)
+        symbols = command[command.index("--symbols") + 1].split(",")
+        return pd.DataFrame(
+            {
+                "stock_code": symbols,
+                "timeframe": ["1d"] * len(symbols),
+                "action": ["fetched"] * len(symbols),
+                "rows_written": [1] * len(symbols),
+                "new_rows": [1] * len(symbols),
+            }
+        )
+
+    monkeypatch.setattr(parallels_runtime, "verify_parallels_tdx_connection", skip_connection_check)
+    monkeypatch.setattr(parallels_runtime, "run_parallels_cli_table", fake_run_table)
+    symbols = tuple(f"{index:06d}.SZ" for index in range(250))
+
+    result = download_with_parallels_cli(
+        Service(),  # type: ignore[arg-type]
+        DataDownloadConfig(
+            symbols=symbols,
+            timeframes=("1d",),
+            start="2026-06-01",
+            end="2026-06-02",
+            batch_size=100,
+        ),
+        mode="smart",
+    )
+
+    assert len(commands) == 3
+    assert [len(command[command.index("--symbols") + 1].split(",")) for command in commands] == [100, 100, 50]
+    assert len(result.table) == 250
 
 
 def test_symbol_groups_runtime_uses_parallels_when_local_dynamic_groups_missing(monkeypatch) -> None:  # type: ignore[no-untyped-def]

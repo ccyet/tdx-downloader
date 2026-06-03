@@ -93,18 +93,43 @@ def download_with_parallels_cli(
 ) -> DataDownloadResult:
     verify_parallels_tdx_connection(service, config, progress_callback=progress_callback)
     if mode == "smart":
-        _emit_progress(progress_callback, stage="parallels_command_start", message="Windows 侧开始执行智能补齐。")
-        table = run_parallels_cli_table(parallels_prepare_command(service, config))
-    elif mode == "force":
-        _emit_progress(progress_callback, stage="parallels_command_start", message="Windows 侧开始执行强制刷新。")
-        frames = [
-            force_cli_frame(
-                run_parallels_cli_table(parallels_fetch_command(service, config, timeframe)),
-                timeframe=timeframe,
-                adjust=service.adjust,
+        frames: list[pd.DataFrame] = []
+        batches = _symbol_batches(config)
+        for batch_index, batch_config in enumerate(batches, start=1):
+            _emit_progress(
+                progress_callback,
+                stage="parallels_command_start",
+                message=f"Windows 侧开始执行智能补齐：第 {batch_index}/{len(batches)} 批。",
+                batch_index=batch_index,
+                batch_count=len(batches),
+                symbol_count=len(batch_config.symbols),
             )
-            for timeframe in config.timeframes
-        ]
+            frames.append(run_parallels_cli_table(parallels_prepare_command(service, batch_config)))
+        table = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    elif mode == "force":
+        frames = []
+        batches = _symbol_batches(config)
+        step_count = len(config.timeframes) * len(batches)
+        step_index = 0
+        for timeframe in config.timeframes:
+            for batch_config in batches:
+                step_index += 1
+                _emit_progress(
+                    progress_callback,
+                    stage="parallels_command_start",
+                    message=f"Windows 侧开始执行强制刷新：{timeframe} 第 {step_index}/{step_count} 步。",
+                    timeframe=timeframe,
+                    step_index=step_index,
+                    step_count=step_count,
+                    symbol_count=len(batch_config.symbols),
+                )
+                frames.append(
+                    force_cli_frame(
+                        run_parallels_cli_table(parallels_fetch_command(service, batch_config, timeframe)),
+                        timeframe=timeframe,
+                        adjust=service.adjust,
+                    )
+                )
         table = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     else:
         raise RuntimeError(f"未知下载方式：{mode}")
@@ -356,6 +381,24 @@ def force_cli_frame(frame: pd.DataFrame, *, timeframe: str, adjust: str) -> pd.D
     result["adjust"] = adjust
     result["action"] = "fetched"
     return result
+
+
+def _symbol_batches(config: DataDownloadConfig) -> list[DataDownloadConfig]:
+    batch_size = max(int(config.batch_size or 1), 1)
+    symbols = list(config.symbols)
+    return [
+        DataDownloadConfig(
+            symbols=tuple(symbols[index : index + batch_size]),
+            timeframes=config.timeframes,
+            start=config.start,
+            end=config.end,
+            tqcenter_path=config.tqcenter_path,
+            batch_size=config.batch_size,
+            min_coverage_ratio=config.min_coverage_ratio,
+            strict_after_update=config.strict_after_update,
+        )
+        for index in range(0, len(symbols), batch_size)
+    ]
 
 
 def _emit_progress(callback, **payload: object) -> None:
