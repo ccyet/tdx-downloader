@@ -58,8 +58,26 @@ def test_api_symbol_groups_uses_current_local_symbol_metadata(tmp_path) -> None:
 
     assert response.status_code == 200
     groups = {group["name"]: group["symbols"] for group in response.json()["groups"]}
+    assert groups["ETF列表"] == ["510300.SH"]
     assert groups["全A股票"] == ["000001.SZ", "600000.SH"]
     assert groups["板块指数"] == ["880001.SH"]
+
+
+def test_api_symbol_groups_forwards_refresh_target(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    received: list[str] = []
+
+    def fake_symbol_groups(data_root: str, tdx_path: str, *, target: str = "") -> list[dict[str, object]]:
+        received.append(target)
+        return [{"name": "ETF列表", "symbols": ["510300.SH"]}]
+
+    monkeypatch.setattr(web_api, "shortcut_symbol_groups_with_runtime", fake_symbol_groups)
+    client = TestClient(create_app())
+
+    response = client.get("/api/symbol-groups", params={"target": "etf"})
+
+    assert response.status_code == 200
+    assert response.json()["groups"] == [{"name": "ETF列表", "symbols": ["510300.SH"]}]
+    assert received == ["etf"]
 
 
 def test_api_overview_does_not_require_existing_catalog(tmp_path) -> None:

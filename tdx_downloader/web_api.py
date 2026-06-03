@@ -219,9 +219,10 @@ def _register_routes(app: FastAPI) -> None:
     def symbol_groups(
         data_root: str = DEFAULT_DATA_ROOT,
         tdx_path: str = DEFAULT_TDX_PATH,
+        target: str = "",
     ) -> dict[str, Any]:
         try:
-            groups = shortcut_symbol_groups_with_runtime(data_root, tdx_path)
+            groups = shortcut_symbol_groups_with_runtime(data_root, tdx_path, target=target)
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"groups": groups}

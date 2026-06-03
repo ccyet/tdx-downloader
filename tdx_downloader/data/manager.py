@@ -261,7 +261,7 @@ def shortcut_symbol_groups(
     if symbol_metadata is None and data_root is not None:
         symbol_metadata = load_symbol_metadata(data_root, tdx_path=tdx_path)
     dynamic_groups = _dynamic_shortcut_groups(symbol_metadata)
-    for name in ("板块指数", "全A股票"):
+    for name in ("ETF列表", "板块指数", "全A股票"):
         symbols = dynamic_groups.get(name, ())
         if symbols:
             groups.append({"name": name, "symbols": list(symbols)})
@@ -270,8 +270,9 @@ def shortcut_symbol_groups(
 
 def _dynamic_shortcut_groups(metadata: pd.DataFrame | None) -> dict[str, tuple[str, ...]]:
     if metadata is None or metadata.empty:
-        return {"全A股票": (), "板块指数": ()}
+        return {"ETF列表": (), "全A股票": (), "板块指数": ()}
     all_a: list[str] = []
+    etfs: list[str] = []
     sector_indexes: list[str] = []
     for row in metadata.itertuples(index=False):
         symbol = normalize_symbol(getattr(row, "stock_code", ""))
@@ -280,12 +281,16 @@ def _dynamic_shortcut_groups(metadata: pd.DataFrame | None) -> dict[str, tuple[s
         name = str(getattr(row, "stock_name", "") or "")
         code, exchange = symbol.split(".", 1)
         asset_type = infer_asset_type(symbol, name)
+        if asset_type == "etf":
+            etfs.append(symbol)
+            continue
         if asset_type == "stock":
             all_a.append(symbol)
             continue
         if asset_type == "index" and exchange == "SH" and code.startswith("880"):
             sector_indexes.append(symbol)
     return {
+        "ETF列表": tuple(sorted(unique_symbols(etfs))),
         "全A股票": tuple(sorted(unique_symbols(all_a))),
         "板块指数": tuple(sorted(unique_symbols(sector_indexes))),
     }

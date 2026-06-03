@@ -119,8 +119,30 @@
         <section v-else-if="activeView === 'download'" class="content-grid form-grid">
           <Panel title="下载参数" subtitle="任务配置">
             <form class="task-form" @submit.prevent="previewPlan">
-              <label>
-                <span>代码来源</span>
+              <label class="span-full symbol-source-field">
+                <div class="field-head">
+                  <span>代码来源</span>
+                  <div class="field-actions">
+                    <button
+                      class="mini-action"
+                      type="button"
+                      :disabled="loadingSymbolGroups"
+                      @click="refreshShortcutGroup('index')"
+                    >
+                      <Icon name="refresh" />
+                      {{ refreshingSymbolGroup === 'index' ? '刷新中' : '刷新指数' }}
+                    </button>
+                    <button
+                      class="mini-action"
+                      type="button"
+                      :disabled="loadingSymbolGroups"
+                      @click="refreshShortcutGroup('etf')"
+                    >
+                      <Icon name="refresh" />
+                      {{ refreshingSymbolGroup === 'etf' ? '刷新中' : '刷新ETF' }}
+                    </button>
+                  </div>
+                </div>
                 <select v-model="selectedGroup" :disabled="loadingSymbolGroups" @change="applySymbolGroup">
                   <option value="custom">自定义</option>
                   <option v-for="group in config?.symbol_groups || []" :key="group.name" :value="group.name">
@@ -656,6 +678,7 @@ interface NoticePayload {
 
 type DirectoryField = 'data_root' | 'tdx_path'
 type ResearchTabKey = 'history' | 'cross' | 'review'
+type SymbolRefreshTarget = 'index' | 'etf'
 
 interface ResearchSnapshot {
   id: string
@@ -729,6 +752,7 @@ const planning = ref(false)
 const downloading = ref(false)
 const loadingOverview = ref(false)
 const loadingSymbolGroups = ref(false)
+const refreshingSymbolGroup = ref<SymbolRefreshTarget | ''>('')
 const clearingTasks = ref(false)
 const runningResearch = ref<ResearchTabKey | ''>('')
 const activeResearchTab = ref<ResearchTabKey>('history')
@@ -1006,38 +1030,63 @@ async function loadConfig() {
   void loadSymbolGroups(true)
 }
 
-async function loadSymbolGroups(preserveSelected: boolean) {
+async function loadSymbolGroups(preserveSelected: boolean, refreshTarget: SymbolRefreshTarget | '' = '') {
   loadingSymbolGroups.value = true
   const previousGroup = selectedGroup.value
   const previousSymbols = symbolsText.value
+  let succeeded = false
   try {
     settings.data_root = normalizeDataRoot(settings.data_root)
     const params = new URLSearchParams({
       data_root: settings.data_root,
       tdx_path: settings.tdx_path
     })
+    if (refreshTarget) params.set('target', refreshTarget)
     const data = await apiGet(`/symbol-groups?${params.toString()}`)
     if (config.value) config.value.symbol_groups = (data.groups || []).filter(isSymbolGroup)
+    succeeded = true
   } catch (error) {
     showError('快捷代码加载失败', error)
   } finally {
     loadingSymbolGroups.value = false
   }
-  if (preserveSelected && previousGroup === 'custom') return
+  if (!succeeded) return false
+  if (preserveSelected && previousGroup === 'custom') return true
   const refreshed = config.value?.symbol_groups.find((item) => item.name === previousGroup)
   if (preserveSelected && refreshed) {
     symbolsText.value = refreshed.symbols.join('\n')
-    return
+    return true
   }
   if (preserveSelected) {
     selectedGroup.value = 'custom'
     symbolsText.value = previousSymbols
-    return
+    return true
   }
   const firstGroup = config.value?.symbol_groups?.[0]
   if (firstGroup) {
     selectedGroup.value = firstGroup.name
     symbolsText.value = firstGroup.symbols.join('\n')
+  }
+  return true
+}
+
+async function refreshShortcutGroup(target: SymbolRefreshTarget) {
+  const targetGroup = target === 'index' ? '板块指数' : 'ETF列表'
+  const targetLabel = target === 'index' ? '指数' : 'ETF'
+  refreshingSymbolGroup.value = target
+  try {
+    const loaded = await loadSymbolGroups(true, target)
+    if (!loaded) return
+    const group = config.value?.symbol_groups.find((item) => item.name === targetGroup)
+    if (!group || !group.symbols.length) {
+      showNotice('info', `${targetLabel}列表为空`, `未从当前 TDX 路径读取到${targetLabel}列表，请检查 TDX PYPlugins/user 或代码表。`)
+      return
+    }
+    selectedGroup.value = group.name
+    symbolsText.value = group.symbols.join('\n')
+    showNotice('success', `${targetLabel}列表已刷新`, `${group.name} 已读取 ${formatInt(group.symbols.length)} 只。`)
+  } finally {
+    refreshingSymbolGroup.value = ''
   }
 }
 

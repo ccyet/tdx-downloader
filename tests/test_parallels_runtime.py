@@ -103,6 +103,7 @@ def test_symbol_groups_runtime_uses_parallels_when_local_dynamic_groups_missing(
         commands.append(command)
         return [
             {"name": "核心样例", "symbols": ["000001.SZ"]},
+            {"name": "ETF列表", "symbols": ["510300.SH"]},
             {"name": "板块指数", "symbols": ["880001.SH"]},
             {"name": "全A股票", "symbols": ["000001.SZ", "600000.SH"]},
         ]
@@ -116,9 +117,29 @@ def test_symbol_groups_runtime_uses_parallels_when_local_dynamic_groups_missing(
         Path("/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"),
     )
 
-    assert {group["name"] for group in groups} >= {"板块指数", "全A股票"}
+    assert {group["name"] for group in groups} >= {"ETF列表", "板块指数", "全A股票"}
     assert commands[0][2:6] == ["tdx_downloader.cli", "symbol-groups", "--runtime", "parallels"]
     assert commands[0][-2:] == ["--output", "json"]
+
+
+def test_symbol_groups_target_does_not_require_unrelated_dynamic_groups(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def local_groups(*_: object, **__: object) -> list[dict[str, object]]:
+        return [{"name": "ETF列表", "symbols": ["510300.SH"]}]
+
+    def fail_windows_records(command: list[str]) -> list[dict[str, object]]:
+        raise AssertionError(f"targeted ETF refresh should not call Windows CLI: {command}")
+
+    monkeypatch.setattr(parallels_runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(parallels_runtime, "shortcut_symbol_groups", local_groups)
+    monkeypatch.setattr(parallels_runtime, "run_parallels_cli_records", fail_windows_records)
+
+    groups = shortcut_symbol_groups_with_runtime(
+        Path("/Volumes/ccOUT 1/tdx-data"),
+        Path("/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"),
+        target="etf",
+    )
+
+    assert groups == [{"name": "ETF列表", "symbols": ["510300.SH"]}]
 
 
 def test_symbol_groups_parallels_timeout_is_explicit(monkeypatch) -> None:  # type: ignore[no-untyped-def]

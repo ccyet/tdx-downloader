@@ -17,7 +17,12 @@ from tdx_downloader.data.manager import (
     shortcut_symbol_groups,
 )
 
-DYNAMIC_SYMBOL_GROUP_NAMES = frozenset({"板块指数", "全A股票"})
+DYNAMIC_SYMBOL_GROUP_NAMES = frozenset({"ETF列表", "板块指数", "全A股票"})
+DYNAMIC_SYMBOL_GROUP_TARGETS = {
+    "etf": frozenset({"ETF列表"}),
+    "index": frozenset({"板块指数"}),
+    "stock": frozenset({"全A股票"}),
+}
 PARALLELS_SYMBOL_GROUP_TIMEOUT_SECONDS = 12
 
 
@@ -44,9 +49,15 @@ def download_with_runtime(
     return service.download(config, mode=mode, progress_callback=progress_callback)
 
 
-def shortcut_symbol_groups_with_runtime(data_root: str | Path, tdx_path: str | Path) -> list[dict[str, object]]:
+def shortcut_symbol_groups_with_runtime(
+    data_root: str | Path,
+    tdx_path: str | Path,
+    *,
+    target: str = "",
+) -> list[dict[str, object]]:
     groups = shortcut_symbol_groups(data_root=data_root, tdx_path=tdx_path)
-    if not should_use_parallels_runtime() or _has_dynamic_symbol_groups(groups):
+    required_groups = _required_dynamic_symbol_groups(target)
+    if not should_use_parallels_runtime() or _has_dynamic_symbol_groups(groups, required_groups):
         return groups
     records = run_parallels_cli_records(parallels_symbol_groups_command(data_root, tdx_path))
     return _normalize_symbol_group_records(records)
@@ -321,9 +332,19 @@ def _emit_progress(callback, **payload: object) -> None:
         callback(payload)
 
 
-def _has_dynamic_symbol_groups(groups: list[dict[str, object]]) -> bool:
+def _required_dynamic_symbol_groups(target: str) -> frozenset[str]:
+    normalized = str(target or "").strip().lower()
+    if not normalized:
+        return DYNAMIC_SYMBOL_GROUP_NAMES
+    try:
+        return DYNAMIC_SYMBOL_GROUP_TARGETS[normalized]
+    except KeyError as exc:
+        raise RuntimeError(f"未知快捷代码刷新目标：{target}") from exc
+
+
+def _has_dynamic_symbol_groups(groups: list[dict[str, object]], required_groups: frozenset[str]) -> bool:
     names = {str(group.get("name", "")) for group in groups if group.get("symbols")}
-    return DYNAMIC_SYMBOL_GROUP_NAMES.issubset(names)
+    return required_groups.issubset(names)
 
 
 def _normalize_symbol_group_records(records: list[dict[str, Any]]) -> list[dict[str, object]]:
