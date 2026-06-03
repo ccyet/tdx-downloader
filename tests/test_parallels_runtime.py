@@ -12,6 +12,7 @@ from tdx_downloader.data.parallels_runtime import (
     parallels_doctor_command,
     parallels_prepare_command,
     shortcut_symbol_groups_with_runtime,
+    symbol_metadata_with_runtime,
 )
 
 
@@ -140,6 +141,38 @@ def test_symbol_groups_target_does_not_require_unrelated_dynamic_groups(monkeypa
     )
 
     assert groups == [{"name": "ETF列表", "symbols": ["510300.SH"]}]
+
+
+def test_symbol_metadata_runtime_uses_windows_when_local_metadata_missing(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    commands: list[list[str]] = []
+
+    def empty_local_metadata(*_: object, **__: object) -> pd.DataFrame:
+        return pd.DataFrame(columns=["stock_code", "stock_name", "source", "path"])
+
+    def windows_records(command: list[str], **_: object) -> list[dict[str, object]]:
+        commands.append(command)
+        return [
+            {
+                "stock_code": "000750.SZ",
+                "stock_name": "国海证券",
+                "source": "tdx_tnf",
+                "path": r"C:\new_tdx64\T0002\hq_cache\szs.tnf",
+            }
+        ]
+
+    monkeypatch.setattr(parallels_runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(parallels_runtime, "load_symbol_metadata", empty_local_metadata)
+    monkeypatch.setattr(parallels_runtime, "run_parallels_cli_records", windows_records)
+
+    metadata = symbol_metadata_with_runtime(
+        Path("/Volumes/ccOUT 1/tdx-data"),
+        Path("/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"),
+    )
+
+    assert metadata.loc[0, "stock_code"] == "000750.SZ"
+    assert metadata.loc[0, "stock_name"] == "国海证券"
+    assert commands[0][2:6] == ["tdx_downloader.cli", "symbol-metadata", "--runtime", "parallels"]
+    assert commands[0][-2:] == ["--output", "json"]
 
 
 def test_symbol_groups_parallels_timeout_is_explicit(monkeypatch) -> None:  # type: ignore[no-untyped-def]

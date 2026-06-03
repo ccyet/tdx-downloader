@@ -12,6 +12,7 @@ from tdx_downloader.data.manager import (
     shortcut_symbol_groups,
 )
 from tdx_downloader.data.repository import MarketDataRepository
+from tdx_downloader.data.symbols import load_symbol_metadata
 from tdx_downloader.data.tdx import diagnose_tdx_source
 from tdx_downloader.data.tdx_parallels import (
     ParallelsTdxConfig,
@@ -84,8 +85,14 @@ def main(argv: list[str] | None = None) -> None:
     groups_parser.add_argument("--output", choices=["table", "json"], default="table")
     _add_runtime_args(groups_parser)
 
+    metadata_parser = subparsers.add_parser("symbol-metadata", help="list symbol names from local TDX metadata")
+    metadata_parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
+    metadata_parser.add_argument("--tdx-path", default="")
+    metadata_parser.add_argument("--output", choices=["table", "json"], default="table")
+    _add_runtime_args(metadata_parser)
+
     args = parser.parse_args(argv)
-    if args.command in {"tdx-doctor", "fetch", "prepare-data", "symbol-groups"} and _resolve_runtime(args.runtime) == "parallels":
+    if args.command in {"tdx-doctor", "fetch", "prepare-data", "symbol-groups", "symbol-metadata"} and _resolve_runtime(args.runtime) == "parallels":
         _run_in_parallels(args)
         return
 
@@ -94,6 +101,10 @@ def main(argv: list[str] | None = None) -> None:
             shortcut_symbol_groups(data_root=args.data_root, tdx_path=args.tdx_path),
             args.output,
         )
+        return
+
+    if args.command == "symbol-metadata":
+        _print_frame(load_symbol_metadata(args.data_root, tdx_path=args.tdx_path), args.output)
         return
 
     symbols = _split_csv(args.symbols)

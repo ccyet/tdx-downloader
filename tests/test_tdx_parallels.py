@@ -74,6 +74,18 @@ def test_forward_args_maps_symbol_groups_paths_for_windows_cli() -> None:
     assert forwarded[-2:] == ["--output", "json"]
 
 
+def test_forward_args_maps_symbol_metadata_paths_for_windows_cli() -> None:
+    args = _SymbolGroupsArgs()
+    args.command = "symbol-metadata"
+
+    forwarded = _forward_args(args)
+
+    assert forwarded[:3] == ["symbol-metadata", "--runtime", "local"]
+    assert forwarded[forwarded.index("--data-root") + 1] == r"\\psf\ccOUT 1\tdx-data"
+    assert forwarded[forwarded.index("--tdx-path") + 1] == r"C:\new_tdx64\PYPlugins\user"
+    assert forwarded[-2:] == ["--output", "json"]
+
+
 def test_parallels_command_runs_windows_cli_inside_repo() -> None:
     config = ParallelsTdxConfig(
         vm_name="Windows 11",

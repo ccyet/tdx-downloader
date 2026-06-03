@@ -92,6 +92,42 @@ def test_api_overview_does_not_require_existing_catalog(tmp_path) -> None:
     assert data["summary"]["catalog_row_count"] == 0.0
 
 
+def test_api_overview_refresh_imports_symbol_names(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    write_local_bars(
+        data_root=tmp_path,
+        timeframe="1d",
+        adjust="qfq",
+        bars=_bars("000750.SZ", [10.0, 10.5]),
+    )
+
+    def fake_symbol_metadata(data_root: str, tdx_path: str) -> pd.DataFrame:
+        assert data_root == str(tmp_path)
+        assert tdx_path == "C:\\new_tdx64\\PYPlugins\\user"
+        return pd.DataFrame(
+            [
+                {
+                    "stock_code": "000750.SZ",
+                    "stock_name": "国海证券",
+                    "source": "tdx_tnf",
+                    "path": "C:\\new_tdx64\\T0002\\hq_cache\\szs.tnf",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(web_api, "symbol_metadata_with_runtime", fake_symbol_metadata)
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/overview",
+        params={"data_root": str(tmp_path), "tdx_path": "C:\\new_tdx64\\PYPlugins\\user", "refresh": "true"},
+    )
+
+    assert response.status_code == 200
+    records = response.json()["records"]
+    assert records[0]["stock_code"] == "000750.SZ"
+    assert records[0]["stock_name"] == "国海证券"
+
+
 def test_api_download_requires_symbols() -> None:
     client = TestClient(create_app())
 

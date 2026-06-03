@@ -87,12 +87,13 @@ class DataManagementService:
         symbols: tuple[str, ...] | list[str] | None = None,
         asset_types: tuple[str, ...] | list[str] | None = None,
         tdx_path: str | Path = "",
+        symbol_metadata: pd.DataFrame | None = None,
         rebuild_catalog: bool = True,
     ) -> DataCacheSnapshot:
         normalized_timeframes = normalize_timeframes(timeframes)
         normalized_symbols = normalize_symbol_tuple(symbols) if symbols is not None else None
         inventory = self.repository.inventory(timeframes=normalized_timeframes, symbols=normalized_symbols)
-        metadata = self.repository.symbol_metadata(tdx_path=tdx_path)
+        metadata = symbol_metadata if symbol_metadata is not None else self.repository.symbol_metadata(tdx_path=tdx_path)
         catalog = enrich_inventory_for_catalog(inventory, symbol_metadata=metadata)
         catalog_path = catalog_path_for(self.data_root)
         if rebuild_catalog:

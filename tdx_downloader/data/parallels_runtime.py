@@ -16,6 +16,8 @@ from tdx_downloader.data.manager import (
     download_summary,
     shortcut_symbol_groups,
 )
+from tdx_downloader.data.schema import normalize_symbol
+from tdx_downloader.data.symbols import SYMBOL_METADATA_COLUMNS, load_symbol_metadata
 
 DYNAMIC_SYMBOL_GROUP_NAMES = frozenset({"ETF列表", "板块指数", "全A股票"})
 DYNAMIC_SYMBOL_GROUP_TARGETS = {
@@ -24,6 +26,7 @@ DYNAMIC_SYMBOL_GROUP_TARGETS = {
     "stock": frozenset({"全A股票"}),
 }
 PARALLELS_SYMBOL_GROUP_TIMEOUT_SECONDS = 12
+PARALLELS_SYMBOL_METADATA_TIMEOUT_SECONDS = 30
 
 
 def should_use_parallels_runtime() -> bool:
@@ -61,6 +64,17 @@ def shortcut_symbol_groups_with_runtime(
         return groups
     records = run_parallels_cli_records(parallels_symbol_groups_command(data_root, tdx_path))
     return _normalize_symbol_group_records(records)
+
+
+def symbol_metadata_with_runtime(data_root: str | Path, tdx_path: str | Path) -> pd.DataFrame:
+    metadata = load_symbol_metadata(data_root, tdx_path=tdx_path)
+    if not should_use_parallels_runtime() or not metadata.empty:
+        return metadata
+    records = run_parallels_cli_records(
+        parallels_symbol_metadata_command(data_root, tdx_path),
+        timeout=PARALLELS_SYMBOL_METADATA_TIMEOUT_SECONDS,
+    )
+    return _normalize_symbol_metadata_records(records)
 
 
 def plan_requires_tdx_fetch(service: DataManagementService, config: DataDownloadConfig) -> bool:
@@ -151,7 +165,7 @@ def run_parallels_cli_table(command: list[str]) -> pd.DataFrame:
     return parse_cli_table(result.stdout)
 
 
-def run_parallels_cli_records(command: list[str]) -> list[dict[str, Any]]:
+def run_parallels_cli_records(command: list[str], *, timeout: int = PARALLELS_SYMBOL_GROUP_TIMEOUT_SECONDS) -> list[dict[str, Any]]:
     try:
         result = subprocess.run(
             command,
@@ -159,7 +173,7 @@ def run_parallels_cli_records(command: list[str]) -> list[dict[str, Any]]:
             capture_output=True,
             text=True,
             check=False,
-            timeout=PARALLELS_SYMBOL_GROUP_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("读取 Windows 通达信快捷代码表超时，请确认 Parallels 与 Windows 通达信已启动。") from exc
@@ -270,6 +284,23 @@ def parallels_symbol_groups_command(data_root: str | Path, tdx_path: str | Path)
     ]
 
 
+def parallels_symbol_metadata_command(data_root: str | Path, tdx_path: str | Path) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "tdx_downloader.cli",
+        "symbol-metadata",
+        "--runtime",
+        "parallels",
+        "--data-root",
+        str(data_root),
+        "--tdx-path",
+        str(tdx_path),
+        "--output",
+        "json",
+    ]
+
+
 def parallels_prepare_command(service: DataManagementService, config: DataDownloadConfig) -> list[str]:
     command = parallels_base_command(service, config, "prepare-data")
     command.extend(["--timeframes", ",".join(config.timeframes)])
@@ -362,3 +393,23 @@ def _normalize_symbol_group_records(records: list[dict[str, Any]]) -> list[dict[
             normalized_symbols = []
         groups.append({"name": name, "symbols": normalized_symbols})
     return groups
+
+
+def _normalize_symbol_metadata_records(records: list[dict[str, Any]]) -> pd.DataFrame:
+    if not records:
+        return pd.DataFrame(columns=pd.Index(SYMBOL_METADATA_COLUMNS))
+    frame = pd.DataFrame(records)
+    if "stock_code" not in frame.columns or "stock_name" not in frame.columns:
+        raise RuntimeError("Parallels/Windows 代码名称表缺少 stock_code 或 stock_name 字段。")
+    for column in SYMBOL_METADATA_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = ""
+    result = frame.loc[:, SYMBOL_METADATA_COLUMNS].copy()
+    result["stock_code"] = result["stock_code"].map(normalize_symbol)
+    result["stock_name"] = result["stock_name"].fillna("").astype(str).str.strip()
+    return (
+        result.loc[result["stock_code"].ne("") & result["stock_name"].ne("")]
+        .drop_duplicates(subset=["stock_code"], keep="first")
+        .sort_values("stock_code", kind="mergesort")
+        .reset_index(drop=True)
+    )

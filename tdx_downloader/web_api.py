@@ -38,6 +38,7 @@ from tdx_downloader.data.parallels_runtime import (
     download_with_runtime,
     shortcut_symbol_groups_with_runtime,
     should_use_parallels_runtime,
+    symbol_metadata_with_runtime,
 )
 from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES
 from tdx_downloader.data.storage import load_local_bars
@@ -241,6 +242,7 @@ def _register_routes(app: FastAPI) -> None:
                 timeframes=tuple(timeframes or SUPPORTED_TIMEFRAMES),
                 symbols=None,
                 tdx_path=tdx_path,
+                symbol_metadata=symbol_metadata_with_runtime(data_root, tdx_path),
                 rebuild_catalog=True,
             )
             return _catalog_payload(snapshot.catalog, data_root=data_root, rebuilt=True)
@@ -627,6 +629,7 @@ def _run_download_task(task_id: str, payload: DownloadPayload, mode: str) -> Non
             timeframes=SUPPORTED_TIMEFRAMES,
             symbols=None,
             tdx_path=payload.tdx_path,
+            symbol_metadata=symbol_metadata_with_runtime(payload.data_root, payload.tdx_path),
             rebuild_catalog=True,
         )
         _append_event(
