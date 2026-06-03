@@ -204,6 +204,50 @@ def test_audit_and_gap_calculation_read_only_canonical_parquet_columns(
     assert all(columns == tuple(["date", "stock_code", "open", "high", "low", "close", "volume", "amount"]) for columns in observed_columns)
 
 
+def test_audit_rejects_inconsistent_ohlc_for_stock(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().iloc[[0]].copy()
+    bars["high"] = [9.0]
+    bars["low"] = [11.0]
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("000001.SZ",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "quality_error"
+    assert audit.loc[0, "inconsistent_ohlc_rows"] == 1
+
+
+def test_audit_relaxes_ohlc_semantics_for_tdx_sector_index(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().iloc[[0]].copy()
+    bars["stock_code"] = ["880016.SH"]
+    bars["open"] = [17.0]
+    bars["high"] = [10.0]
+    bars["low"] = [30.0]
+    bars["close"] = [15.0]
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("880016.SH",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "ok"
+    assert audit.loc[0, "inconsistent_ohlc_rows"] == 1
+    assert "板块指数" in audit.loc[0, "message"]
+
+
 def test_data_management_service_download_rejects_unknown_mode(tmp_path: Path) -> None:
     service = DataManagementService(tmp_path / "market" / "daily", adjust="qfq")
     config = DataDownloadConfig(
