@@ -8,8 +8,13 @@
   --line: #dce3ec;
   --paper: #ffffff;
   --soft: #f4f7fb;
-  --blue: #0057ff;
-  --green: #00bf7d;
+  --accent: #0f766e;
+  --accent-deep: #115e59;
+  --accent-border: #8ddbd2;
+  --accent-soft: #e7fbf8;
+  --accent-soft-strong: #ccf4ef;
+  --blue: var(--accent);
+  --green: var(--accent);
   --red: #ff3b30;
 }
 
@@ -72,9 +77,9 @@ button {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  background: #e6fff5;
-  border: 1px solid #a8f3d7;
-  color: #057456;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent-deep);
   font-size: 12px;
   font-weight: 800;
 }
@@ -127,9 +132,9 @@ button {
 }
 
 .nav-button.active {
-  border-color: #a8f3d7;
-  background: #e8fff5;
-  color: #05684d;
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-deep);
 }
 
 .nav-button:hover {
@@ -204,8 +209,8 @@ button {
 }
 
 .runtime-pill {
-  color: #053b29;
-  background: #c9ffe9;
+  color: var(--accent-deep);
+  background: var(--accent-soft-strong);
   border-color: var(--green);
 }
 
@@ -230,8 +235,9 @@ button {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  background: var(--blue);
-  color: white;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft-strong);
+  color: var(--accent-deep);
   font-size: 12px;
   font-weight: 800;
 }
@@ -254,7 +260,7 @@ main {
 
 .notice-bar.success {
   border-color: var(--green);
-  background: #e8fff5;
+  background: var(--accent-soft);
 }
 
 .notice-bar.error {
@@ -264,7 +270,7 @@ main {
 
 .notice-bar.info {
   border-color: var(--blue);
-  background: #edf4ff;
+  background: var(--accent-soft);
 }
 
 .notice-bar strong {
@@ -325,8 +331,8 @@ main {
 
 .research-tab.active {
   border-color: var(--blue);
-  background: var(--blue);
-  color: white;
+  background: var(--accent-soft);
+  color: var(--accent-deep);
 }
 
 .btn {
@@ -343,8 +349,9 @@ main {
 }
 
 .btn.primary {
-  background: var(--blue);
-  color: white;
+  border-color: var(--accent-border);
+  background: var(--accent-soft-strong);
+  color: var(--accent-deep);
 }
 
 .btn.secondary {
@@ -470,9 +477,9 @@ main {
   height: 18px;
 }
 
-.asset-summary-card.blue .asset-icon { background: #d8e6ff; color: var(--blue); }
-.asset-summary-card.green .asset-icon { background: #c9ffe9; color: #05734d; }
-.asset-summary-card.indigo .asset-icon { background: #efe7ff; color: #6d28d9; }
+.asset-summary-card.blue .asset-icon { background: var(--accent-soft-strong); color: var(--accent-deep); }
+.asset-summary-card.green .asset-icon { background: var(--accent-soft); color: var(--accent-deep); }
+.asset-summary-card.indigo .asset-icon { background: #def7f3; color: var(--accent-deep); }
 
 .asset-main-metric {
   margin-top: 18px;
@@ -512,7 +519,7 @@ main {
 
 .timeframe-chip.active {
   border-color: var(--green);
-  background: #e8fff5;
+  background: var(--accent-soft);
 }
 
 .timeframe-chip span,
@@ -617,12 +624,12 @@ main {
   letter-spacing: 0;
 }
 
-.metric-card.green .metric-icon { background: #c9ffe9; color: #05734d; }
-.metric-card.blue .metric-icon { background: #d8e6ff; color: var(--blue); }
+.metric-card.green .metric-icon { background: var(--accent-soft); color: var(--accent-deep); }
+.metric-card.blue .metric-icon { background: var(--accent-soft-strong); color: var(--accent-deep); }
 .metric-card.red .metric-icon { background: #ffe2de; color: var(--red); }
 .metric-card.amber .metric-icon { background: #fef3c7; color: #d97706; }
-.metric-card.indigo .metric-icon { background: #e0e7ff; color: #4f46e5; }
-.metric-card.purple .metric-icon { background: #f3e8ff; color: #9333ea; }
+.metric-card.indigo .metric-icon { background: #def7f3; color: var(--accent-deep); }
+.metric-card.purple .metric-icon { background: #e5fbf8; color: var(--accent-deep); }
 
 .content-grid {
   display: grid;
@@ -1039,9 +1046,9 @@ main {
 }
 
 .page-size-button.active {
-  border-color: #10b981;
-  background: #dffbea;
-  color: #065f46;
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-deep);
 }
 
 .pagination-controls button:disabled {
@@ -1113,7 +1120,7 @@ td {
 
 .task-item.active {
   border-color: var(--blue);
-  background: #edf4ff;
+  background: var(--accent-soft);
 }
 
 .task-item strong {
