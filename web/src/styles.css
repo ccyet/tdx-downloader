@@ -758,25 +758,37 @@ main {
 }
 
 .ai-interface,
+.ai-output,
 .text-output {
   display: grid;
   gap: 12px;
 }
 
+.ai-run-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .ai-interface label,
+.ai-output label,
 .text-output label {
   display: grid;
   gap: 7px;
 }
 
 .ai-interface label > span,
+.ai-output label > span,
 .text-output label > span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
 }
 
+.ai-interface input,
+.ai-interface select,
 .ai-interface textarea,
+.ai-output textarea,
 .text-output textarea {
   width: 100%;
   border: 1px solid var(--line);
@@ -787,6 +799,18 @@ main {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   line-height: 1.5;
+  outline: none;
+}
+
+.ai-interface input,
+.ai-interface select {
+  min-height: 42px;
+  font-family: inherit;
+}
+
+.ai-interface textarea,
+.ai-output textarea,
+.text-output textarea {
   resize: vertical;
 }
 
@@ -1279,6 +1303,7 @@ td {
   .inline-fields,
   .path-control,
   .task-form,
+  .ai-run-form,
   .filter-row,
   .notice-bar {
     grid-template-columns: 1fr;

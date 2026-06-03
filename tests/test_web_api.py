@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 import pandas as pd
 
@@ -404,3 +406,67 @@ def test_api_research_review_resolves_local_symbol_names(tmp_path) -> None:
     assert response.status_code == 200
     names = {row["代码"]: row["股票"] for row in response.json()["ranking"]}
     assert names == {"000001.SZ": "本地强势", "000002.SZ": "本地弱势"}
+
+
+def test_api_research_review_ai_calls_compatible_chat(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, object] = {}
+    model_content = json.dumps(
+        {
+            "review": "研究复盘",
+            "analysis": "数据分析",
+            "critique": "视频锐评",
+            "script_cards": [{"title": "平安银行", "body": "强", "grade": "人上人", "tomorrow_check": "看承接"}],
+            "evidence_refs": ["rankings[0]"],
+            "disclaimer": "仅供研究",
+        },
+        ensure_ascii=False,
+    )
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": model_content}}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout: int):  # type: ignore[no-untyped-def]
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["auth"] = request.get_header("Authorization")
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr(web_api.urllib.request, "urlopen", fake_urlopen)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/research/review-ai",
+        json={
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret",
+            "model": "compatible-model",
+            "messages": [{"role": "user", "content": "{}"}],
+            "evidence": {"rankings": [{"代码": "000001.SZ"}]},
+            "temperature": 0.3,
+            "timeout_seconds": 12,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert captured["url"] == "https://example.test/v1/chat/completions"
+    assert captured["auth"] == "Bearer sk-secret"
+    assert captured["timeout"] == 12
+    assert captured["body"] == {
+        "model": "compatible-model",
+        "messages": [{"role": "user", "content": "{}"}],
+        "temperature": 0.3,
+    }
+    assert data["review"] == "研究复盘"
+    assert data["analysis"] == "数据分析"
+    assert data["critique"] == "视频锐评"
+    assert data["script_cards"][0]["grade"] == "人上人"
+    assert "sk-secret" not in response.text

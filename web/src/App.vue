@@ -586,6 +586,48 @@
               </Panel>
               <Panel title="AI 锐评接口" subtitle="证据与提示词">
                 <div v-if="reviewResult?.ai" class="ai-interface">
+                  <form class="ai-run-form" @submit.prevent="runAiReview">
+                    <label class="span-full">
+                      <span>接口 URL</span>
+                      <input v-model="aiSettings.base_url" type="url" placeholder="https://api.openai.com/v1" />
+                    </label>
+                    <label class="span-full">
+                      <span>API Key</span>
+                      <input v-model="aiSettings.api_key" type="password" autocomplete="off" placeholder="本次调用使用，不保存" />
+                    </label>
+                    <label>
+                      <span>模型</span>
+                      <input v-model="aiSettings.model" type="text" placeholder="例如 gpt-4o-mini / deepseek-chat" />
+                    </label>
+                    <label>
+                      <span>温度</span>
+                      <input v-model.number="aiSettings.temperature" type="number" min="0" max="2" step="0.1" />
+                    </label>
+                    <div class="form-actions span-full">
+                      <button class="btn primary" type="submit" :disabled="runningAiReview">
+                        <Icon name="activity" />
+                        {{ runningAiReview ? '生成中' : '生成 AI 输出' }}
+                      </button>
+                    </div>
+                  </form>
+                  <div class="ai-output">
+                    <label>
+                      <span>AI 研究复盘</span>
+                      <textarea :value="aiOutputReviewText" rows="7" readonly placeholder="等待模型返回"></textarea>
+                    </label>
+                    <label>
+                      <span>AI 数据分析</span>
+                      <textarea :value="aiOutputAnalysisText" rows="6" readonly placeholder="等待模型返回"></textarea>
+                    </label>
+                    <label>
+                      <span>AI 视频锐评</span>
+                      <textarea :value="aiOutputCritiqueText" rows="6" readonly placeholder="等待模型返回"></textarea>
+                    </label>
+                    <label>
+                      <span>脚本卡片 JSON</span>
+                      <textarea :value="aiScriptCardsText" rows="6" readonly placeholder="等待模型返回"></textarea>
+                    </label>
+                  </div>
                   <div class="kv-list compact">
                     <div class="kv-row"><span>证据模式</span><strong>{{ reviewResult.ai.evidence?.mode || '-' }}</strong></div>
                     <div class="kv-row"><span>消息数量</span><strong>{{ reviewResult.ai.messages?.length || 0 }}</strong></div>
@@ -849,6 +891,7 @@ const loadingSymbolGroups = ref(false)
 const refreshingSymbolGroup = ref<SymbolRefreshTarget | ''>('')
 const clearingTasks = ref(false)
 const runningResearch = ref<ResearchTabKey | ''>('')
+const runningAiReview = ref(false)
 const activeResearchTab = ref<ResearchTabKey>('history')
 const pickingDirectory = ref<DirectoryField | ''>('')
 const planRows = ref<Array<Record<string, any>>>([])
@@ -856,6 +899,7 @@ const planSummary = ref<Record<string, any>>({})
 const historyResult = ref<Record<string, any> | null>(null)
 const crossResult = ref<Record<string, any> | null>(null)
 const reviewResult = ref<Record<string, any> | null>(null)
+const aiReviewOutput = ref<Record<string, any> | null>(null)
 const researchSnapshots = ref<ResearchSnapshot[]>([])
 const notice = ref<NoticePayload | null>(null)
 const cacheFilters = reactive({
@@ -878,6 +922,13 @@ const settings = reactive({
   mode: 'smart',
   batch_size: 100,
   strict_after_update: true
+})
+
+const aiSettings = reactive({
+  base_url: 'https://api.openai.com/v1',
+  api_key: '',
+  model: '',
+  temperature: 0.2
 })
 
 const historyForm = reactive({
@@ -957,6 +1008,10 @@ const displaySegmentRows = computed(() =>
 )
 const aiMessagesText = computed(() => JSON.stringify(reviewResult.value?.ai?.messages || [], null, 2))
 const aiEvidenceText = computed(() => JSON.stringify(reviewResult.value?.ai?.evidence || {}, null, 2))
+const aiOutputReviewText = computed(() => String(aiReviewOutput.value?.review || ''))
+const aiOutputAnalysisText = computed(() => String(aiReviewOutput.value?.analysis || ''))
+const aiOutputCritiqueText = computed(() => String(aiReviewOutput.value?.critique || ''))
+const aiScriptCardsText = computed(() => (aiReviewOutput.value ? JSON.stringify(aiReviewOutput.value?.script_cards || [], null, 2) : ''))
 const reviewText = computed(() => String(reviewResult.value?.text?.review || ''))
 const videoScriptText = computed(() => String(reviewResult.value?.text?.video_script || ''))
 const activeResearchResult = computed(() => researchResultFor(activeResearchTab.value))
@@ -1347,11 +1402,39 @@ async function runReviewSearch() {
       min_swing_return: Number(reviewForm.min_swing_return || 0),
       min_segment_bars: Number(reviewForm.min_segment_bars || 1)
     })
+    aiReviewOutput.value = null
     showNotice('success', '复盘已生成', `完成 ${formatInt(reviewResult.value?.summary?.ranked_count)} 个标的排序。`)
   } catch (error) {
     showError('复盘生成失败', error)
   } finally {
     runningResearch.value = ''
+  }
+}
+
+async function runAiReview() {
+  if (!reviewResult.value?.ai?.messages?.length) {
+    showNotice('error', 'AI 证据缺失', '请先生成多股复盘。')
+    return
+  }
+  if (!aiSettings.base_url.trim() || !aiSettings.api_key.trim() || !aiSettings.model.trim()) {
+    showNotice('error', 'AI 配置缺失', '请填写接口 URL、API Key 和模型名称。')
+    return
+  }
+  runningAiReview.value = true
+  try {
+    aiReviewOutput.value = await apiPost('/research/review-ai', {
+      base_url: aiSettings.base_url.trim(),
+      api_key: aiSettings.api_key.trim(),
+      model: aiSettings.model.trim(),
+      messages: reviewResult.value.ai.messages || [],
+      evidence: reviewResult.value.ai.evidence || {},
+      temperature: Number(aiSettings.temperature ?? 0.2)
+    })
+    showNotice('success', 'AI 输出已生成', '模型返回已解析为复盘、分析和视频锐评。')
+  } catch (error) {
+    showError('AI 输出生成失败', error)
+  } finally {
+    runningAiReview.value = false
   }
 }
 
