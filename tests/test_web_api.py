@@ -298,6 +298,8 @@ def test_api_research_history_reads_local_timeframe_cache(tmp_path) -> None:
     assert data["summary"]["timeframe"] == "1d"
     assert data["summary"]["match_count"] > 0
     assert "综合相似度" in data["results"][0]
+    assert data["current_window"][0]["open"] == 13.0
+    assert data["historical_windows"][0][0]["date"].startswith("2026-")
 
 
 def test_api_research_cross_section_reads_local_cache_with_date_tolerance(tmp_path) -> None:
@@ -331,6 +333,10 @@ def test_api_research_cross_section_reads_local_cache_with_date_tolerance(tmp_pa
     data = response.json()
     assert data["summary"]["window_size"] == 4
     assert data["results"][0]["symbol"] == "000002.SZ"
+    assert data["target_window"][0]["stock_code"] == "000001.SZ"
+    assert data["target_window"][0]["open"] == 13.0
+    assert data["candidate_windows"][0]["symbol"] == "000002.SZ"
+    assert data["candidate_windows"][0]["candles"][0]["stock_code"] == "000002.SZ"
 
 
 def test_api_research_review_ranks_local_cache(tmp_path) -> None:

@@ -43,7 +43,7 @@ from tdx_downloader.data.parallels_runtime import (
     should_use_parallels_runtime,
     symbol_metadata_with_runtime,
 )
-from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES
+from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES, inclusive_end_timestamp, normalize_symbol
 from tdx_downloader.data.storage import load_local_bars
 from tdx_downloader.research.history import HistorySearchConfig, search_history
 from tdx_downloader.research.review import (
@@ -379,6 +379,8 @@ def _register_routes(app: FastAPI) -> None:
             },
             "results": _records(result.results),
             "skipped": _records(result.skipped),
+            "target_window": _symbol_window_candles(bars, result.target_symbol, result.start, result.end),
+            "candidate_windows": _cross_section_candidate_windows(bars, result.results),
         }
 
     @app.post("/api/research/review")
@@ -575,12 +577,55 @@ def _review_stock_names(payload: ReviewSearchPayload, symbols: tuple[str, ...]) 
     return {**resolved, **explicit}
 
 
-def _review_candles(window: pd.DataFrame) -> list[dict[str, Any]]:
+def _review_candles(window: pd.DataFrame, *, include_symbol: bool = False) -> list[dict[str, Any]]:
     if window.empty:
         return []
     columns = ["date", "open", "high", "low", "close", "volume", "amount"]
+    if include_symbol:
+        columns.insert(1, "stock_code")
     present = [column for column in columns if column in window.columns]
     return _records(window[present], limit=None)
+
+
+def _symbol_window_candles(
+    bars: pd.DataFrame,
+    symbol: str,
+    start: str | pd.Timestamp,
+    end: str | pd.Timestamp,
+) -> list[dict[str, Any]]:
+    if bars.empty:
+        return []
+    frame = bars.copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame["stock_code"] = frame["stock_code"].map(normalize_symbol)
+    normalized_symbol = normalize_symbol(symbol)
+    window = frame.loc[
+        (frame["stock_code"] == normalized_symbol)
+        & frame["date"].between(pd.Timestamp(start), inclusive_end_timestamp(end))
+    ].sort_values("date")
+    return _review_candles(window, include_symbol=True)
+
+
+def _cross_section_candidate_windows(bars: pd.DataFrame, results: pd.DataFrame) -> list[dict[str, Any]]:
+    if results.empty:
+        return []
+    rows: list[dict[str, Any]] = []
+    for index, row in results.reset_index(drop=True).iterrows():
+        symbol = normalize_symbol(row.get("symbol", ""))
+        if not symbol:
+            continue
+        start = row.get("区间开始")
+        end = row.get("区间结束")
+        rows.append(
+            {
+                "rank": index + 1,
+                "symbol": symbol,
+                "start": _json_value(start),
+                "end": _json_value(end),
+                "candles": _symbol_window_candles(bars, symbol, pd.Timestamp(start), pd.Timestamp(end)),
+            }
+        )
+    return rows
 
 
 def _call_review_ai(payload: ReviewAIPayload) -> dict[str, Any]:

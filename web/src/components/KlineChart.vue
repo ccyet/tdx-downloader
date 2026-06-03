@@ -4,7 +4,7 @@
       <div>
         <span>{{ rankLabel }}</span>
         <strong>{{ displayName }}</strong>
-        <em>{{ item.symbol }} · {{ candleCount }} 根K线</em>
+        <em>{{ itemSymbol }} · {{ candleCount }} 根K线</em>
       </div>
       <b :class="returnClass">{{ formatPercent(periodReturn) }}</b>
     </header>
@@ -90,11 +90,12 @@ interface Candle {
 }
 
 interface KlineItem {
-  symbol: string
+  symbol?: string
   name?: string
+  label?: string
   rank?: number | string
   overview?: Record<string, any>
-  candles: RawCandle[]
+  candles?: RawCandle[]
 }
 
 const props = defineProps<{
@@ -109,7 +110,10 @@ const plotBottom = 234
 const volumeTop = 252
 const volumeBottom = 286
 const plotWidth = plotRight - plotLeft
-const gradientId = computed(() => `kline-gradient-${props.item.symbol.replace(/[^a-zA-Z0-9]/g, '-')}`)
+const itemSymbol = computed(() => props.item.symbol || '-')
+const gradientId = computed(() =>
+  `kline-gradient-${[itemSymbol.value, props.item.label || props.item.rank || 'chart'].join('-').replace(/[^a-zA-Z0-9]/g, '-')}`
+)
 
 const normalizedCandles = computed<Candle[]>(() =>
   (props.item.candles || [])
@@ -132,10 +136,21 @@ const normalizedCandles = computed<Candle[]>(() =>
 )
 
 const candleCount = computed(() => normalizedCandles.value.length)
-const displayName = computed(() => props.item.name || props.item.symbol)
-const rankLabel = computed(() => (props.item.rank ? `#${props.item.rank}` : '窗口走势'))
-const periodReturn = computed(() => numberValue(props.item.overview?.return))
-const maxDrawdown = computed(() => numberValue(props.item.overview?.max_drawdown))
+const displayName = computed(() => props.item.name || itemSymbol.value)
+const rankLabel = computed(() => {
+  if (props.item.label) return props.item.label
+  if (!props.item.rank) return '窗口走势'
+  const rank = String(props.item.rank)
+  return Number.isFinite(Number(rank)) ? `#${rank}` : rank
+})
+const periodReturn = computed(() => {
+  const fromOverview = numberValue(props.item.overview?.return)
+  return Number.isFinite(fromOverview) ? fromOverview : candleReturn(normalizedCandles.value)
+})
+const maxDrawdown = computed(() => {
+  const fromOverview = numberValue(props.item.overview?.max_drawdown)
+  return Number.isFinite(fromOverview) ? fromOverview : candleDrawdown(normalizedCandles.value)
+})
 const returnClass = computed(() => (periodReturn.value >= 0 ? 'positive' : 'negative'))
 const startDate = computed(() => formatDate(normalizedCandles.value[0]?.date))
 const endDate = computed(() => formatDate(normalizedCandles.value[normalizedCandles.value.length - 1]?.date))
@@ -193,6 +208,22 @@ function bodyHeight(candle: Candle): number {
 
 function candleTone(candle: Candle): 'up' | 'down' {
   return candle.close >= candle.open ? 'up' : 'down'
+}
+
+function candleReturn(candles: Candle[]): number {
+  if (candles.length < 2 || candles[0].close === 0) return NaN
+  return candles[candles.length - 1].close / candles[0].close - 1
+}
+
+function candleDrawdown(candles: Candle[]): number {
+  let peak = -Infinity
+  let drawdown = 0
+  for (const candle of candles) {
+    if (!Number.isFinite(candle.close)) continue
+    peak = Math.max(peak, candle.close)
+    if (peak > 0) drawdown = Math.min(drawdown, candle.close / peak - 1)
+  }
+  return drawdown
 }
 
 function numberValue(value: unknown): number {

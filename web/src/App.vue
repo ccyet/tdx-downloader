@@ -437,6 +437,15 @@
                   </button>
                 </div>
               </form>
+              <div v-if="historyChartItems.length" class="research-kline-section">
+                <div class="review-section-head">
+                  <span>窗口K线</span>
+                  <strong>{{ historyChartSummary }}</strong>
+                </div>
+                <div class="review-kline-grid">
+                  <KlineChart v-for="item in historyChartItems" :key="`${item.symbol}-${item.label}`" :item="item" />
+                </div>
+              </div>
             </Panel>
 
             <Panel title="历史匹配结果" subtitle="按综合相似度排序">
@@ -500,6 +509,15 @@
                   </button>
                 </div>
               </form>
+              <div v-if="crossChartItems.length" class="research-kline-section">
+                <div class="review-section-head">
+                  <span>窗口K线</span>
+                  <strong>{{ crossChartSummary }}</strong>
+                </div>
+                <div class="review-kline-grid">
+                  <KlineChart v-for="item in crossChartItems" :key="`${item.symbol}-${item.label || item.rank}`" :item="item" />
+                </div>
+              </div>
             </Panel>
 
             <Panel title="横截面匹配结果" subtitle="日期容忍后择优">
@@ -559,7 +577,7 @@
                   </button>
                 </div>
               </form>
-              <div v-if="reviewChartItems.length" class="review-kline-section">
+              <div v-if="reviewChartItems.length" class="research-kline-section">
                 <div class="review-section-head">
                   <span>窗口K线</span>
                   <strong>{{ reviewChartSummary }}</strong>
@@ -1016,6 +1034,64 @@ const displayComparisonRows = computed(() =>
 const displaySegmentRows = computed(() =>
   (reviewResult.value?.reviews?.[0]?.main_segments || []).map((row: Record<string, any>) => displayResearchRecord(row))
 )
+const historyChartItems = computed(() => {
+  if (!historyResult.value) return []
+  const symbol = historyResult.value.summary?.symbol || historyForm.symbol
+  const items: Array<Record<string, any>> = []
+  if (Array.isArray(historyResult.value.current_window) && historyResult.value.current_window.length) {
+    items.push({
+      symbol,
+      name: symbol,
+      label: '当前窗口',
+      candles: historyResult.value.current_window
+    })
+  }
+  const historicalWindows = historyResult.value.historical_windows || []
+  historicalWindows.slice(0, 5).forEach((candles: Array<Record<string, any>>, index: number) => {
+    if (!candles.length) return
+    items.push({
+      symbol,
+      name: symbol,
+      label: `历史 #${index + 1}`,
+      candles
+    })
+  })
+  return items
+})
+const historyChartSummary = computed(() => {
+  const count = Math.max(historyChartItems.value.length - 1, 0)
+  const timeframe = historyResult.value?.summary?.timeframe || researchTimeframe.value
+  const windowSize = historyResult.value?.summary?.window_size || historyForm.window_size
+  return historyChartItems.value.length ? `当前窗口 + ${count} 个历史匹配 · ${timeframe} · ${windowSize} 根K线` : ''
+})
+const crossChartItems = computed(() => {
+  if (!crossResult.value) return []
+  const items: Array<Record<string, any>> = []
+  if (Array.isArray(crossResult.value.target_window) && crossResult.value.target_window.length) {
+    items.push({
+      symbol: crossResult.value.summary?.target_symbol || crossForm.target_symbol,
+      name: crossResult.value.summary?.target_symbol || crossForm.target_symbol,
+      label: '目标窗口',
+      candles: crossResult.value.target_window
+    })
+  }
+  const candidateWindows = crossResult.value.candidate_windows || []
+  candidateWindows.slice(0, 5).forEach((row: Record<string, any>) => {
+    if (!row.candles?.length) return
+    items.push({
+      symbol: row.symbol,
+      name: row.symbol,
+      rank: row.rank || '',
+      candles: row.candles
+    })
+  })
+  return items
+})
+const crossChartSummary = computed(() => {
+  const count = Math.max(crossChartItems.value.length - 1, 0)
+  const timeframe = crossResult.value?.summary?.timeframe || researchTimeframe.value
+  return crossChartItems.value.length ? `目标窗口 + ${count} 个候选匹配 · ${timeframe} · ${crossForm.start} 至 ${crossForm.end}` : ''
+})
 const reviewChartItems = computed(() => {
   const rankingRows = reviewResult.value?.ranking || []
   const rankingBySymbol = new Map<string, Record<string, any>>(rankingRows.map((row: Record<string, any>) => [row['代码'], row]))
