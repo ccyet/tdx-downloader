@@ -50,7 +50,7 @@ def resolve_symbol_names(
 
 
 def load_tdx_symbol_metadata(tdx_path: str | Path) -> pd.DataFrame:
-    """从通达信 hq_cache 的 shm/szm/bjm.tnf 读取股票名称。"""
+    """从通达信 hq_cache 的 tnf 代码表读取股票名称。"""
     rows: list[dict[str, object]] = []
     for path in _tdx_tnf_candidates(tdx_path):
         rows.extend(_read_tdx_tnf_file(path))
@@ -130,7 +130,7 @@ def _tdx_tnf_candidates(tdx_path: str | Path) -> list[Path]:
     roots = [base, *base.parents]
     for root in roots:
         for folder in (root / "T0002" / "hq_cache", root / "hq_cache"):
-            for name in ("shm.tnf", "szm.tnf", "bjm.tnf"):
+            for name in ("shs.tnf", "szs.tnf", "bjs.tnf", "shm.tnf", "szm.tnf", "bjm.tnf"):
                 path = folder / name
                 if path.exists():
                     candidates.append(path)
@@ -143,9 +143,10 @@ def _read_tdx_tnf_file(path: Path) -> list[dict[str, object]]:
         return []
     exchange = _tdx_exchange_from_filename(path.name)
     rows: list[dict[str, object]] = []
-    for offset in range(50, len(payload), 314):
-        record = payload[offset : offset + 314]
-        if len(record) < 314:
+    record_size = _tdx_tnf_record_size(payload)
+    for offset in range(50, len(payload), record_size):
+        record = payload[offset : offset + record_size]
+        if len(record) < record_size:
             continue
         code = _decode_record_field(record[0:6], encoding="ascii")
         if not code.isdigit():
@@ -156,6 +157,12 @@ def _read_tdx_tnf_file(path: Path) -> list[dict[str, object]]:
             continue
         rows.append({"stock_code": symbol, "stock_name": name, "source": "tdx_tnf", "path": str(path)})
     return rows
+
+
+def _tdx_tnf_record_size(payload: bytes) -> int:
+    if (len(payload) - 50) % 360 == 0:
+        return 360
+    return 314
 
 
 def _tdx_exchange_from_filename(name: str) -> str:
@@ -171,6 +178,8 @@ def _tdx_exchange_from_filename(name: str) -> str:
 
 def _tdx_record_name(record: bytes) -> str:
     candidates = [
+        _decode_record_field(record[31:47]),
+        _decode_record_field(record[31:63]),
         _decode_record_field(record[23:31]),
         _decode_record_field(record[23:39]),
         _decode_record_field(record[6:14]),

@@ -40,6 +40,28 @@ def test_api_config_exposes_sub2api_style_web_defaults() -> None:
     ]
 
 
+def test_api_symbol_groups_uses_current_local_symbol_metadata(tmp_path) -> None:
+    metadata = tmp_path / "metadata"
+    metadata.mkdir()
+    (metadata / "symbols.csv").write_text(
+        "stock_code,stock_name\n"
+        "000001.SZ,平安银行\n"
+        "600000.SH,浦发银行\n"
+        "510300.SH,沪深300ETF\n"
+        "000300.SH,沪深300\n"
+        "880001.SH,种植业\n",
+        encoding="utf-8",
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/symbol-groups", params={"data_root": str(tmp_path), "tdx_path": ""})
+
+    assert response.status_code == 200
+    groups = {group["name"]: group["symbols"] for group in response.json()["groups"]}
+    assert groups["全A股票"] == ["000001.SZ", "600000.SH"]
+    assert groups["板块指数"] == ["880001.SH"]
+
+
 def test_api_overview_does_not_require_existing_catalog(tmp_path) -> None:
     client = TestClient(create_app())
 

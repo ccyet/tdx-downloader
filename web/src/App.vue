@@ -119,7 +119,7 @@
             <form class="task-form" @submit.prevent="previewPlan">
               <label>
                 <span>代码来源</span>
-                <select v-model="selectedGroup" @change="applySymbolGroup">
+                <select v-model="selectedGroup" :disabled="loadingSymbolGroups" @change="applySymbolGroup">
                   <option value="custom">自定义</option>
                   <option v-for="group in config?.symbol_groups || []" :key="group.name" :value="group.name">
                     {{ group.name }} · {{ group.symbols.length }}只
@@ -621,11 +621,16 @@ import Panel from './components/Panel.vue'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api'
 
+interface SymbolGroup {
+  name: string
+  symbols: string[]
+}
+
 interface ConfigPayload {
   defaults: Record<string, any>
   timeframes: string[]
   asset_types: Array<{ value: string; label: string }>
-  symbol_groups: Array<{ name: string; symbols: string[] }>
+  symbol_groups: SymbolGroup[]
   runtime: string
 }
 
@@ -721,6 +726,7 @@ const symbolsText = ref('')
 const planning = ref(false)
 const downloading = ref(false)
 const loadingOverview = ref(false)
+const loadingSymbolGroups = ref(false)
 const clearingTasks = ref(false)
 const runningResearch = ref<ResearchTabKey | ''>('')
 const activeResearchTab = ref<ResearchTabKey>('history')
@@ -995,6 +1001,42 @@ async function loadConfig() {
     selectedGroup.value = firstGroup.name
     symbolsText.value = firstGroup.symbols.join('\n')
   }
+  void loadSymbolGroups(true)
+}
+
+async function loadSymbolGroups(preserveSelected: boolean) {
+  loadingSymbolGroups.value = true
+  const previousGroup = selectedGroup.value
+  const previousSymbols = symbolsText.value
+  try {
+    settings.data_root = normalizeDataRoot(settings.data_root)
+    const params = new URLSearchParams({
+      data_root: settings.data_root,
+      tdx_path: settings.tdx_path
+    })
+    const data = await apiGet(`/symbol-groups?${params.toString()}`)
+    if (config.value) config.value.symbol_groups = (data.groups || []).filter(isSymbolGroup)
+  } catch (error) {
+    showError('快捷代码加载失败', error)
+  } finally {
+    loadingSymbolGroups.value = false
+  }
+  if (preserveSelected && previousGroup === 'custom') return
+  const refreshed = config.value?.symbol_groups.find((item) => item.name === previousGroup)
+  if (preserveSelected && refreshed) {
+    symbolsText.value = refreshed.symbols.join('\n')
+    return
+  }
+  if (preserveSelected) {
+    selectedGroup.value = 'custom'
+    symbolsText.value = previousSymbols
+    return
+  }
+  const firstGroup = config.value?.symbol_groups?.[0]
+  if (firstGroup) {
+    selectedGroup.value = firstGroup.name
+    symbolsText.value = firstGroup.symbols.join('\n')
+  }
 }
 
 async function loadOverview(refresh: boolean) {
@@ -1191,6 +1233,7 @@ async function pickDirectory(field: DirectoryField) {
     })
     if (!data.path || data.cancelled) return
     settings[field] = field === 'data_root' ? normalizeDataRoot(data.path) : data.path
+    await loadSymbolGroups(true)
     showNotice('success', '目录已选择', `${labels[field]} 已更新。`)
   } catch (error) {
     showError('选择目录失败', error)
@@ -1203,6 +1246,10 @@ function applySymbolGroup() {
   if (selectedGroup.value === 'custom') return
   const group = config.value?.symbol_groups.find((item) => item.name === selectedGroup.value)
   if (group) symbolsText.value = group.symbols.join('\n')
+}
+
+function isSymbolGroup(value: any): value is SymbolGroup {
+  return value && typeof value.name === 'string' && Array.isArray(value.symbols)
 }
 
 function payload() {

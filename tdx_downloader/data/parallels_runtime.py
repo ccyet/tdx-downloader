@@ -9,7 +9,16 @@ from typing import Any
 
 import pandas as pd
 
-from tdx_downloader.data.manager import DataDownloadConfig, DataDownloadResult, DataManagementService, download_summary
+from tdx_downloader.data.manager import (
+    DataDownloadConfig,
+    DataDownloadResult,
+    DataManagementService,
+    download_summary,
+    shortcut_symbol_groups,
+)
+
+DYNAMIC_SYMBOL_GROUP_NAMES = frozenset({"板块指数", "全A股票"})
+PARALLELS_SYMBOL_GROUP_TIMEOUT_SECONDS = 12
 
 
 def should_use_parallels_runtime() -> bool:
@@ -33,6 +42,14 @@ def download_with_runtime(
             return service.download(config, mode=mode, progress_callback=progress_callback)
         return download_with_parallels_cli(service, config, mode=mode, progress_callback=progress_callback)
     return service.download(config, mode=mode, progress_callback=progress_callback)
+
+
+def shortcut_symbol_groups_with_runtime(data_root: str | Path, tdx_path: str | Path) -> list[dict[str, object]]:
+    groups = shortcut_symbol_groups(data_root=data_root, tdx_path=tdx_path)
+    if not should_use_parallels_runtime() or _has_dynamic_symbol_groups(groups):
+        return groups
+    records = run_parallels_cli_records(parallels_symbol_groups_command(data_root, tdx_path))
+    return _normalize_symbol_group_records(records)
 
 
 def plan_requires_tdx_fetch(service: DataManagementService, config: DataDownloadConfig) -> bool:
@@ -123,6 +140,29 @@ def run_parallels_cli_table(command: list[str]) -> pd.DataFrame:
     return parse_cli_table(result.stdout)
 
 
+def run_parallels_cli_records(command: list[str]) -> list[dict[str, Any]]:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PARALLELS_SYMBOL_GROUP_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("读取 Windows 通达信快捷代码表超时，请确认 Parallels 与 Windows 通达信已启动。") from exc
+    except OSError as exc:
+        raise RuntimeError(f"无法启动 Parallels/Windows 通达信任务：{exc}") from exc
+    if result.returncode != 0:
+        detail = "\n".join(part for part in (result.stderr.strip(), result.stdout.strip()) if part).strip()
+        raise RuntimeError(f"Parallels/Windows 通达信任务失败：{clean_parallels_cli_error(detail)}")
+    records = extract_json_records(result.stdout)
+    if records is None:
+        raise RuntimeError("Parallels/Windows 通达信任务已返回，但 JSON 结果解析失败。")
+    return records
+
+
 def clean_parallels_cli_error(detail: str) -> str:
     text = detail.strip()
     if not text:
@@ -202,6 +242,23 @@ def parallels_doctor_command(service: DataManagementService, config: DataDownloa
     ]
 
 
+def parallels_symbol_groups_command(data_root: str | Path, tdx_path: str | Path) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "tdx_downloader.cli",
+        "symbol-groups",
+        "--runtime",
+        "parallels",
+        "--data-root",
+        str(data_root),
+        "--tdx-path",
+        str(tdx_path),
+        "--output",
+        "json",
+    ]
+
+
 def parallels_prepare_command(service: DataManagementService, config: DataDownloadConfig) -> list[str]:
     command = parallels_base_command(service, config, "prepare-data")
     command.extend(["--timeframes", ",".join(config.timeframes)])
@@ -262,3 +319,25 @@ def force_cli_frame(frame: pd.DataFrame, *, timeframe: str, adjust: str) -> pd.D
 def _emit_progress(callback, **payload: object) -> None:
     if callback is not None:
         callback(payload)
+
+
+def _has_dynamic_symbol_groups(groups: list[dict[str, object]]) -> bool:
+    names = {str(group.get("name", "")) for group in groups if group.get("symbols")}
+    return DYNAMIC_SYMBOL_GROUP_NAMES.issubset(names)
+
+
+def _normalize_symbol_group_records(records: list[dict[str, Any]]) -> list[dict[str, object]]:
+    groups: list[dict[str, object]] = []
+    for record in records:
+        name = str(record.get("name", "")).strip()
+        symbols = record.get("symbols", [])
+        if not name:
+            continue
+        if isinstance(symbols, str):
+            normalized_symbols = [item.strip() for item in symbols.replace("\n", ",").split(",") if item.strip()]
+        elif isinstance(symbols, list):
+            normalized_symbols = [str(item).strip() for item in symbols if str(item).strip()]
+        else:
+            normalized_symbols = []
+        groups.append({"name": name, "symbols": normalized_symbols})
+    return groups

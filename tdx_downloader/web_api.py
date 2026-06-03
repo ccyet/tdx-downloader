@@ -31,9 +31,14 @@ from tdx_downloader.data.manager import (
     normalize_download_mode,
     normalize_symbol_tuple,
     normalize_timeframes,
+    shortcut_symbol_groups,
     shortcut_symbols,
 )
-from tdx_downloader.data.parallels_runtime import download_with_runtime, should_use_parallels_runtime
+from tdx_downloader.data.parallels_runtime import (
+    download_with_runtime,
+    shortcut_symbol_groups_with_runtime,
+    should_use_parallels_runtime,
+)
 from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES
 from tdx_downloader.data.storage import load_local_bars
 from tdx_downloader.research.history import HistorySearchConfig, search_history
@@ -206,13 +211,20 @@ def _register_routes(app: FastAPI) -> None:
             },
             "timeframes": list(SUPPORTED_TIMEFRAMES),
             "asset_types": [{"value": key, "label": label} for key, label in ASSET_TYPE_LABELS.items()],
-            "symbol_groups": [
-                {"name": "核心样例", "symbols": list(shortcut_symbols("核心样例"))},
-                {"name": "宽基指数", "symbols": list(shortcut_symbols("宽基指数"))},
-                {"name": "ETF样例", "symbols": list(shortcut_symbols("ETF样例"))},
-            ],
+            "symbol_groups": shortcut_symbol_groups(data_root=DEFAULT_DATA_ROOT, tdx_path=DEFAULT_TDX_PATH),
             "runtime": "parallels" if should_use_parallels_runtime() else "local",
         }
+
+    @app.get("/api/symbol-groups")
+    def symbol_groups(
+        data_root: str = DEFAULT_DATA_ROOT,
+        tdx_path: str = DEFAULT_TDX_PATH,
+    ) -> dict[str, Any]:
+        try:
+            groups = shortcut_symbol_groups_with_runtime(data_root, tdx_path)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"groups": groups}
 
     @app.get("/api/overview")
     def overview(

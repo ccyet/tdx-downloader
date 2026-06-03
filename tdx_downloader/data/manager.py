@@ -11,10 +11,12 @@ from tdx_downloader.data.catalog import (
     build_catalog,
     catalog_path_for,
     enrich_inventory_for_catalog,
+    infer_asset_type,
     query_catalog,
 )
 from tdx_downloader.data.repository import MarketDataRepository
-from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES, ensure_supported_timeframe, unique_symbols
+from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES, ensure_supported_timeframe, normalize_symbol, unique_symbols
+from tdx_downloader.data.symbols import load_symbol_metadata
 from tdx_downloader.data.summary import summarize_data_inventory
 
 ProgressCallback = Callable[[dict[str, object]], None]
@@ -244,6 +246,49 @@ def normalize_download_mode(mode: str) -> str:
 
 def shortcut_symbols(name: str) -> tuple[str, ...]:
     return QUICK_SYMBOL_GROUPS.get(str(name), ())
+
+
+def shortcut_symbol_groups(
+    *,
+    data_root: str | Path | None = None,
+    tdx_path: str | Path = "",
+    metadata: pd.DataFrame | None = None,
+) -> list[dict[str, list[str] | str]]:
+    groups: list[dict[str, list[str] | str]] = [
+        {"name": name, "symbols": list(symbols)} for name, symbols in QUICK_SYMBOL_GROUPS.items()
+    ]
+    symbol_metadata = metadata
+    if symbol_metadata is None and data_root is not None:
+        symbol_metadata = load_symbol_metadata(data_root, tdx_path=tdx_path)
+    dynamic_groups = _dynamic_shortcut_groups(symbol_metadata)
+    for name in ("板块指数", "全A股票"):
+        symbols = dynamic_groups.get(name, ())
+        if symbols:
+            groups.append({"name": name, "symbols": list(symbols)})
+    return groups
+
+
+def _dynamic_shortcut_groups(metadata: pd.DataFrame | None) -> dict[str, tuple[str, ...]]:
+    if metadata is None or metadata.empty:
+        return {"全A股票": (), "板块指数": ()}
+    all_a: list[str] = []
+    sector_indexes: list[str] = []
+    for row in metadata.itertuples(index=False):
+        symbol = normalize_symbol(getattr(row, "stock_code", ""))
+        if not symbol:
+            continue
+        name = str(getattr(row, "stock_name", "") or "")
+        code, exchange = symbol.split(".", 1)
+        asset_type = infer_asset_type(symbol, name)
+        if asset_type == "stock":
+            all_a.append(symbol)
+            continue
+        if asset_type == "index" and exchange == "SH" and code.startswith("880"):
+            sector_indexes.append(symbol)
+    return {
+        "全A股票": tuple(sorted(unique_symbols(all_a))),
+        "板块指数": tuple(sorted(unique_symbols(sector_indexes))),
+    }
 
 
 def cache_summary(catalog: pd.DataFrame) -> dict[str, object]:

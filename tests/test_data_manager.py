@@ -8,7 +8,13 @@ import pandas as pd
 from tdx_downloader.data.catalog import query_catalog
 from tdx_downloader.data.audit import audit_local_data, data_gap_episodes
 from tdx_downloader.data.inventory import inventory_local_data
-from tdx_downloader.data.manager import DataDownloadConfig, DataManagementService, shortcut_symbols
+from tdx_downloader.data.manager import (
+    DataDownloadConfig,
+    DataManagementService,
+    shortcut_symbol_groups,
+    shortcut_symbols,
+)
+from tdx_downloader.data.symbols import load_tdx_symbol_metadata
 from tdx_downloader.data.storage import write_local_bars
 
 
@@ -218,3 +224,35 @@ def test_data_management_service_download_rejects_unknown_mode(tmp_path: Path) -
 def test_shortcut_symbols_exposes_non_manual_groups() -> None:
     assert "000300.SH" in shortcut_symbols("宽基指数")
     assert "510300.SH" in shortcut_symbols("ETF样例")
+
+
+def test_shortcut_symbol_groups_adds_full_a_and_sector_indexes_from_metadata() -> None:
+    metadata = pd.DataFrame(
+        {
+            "stock_code": ["000001.SZ", "600000.SH", "510300.SH", "000300.SH", "880001.SH", "880002.SH"],
+            "stock_name": ["平安银行", "浦发银行", "沪深300ETF", "沪深300", "种植业", "半导体"],
+            "source": ["test"] * 6,
+            "path": [""] * 6,
+        }
+    )
+
+    groups = {group["name"]: group["symbols"] for group in shortcut_symbol_groups(metadata=metadata)}
+
+    assert groups["全A股票"] == ["000001.SZ", "600000.SH"]
+    assert groups["板块指数"] == ["880001.SH", "880002.SH"]
+
+
+def test_tdx_symbol_metadata_reads_current_tdx_tnf_names(tmp_path: Path) -> None:
+    hq_cache = tmp_path / "T0002" / "hq_cache"
+    hq_cache.mkdir(parents=True)
+    record = bytearray(360)
+    record[0:6] = b"880001"
+    name = "种植业".encode("gbk")
+    record[31 : 31 + len(name)] = name
+    (hq_cache / "shs.tnf").write_bytes(bytes(50) + bytes(record))
+
+    metadata = load_tdx_symbol_metadata(tmp_path)
+
+    assert metadata[["stock_code", "stock_name"]].to_dict("records") == [
+        {"stock_code": "880001.SH", "stock_name": "种植业"}
+    ]
