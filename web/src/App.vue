@@ -181,6 +181,18 @@
                   <input v-model="settings.end" type="date" />
                 </label>
               </div>
+              <div class="date-shortcuts span-full" aria-label="日期快捷选项">
+                <span>快捷</span>
+                <button
+                  v-for="shortcut in DATE_RANGE_SHORTCUTS"
+                  :key="shortcut.key"
+                  type="button"
+                  :class="['date-shortcut', { active: isDateShortcutActive(settings, shortcut.key) }]"
+                  @click="applyDateShortcut(settings, shortcut.key)"
+                >
+                  {{ shortcut.label }}
+                </button>
+              </div>
 
               <label>
                 <span>执行方式</span>
@@ -453,6 +465,18 @@
                     <input v-model="crossForm.end" type="date" />
                   </label>
                 </div>
+                <div class="date-shortcuts span-full" aria-label="日期快捷选项">
+                  <span>快捷</span>
+                  <button
+                    v-for="shortcut in DATE_RANGE_SHORTCUTS"
+                    :key="shortcut.key"
+                    type="button"
+                    :class="['date-shortcut', { active: isDateShortcutActive(crossForm, shortcut.key) }]"
+                    @click="applyDateShortcut(crossForm, shortcut.key)"
+                  >
+                    {{ shortcut.label }}
+                  </button>
+                </div>
                 <label>
                   <span>日期容忍K数</span>
                   <input v-model.number="crossForm.date_tolerance_bars" type="number" min="0" />
@@ -495,6 +519,18 @@
                     <span>结束</span>
                     <input v-model="reviewForm.end" type="date" />
                   </label>
+                </div>
+                <div class="date-shortcuts span-full" aria-label="日期快捷选项">
+                  <span>快捷</span>
+                  <button
+                    v-for="shortcut in DATE_RANGE_SHORTCUTS"
+                    :key="shortcut.key"
+                    type="button"
+                    :class="['date-shortcut', { active: isDateShortcutActive(reviewForm, shortcut.key) }]"
+                    @click="applyDateShortcut(reviewForm, shortcut.key)"
+                  >
+                    {{ shortcut.label }}
+                  </button>
                 </div>
                 <label>
                   <span>最小波段幅度</span>
@@ -719,6 +755,13 @@ interface NoticePayload {
   body: string
 }
 
+type DateShortcutKey = '20d' | '50d' | 'ytd' | '1y'
+
+interface DateRangeFields {
+  start: string
+  end: string
+}
+
 type DirectoryField = 'data_root' | 'tdx_path'
 type ResearchTabKey = 'history' | 'cross' | 'review'
 type SymbolRefreshTarget = 'index' | 'etf'
@@ -758,6 +801,12 @@ const SETTINGS_STORAGE_KEY = 'tdx-downloader-web-settings'
 const RESEARCH_SNAPSHOT_STORAGE_KEY = 'tdx-downloader-research-snapshots'
 const MAX_RESEARCH_SNAPSHOTS = 60
 const CACHE_PAGE_SIZE_OPTIONS = [25, 50, 100]
+const DATE_RANGE_SHORTCUTS: Array<{ key: DateShortcutKey; label: string }> = [
+  { key: '20d', label: '20日' },
+  { key: '50d', label: '50日' },
+  { key: 'ytd', label: 'YTD' },
+  { key: '1y', label: '近一年' }
+]
 const STATUS_LABELS: Record<string, string> = {
   cached: '可用',
   missing_file: '缺文件',
@@ -1574,13 +1623,41 @@ function parseNumberList(text: string) {
 }
 
 function todayText() {
-  return new Date().toISOString().slice(0, 10)
+  return formatDateText(new Date())
 }
 
 function offsetDateText(offsetDays: number) {
   const date = new Date()
   date.setDate(date.getDate() + offsetDays)
-  return date.toISOString().slice(0, 10)
+  return formatDateText(date)
+}
+
+function applyDateShortcut(target: DateRangeFields, key: DateShortcutKey) {
+  const range = dateRangeForShortcut(key)
+  target.start = range.start
+  target.end = range.end
+}
+
+function isDateShortcutActive(target: DateRangeFields, key: DateShortcutKey) {
+  const range = dateRangeForShortcut(key)
+  return target.start === range.start && target.end === range.end
+}
+
+function dateRangeForShortcut(key: DateShortcutKey): DateRangeFields {
+  const end = todayText()
+  if (key === '20d') return { start: offsetDateText(-20), end }
+  if (key === '50d') return { start: offsetDateText(-50), end }
+  if (key === 'ytd') return { start: `${new Date().getFullYear()}-01-01`, end }
+  const start = new Date()
+  start.setFullYear(start.getFullYear() - 1)
+  return { start: formatDateText(start), end }
+}
+
+function formatDateText(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 function compactPath(path: string) {
