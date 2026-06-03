@@ -68,11 +68,13 @@ DEFAULT_TIMEFRAMES = ("1d",)
 DEFAULT_BATCH_SIZE = 100
 MAX_TABLE_RECORDS = 500
 TASK_HISTORY_LIMIT = 50
+TASK_EVENT_LIMIT = 40
 
 STAGE_LABELS = {
     "task_start": "任务启动",
     "parallels_task_start": "Windows 调度",
     "parallels_command_start": "Windows 执行",
+    "parallels_batch_retry_incomplete": "质量容错",
     "parallels_command_done": "Windows 返回",
     "tdx_connection_check": "连接检查",
     "tdx_connection_ok": "连接成功",
@@ -850,7 +852,10 @@ def _append_event(task_id: str, event: dict[str, object]) -> None:
     event_payload["time"] = _now_text()
     event_payload["label"] = _progress_label(event_payload)
     with _tasks_lock:
-        _tasks[task_id].events.append(event_payload)
+        task = _tasks[task_id]
+        task.events.append(event_payload)
+        if len(task.events) > TASK_EVENT_LIMIT:
+            del task.events[: len(task.events) - TASK_EVENT_LIMIT]
 
 
 def _task_payload(task: TaskState) -> dict[str, Any]:

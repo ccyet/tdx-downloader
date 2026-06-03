@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import io
 import json
 from pathlib import Path
@@ -27,6 +28,7 @@ DYNAMIC_SYMBOL_GROUP_TARGETS = {
 }
 PARALLELS_SYMBOL_GROUP_TIMEOUT_SECONDS = 12
 PARALLELS_SYMBOL_METADATA_TIMEOUT_SECONDS = 30
+QUALITY_GATE_ERROR_MARKER = "本地行情数据未通过质量门禁"
 
 
 def should_use_parallels_runtime() -> bool:
@@ -104,7 +106,25 @@ def download_with_parallels_cli(
                 batch_count=len(batches),
                 symbol_count=len(batch_config.symbols),
             )
-            frames.append(run_parallels_cli_table(parallels_prepare_command(service, batch_config)))
+            try:
+                frames.append(run_parallels_cli_table(parallels_prepare_command(service, batch_config)))
+            except RuntimeError as exc:
+                if not _is_quality_gate_error(exc) or not batch_config.strict_after_update:
+                    raise
+                _emit_progress(
+                    progress_callback,
+                    stage="parallels_batch_retry_incomplete",
+                    message=(
+                        f"第 {batch_index}/{len(batches)} 批未完全通过质量门禁，"
+                        "已按容错模式保留失败项并继续后续批次。"
+                    ),
+                    batch_index=batch_index,
+                    batch_count=len(batches),
+                    symbol_count=len(batch_config.symbols),
+                    error=str(exc),
+                )
+                tolerant_config = replace(batch_config, strict_after_update=False)
+                frames.append(run_parallels_cli_table(parallels_prepare_command(service, tolerant_config)))
         table = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     elif mode == "force":
         frames = []
@@ -404,6 +424,10 @@ def _symbol_batches(config: DataDownloadConfig) -> list[DataDownloadConfig]:
 def _emit_progress(callback, **payload: object) -> None:
     if callback is not None:
         callback(payload)
+
+
+def _is_quality_gate_error(error: Exception) -> bool:
+    return QUALITY_GATE_ERROR_MARKER in str(error)
 
 
 def _required_dynamic_symbol_groups(target: str) -> frozenset[str]:

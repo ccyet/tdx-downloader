@@ -139,6 +139,60 @@ def test_parallels_download_splits_large_symbol_lists(monkeypatch) -> None:  # t
     assert len(result.table) == 250
 
 
+def test_parallels_download_continues_after_batch_quality_gate(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class Service:
+        data_root = Path("/Volumes/ccOUT 1/tdx-data")
+        adjust = "qfq"
+
+    commands: list[list[str]] = []
+
+    def skip_connection_check(*_: object, **__: object) -> pd.DataFrame:
+        return pd.DataFrame({"status": ["ok"]})
+
+    def fake_run_table(command: list[str]) -> pd.DataFrame:
+        commands.append(command)
+        symbols = command[command.index("--symbols") + 1].split(",")
+        if symbols == ["000002.SZ"] and "--allow-incomplete-after-update" not in command:
+            raise RuntimeError(
+                "Parallels/Windows 通达信任务失败：本地行情数据未通过质量门禁："
+                "000002.SZ/1d=missing_file(本地 parquet 不存在。)"
+            )
+        return pd.DataFrame(
+            {
+                "stock_code": symbols,
+                "timeframe": ["1d"] * len(symbols),
+                "action": ["fetched"] * len(symbols),
+                "rows_written": [1] * len(symbols),
+                "new_rows": [1] * len(symbols),
+            }
+        )
+
+    monkeypatch.setattr(parallels_runtime, "verify_parallels_tdx_connection", skip_connection_check)
+    monkeypatch.setattr(parallels_runtime, "run_parallels_cli_table", fake_run_table)
+    events: list[dict[str, object]] = []
+
+    result = download_with_parallels_cli(
+        Service(),  # type: ignore[arg-type]
+        DataDownloadConfig(
+            symbols=("000001.SZ", "000002.SZ", "000003.SZ"),
+            timeframes=("1d",),
+            start="2026-06-01",
+            end="2026-06-02",
+            batch_size=1,
+            strict_after_update=True,
+        ),
+        mode="smart",
+        progress_callback=events.append,
+    )
+
+    assert result.summary["fetched_count"] == 3.0
+    assert result.table["stock_code"].tolist() == ["000001.SZ", "000002.SZ", "000003.SZ"]
+    assert commands[2][commands[2].index("--symbols") + 1] == "000002.SZ"
+    assert "--allow-incomplete-after-update" in commands[2]
+    assert "parallels_batch_retry_incomplete" in [event["stage"] for event in events]
+    assert [event["stage"] for event in events].count("parallels_command_start") == 3
+
+
 def test_symbol_groups_runtime_uses_parallels_when_local_dynamic_groups_missing(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     commands: list[list[str]] = []
 

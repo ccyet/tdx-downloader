@@ -225,6 +225,21 @@ def test_api_clear_tasks_keeps_running_queue_empty() -> None:
     assert data["running_count"] >= 0
 
 
+def test_task_events_keep_recent_fifo_window() -> None:
+    with web_api._tasks_lock:
+        web_api._tasks.clear()
+
+    task = web_api._create_task("download")
+    for index in range(web_api.TASK_EVENT_LIMIT + 5):
+        web_api._append_event(task.id, {"stage": "parallels_command_start", "message": f"第 {index} 批"})
+
+    payload = web_api._task_payload(web_api._get_task(task.id))  # type: ignore[arg-type]
+
+    assert len(payload["events"]) == web_api.TASK_EVENT_LIMIT
+    assert payload["events"][0]["message"] == "第 5 批"
+    assert payload["events"][-1]["message"] == f"第 {web_api.TASK_EVENT_LIMIT + 4} 批"
+
+
 def test_download_task_refreshes_catalog_after_writing_cache(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     data_root = tmp_path / "market"
 
