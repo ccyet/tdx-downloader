@@ -224,6 +224,25 @@ def test_audit_rejects_inconsistent_ohlc_for_stock(tmp_path: Path) -> None:
     assert audit.loc[0, "inconsistent_ohlc_rows"] == 1
 
 
+def test_audit_rejects_zero_ohlc_for_stock(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().iloc[[0]].copy()
+    bars[["open", "high", "low", "close"]] = 0.0
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("000001.SZ",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "quality_error"
+    assert audit.loc[0, "non_positive_price_rows"] == 1
+
+
 def test_audit_relaxes_ohlc_semantics_for_tdx_sector_index(tmp_path: Path) -> None:
     data_root = tmp_path / "market" / "daily"
     bars = _bars().iloc[[0]].copy()
@@ -246,6 +265,27 @@ def test_audit_relaxes_ohlc_semantics_for_tdx_sector_index(tmp_path: Path) -> No
     assert audit.loc[0, "status"] == "ok"
     assert audit.loc[0, "inconsistent_ohlc_rows"] == 1
     assert "板块指数" in audit.loc[0, "message"]
+
+
+def test_audit_marks_nonstandard_zero_price_tdx_sector_index_cached(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().copy()
+    bars["stock_code"] = ["880774.SH", "880774.SH"]
+    bars.loc[bars.index[0], ["open", "high", "low", "close"]] = 0.0
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("880774.SH",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "ok"
+    assert audit.loc[0, "non_positive_price_rows"] == 1
+    assert "非常规" in audit.loc[0, "message"]
 
 
 def test_data_management_service_download_rejects_unknown_mode(tmp_path: Path) -> None:

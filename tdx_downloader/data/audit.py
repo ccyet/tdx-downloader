@@ -282,7 +282,9 @@ def _audit_symbol_file(
     null_ohlc_rows = int(window[["open", "high", "low", "close"]].isna().any(axis=1).sum())
     non_positive_price_rows = int((window[["open", "high", "low", "close"]] <= 0).any(axis=1).sum())
     inconsistent_ohlc_rows = int(_inconsistent_ohlc_mask(window).sum())
-    relaxed_ohlc_rows = inconsistent_ohlc_rows if _is_tdx_sector_index(symbol) else 0
+    is_tdx_sector_index = _is_tdx_sector_index(symbol)
+    relaxed_non_positive_price_rows = non_positive_price_rows if is_tdx_sector_index else 0
+    relaxed_ohlc_rows = inconsistent_ohlc_rows if is_tdx_sector_index else 0
     null_volume_amount_rows = int(window[["volume", "amount"]].isna().any(axis=1).sum())
     zero_volume_amount_rows = int(window[["volume", "amount"]].eq(0).any(axis=1).sum())
     negative_volume_amount_rows = int((window[["volume", "amount"]] < 0).any(axis=1).sum())
@@ -304,7 +306,7 @@ def _audit_symbol_file(
             invalid_symbol_rows,
             duplicate_rows,
             null_ohlc_rows,
-            non_positive_price_rows,
+            non_positive_price_rows - relaxed_non_positive_price_rows,
             inconsistent_ohlc_rows - relaxed_ohlc_rows,
             null_volume_amount_rows,
             negative_volume_amount_rows,
@@ -319,9 +321,12 @@ def _audit_symbol_file(
     elif zero_volume_amount_rows > 0:
         status = "ok"
         message = "覆盖按可交易 K 计算；存在零流动性 K，已从回测数据包剔除。"
+    elif relaxed_non_positive_price_rows > 0:
+        status = "ok"
+        message = "非常规板块指数使用通达信统计口径，已标记缓存并跳过价格语义门禁；其他质量检查通过。"
     elif relaxed_ohlc_rows > 0:
         status = "ok"
-        message = "板块指数使用通达信统计口径，已跳过 OHLC 高低点语义校验；其他质量检查通过。"
+        message = "非常规板块指数使用通达信统计口径，已标记缓存并跳过 OHLC 高低点语义校验；其他质量检查通过。"
     else:
         status = "ok"
         message = "覆盖和质量检查通过。"
