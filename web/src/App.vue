@@ -65,23 +65,15 @@
             <span v-if="overview && !overview.catalog_exists" class="hint-text">还没有 SQLite 索引，先扫描缓存。</span>
           </div>
 
-          <div class="asset-overview-grid">
-            <article class="overview-hero-card">
-              <div class="asset-card-head">
-                <div class="asset-icon"><Icon name="database" /></div>
-                <div>
-                  <span>缓存资产总览</span>
-                  <strong>{{ formatInt(summary.symbol_count) }} 标的</strong>
-                </div>
-              </div>
-              <div class="dashboard-key-stats">
-                <div v-for="item in dashboardKeyStats" :key="item.label" class="dashboard-key-stat">
-                  <span>{{ item.label }}</span>
-                  <strong>{{ item.value }}</strong>
-                </div>
-              </div>
-            </article>
+          <section class="dashboard-strip">
+            <div v-for="item in dashboardKeyStats" :key="item.label" class="dashboard-stat">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+              <em>{{ item.detail }}</em>
+            </div>
+          </section>
 
+          <div class="asset-overview-grid">
             <article
               v-for="asset in assetOverviewCards"
               :key="asset.value"
@@ -97,7 +89,7 @@
               </div>
               <div class="asset-main-metric">
                 <strong>{{ formatInt(asset.symbolCount) }}</strong>
-                <span>标的 · {{ formatInt(asset.rows) }} 行 · {{ formatInt(asset.cachedPeriodItems) }} / {{ formatInt(asset.totalPeriodItems) }} 周期项可用</span>
+                <span>{{ formatInt(asset.cachedPeriodItems) }} / {{ formatInt(asset.totalPeriodItems) }} 周期项可用</span>
               </div>
               <div class="timeframe-strip">
                 <div
@@ -112,42 +104,13 @@
             </article>
           </div>
 
-          <div class="content-grid two">
-            <Panel title="周期覆盖概览" subtitle="缓存资产">
-              <div v-if="displayTimeframeRows.length" class="split-list">
-                <div v-for="row in displayTimeframeRows" :key="row.timeframe" class="split-row">
-                  <strong>{{ row.timeframe }}</strong>
-                  <span>{{ formatInt(row.cached_count) }} 可用</span>
-                  <em>{{ formatInt(row.unavailable_count) }} 缺口 · {{ formatInt(row.rows) }} 行</em>
-                </div>
-              </div>
-              <EmptyState v-else title="暂无周期覆盖" body="扫描缓存后展示不同周期的可用资产数量。" />
-            </Panel>
-
-            <div class="view-stack">
-              <Panel title="运行环境" subtitle="TDX">
-                <div class="kv-list">
-                  <div class="kv-row"><span>行情根目录</span><strong>{{ settings.data_root }}</strong></div>
-                  <div class="kv-row"><span>TDX PYPlugins/user</span><strong>{{ settings.tdx_path }}</strong></div>
-                  <div class="kv-row"><span>复权</span><strong>{{ settings.adjust }}</strong></div>
-                  <div class="kv-row"><span>批次大小</span><strong>{{ settings.batch_size }}</strong></div>
-                  <div class="kv-row"><span>严格复核</span><strong>{{ settings.strict_after_update ? '开启' : '关闭' }}</strong></div>
-                </div>
-              </Panel>
-
-              <Panel title="最近执行" subtitle="任务">
-                <div v-if="latestTask" class="recent-task-card">
-                  <strong>{{ latestTask.status }}</strong>
-                  <span>{{ latestTask.id }}</span>
-                  <em>{{ latestTask.error || latestTask.finished_at || latestTask.started_at || latestTask.created_at }}</em>
-                </div>
-                <EmptyState v-else title="暂无任务" body="执行下载后这里展示最近一次任务状态。" />
-              </Panel>
+          <Panel title="最近执行" subtitle="任务">
+            <div v-if="latestTask" class="recent-task-card compact">
+              <strong>{{ latestTask.status }}</strong>
+              <span>{{ latestTask.id }}</span>
+              <em>{{ latestTask.error || latestTask.finished_at || latestTask.started_at || latestTask.created_at }}</em>
             </div>
-          </div>
-
-          <Panel title="回测准备度" subtitle="按资产类型和周期">
-            <DataTable :rows="displayReadinessRows" :columns="readinessColumns" empty="暂无准备度记录，先扫描缓存。" />
+            <EmptyState v-else title="暂无任务" body="执行下载后这里展示最近一次任务状态。" />
           </Panel>
         </section>
 
@@ -330,6 +293,33 @@
             </div>
           </Panel>
 
+          <Panel title="研究快照" :subtitle="activeResearchMeta.label">
+            <div class="snapshot-toolbar">
+              <span>{{ activeResearchSnapshots.length }} 个当前模块快照</span>
+              <button class="btn secondary" type="button" :disabled="!activeResearchResult" @click="saveActiveResearchSnapshot">
+                <Icon name="save" />
+                保存当前结果
+              </button>
+            </div>
+            <div v-if="activeResearchSnapshots.length" class="snapshot-list">
+              <article v-for="snapshot in activeResearchSnapshots" :key="snapshot.id" class="snapshot-row">
+                <div>
+                  <strong>{{ snapshot.title }}</strong>
+                  <span>{{ snapshot.createdAt }} · {{ snapshot.summary }}</span>
+                </div>
+                <div class="snapshot-actions">
+                  <button class="icon-button" type="button" title="载入快照" @click="loadResearchSnapshot(snapshot)">
+                    <Icon name="download" />
+                  </button>
+                  <button class="icon-button danger" type="button" title="删除快照" @click="deleteResearchSnapshot(snapshot.id)">
+                    <Icon name="trash" />
+                  </button>
+                </div>
+              </article>
+            </div>
+            <EmptyState v-else title="暂无快照" body="运行当前研究模块后可保存结果，之后可一键载入。" />
+          </Panel>
+
           <section v-if="activeResearchTab === 'history'" class="content-grid two">
             <Panel title="历史时序相似" subtitle="单标的">
               <form class="task-form" @submit.prevent="runHistorySearch">
@@ -361,6 +351,10 @@
                   <button class="btn primary" type="submit" :disabled="runningResearch === 'history'">
                     <Icon name="activity" />
                     开始搜索
+                  </button>
+                  <button class="btn secondary" type="button" :disabled="!historyResult" @click="saveResearchSnapshot('history')">
+                    <Icon name="save" />
+                    保存快照
                   </button>
                 </div>
               </form>
@@ -409,6 +403,10 @@
                     <Icon name="layers" />
                     开始搜索
                   </button>
+                  <button class="btn secondary" type="button" :disabled="!crossResult" @click="saveResearchSnapshot('cross')">
+                    <Icon name="save" />
+                    保存快照
+                  </button>
                 </div>
               </form>
             </Panel>
@@ -451,6 +449,10 @@
                   <button class="btn primary" type="submit" :disabled="runningResearch === 'review'">
                     <Icon name="clipboard" />
                     生成复盘
+                  </button>
+                  <button class="btn secondary" type="button" :disabled="!reviewResult" @click="saveResearchSnapshot('review')">
+                    <Icon name="save" />
+                    保存快照
                   </button>
                 </div>
               </form>
@@ -648,6 +650,16 @@ interface NoticePayload {
 type DirectoryField = 'data_root' | 'tdx_path'
 type ResearchTabKey = 'history' | 'cross' | 'review'
 
+interface ResearchSnapshot {
+  id: string
+  tab: ResearchTabKey
+  title: string
+  createdAt: string
+  summary: string
+  payload: Record<string, any>
+  result: Record<string, any>
+}
+
 const IMPORTANT_ASSET_TYPES = [
   { value: 'etf', label: 'ETF', tone: 'blue', icon: 'archive' },
   { value: 'stock', label: '个股', tone: 'green', icon: 'key' },
@@ -670,6 +682,8 @@ const researchTabs: Array<{ key: ResearchTabKey; label: string; icon: string }> 
 ]
 
 const SETTINGS_STORAGE_KEY = 'tdx-downloader-web-settings'
+const RESEARCH_SNAPSHOT_STORAGE_KEY = 'tdx-downloader-research-snapshots'
+const MAX_RESEARCH_SNAPSHOTS = 60
 const STATUS_LABELS: Record<string, string> = {
   cached: '可用',
   missing_file: '缺文件',
@@ -716,6 +730,7 @@ const planSummary = ref<Record<string, any>>({})
 const historyResult = ref<Record<string, any> | null>(null)
 const crossResult = ref<Record<string, any> | null>(null)
 const reviewResult = ref<Record<string, any> | null>(null)
+const researchSnapshots = ref<ResearchSnapshot[]>([])
 const notice = ref<NoticePayload | null>(null)
 const cacheFilters = reactive({
   keyword: '',
@@ -764,12 +779,11 @@ const reviewForm = reactive({
 })
 
 const activeMeta = computed(() => navItems.find((item) => item.key === activeView.value) || navItems[0])
+const activeResearchMeta = computed(() => researchTabs.find((item) => item.key === activeResearchTab.value) || researchTabs[0])
 const summary = computed(() => overview.value?.summary || {})
 const assetRows = computed(() => overview.value?.by_asset_type || [])
 const timeframeRows = computed(() => overview.value?.by_timeframe || [])
 const datasetRows = computed(() => overview.value?.by_dataset || [])
-const readinessRows = computed(() => overview.value?.readiness || [])
-const displayReadinessRows = computed(() => readinessRows.value.map((row: Record<string, any>) => displayRecord(row)))
 const cacheRows = computed(() => overview.value?.records || [])
 const filteredCacheRows = computed(() => {
   const keyword = cacheFilters.keyword.trim().toLowerCase()
@@ -807,6 +821,10 @@ const aiMessagesText = computed(() => JSON.stringify(reviewResult.value?.ai?.mes
 const aiEvidenceText = computed(() => JSON.stringify(reviewResult.value?.ai?.evidence || {}, null, 2))
 const reviewText = computed(() => String(reviewResult.value?.text?.review || ''))
 const videoScriptText = computed(() => String(reviewResult.value?.text?.video_script || ''))
+const activeResearchResult = computed(() => researchResultFor(activeResearchTab.value))
+const activeResearchSnapshots = computed(() =>
+  researchSnapshots.value.filter((snapshot) => snapshot.tab === activeResearchTab.value)
+)
 const uniqueCacheTimeframes = computed(() => uniqueStrings(cacheRows.value.map((row: Record<string, any>) => row.timeframe)))
 const uniqueCacheStatuses = computed(() =>
   uniqueStrings(cacheRows.value.map((row: Record<string, any>) => row.status)).map((value) => ({
@@ -832,12 +850,6 @@ const overviewTimeframes = computed(() =>
     ...datasetRows.value.map((row: Record<string, any>) => row.timeframe)
   ])
 )
-const displayTimeframeRows = computed(() =>
-  [...timeframeRows.value].sort(
-    (left: Record<string, any>, right: Record<string, any>) =>
-      timeframeRank(String(left.timeframe || '')) - timeframeRank(String(right.timeframe || ''))
-  )
-)
 const timeframeStorageRows = computed(() =>
   sortTimeframes(config.value?.timeframes || Object.keys(TIMEFRAME_DIR_NAMES)).map((timeframe) => ({
     timeframe,
@@ -845,15 +857,18 @@ const timeframeStorageRows = computed(() =>
   }))
 )
 const dashboardKeyStats = computed(() => [
-  { label: '资产类型', value: `${formatInt(summary.value.asset_type_count)} 类` },
+  { label: '缓存标的', value: formatInt(summary.value.symbol_count), detail: `${formatInt(summary.value.asset_type_count)} 类资产` },
   {
     label: '可用周期项',
-    value: `${formatInt(summary.value.data_inventory_cached_count)} / ${formatInt(summary.value.data_inventory_row_count)}`
+    value: `${formatInt(summary.value.data_inventory_cached_count)} / ${formatInt(summary.value.data_inventory_row_count)}`,
+    detail: `${formatInt(summary.value.data_inventory_unavailable_count)} 缺口`
   },
-  { label: '缺口项', value: formatInt(summary.value.data_inventory_unavailable_count) },
-  { label: '总行数', value: formatInt(summary.value.data_inventory_total_rows) },
-  { label: '文件体积', value: formatBytes(summary.value.data_inventory_total_file_size_bytes) },
-  { label: '运行链路', value: runtimeLabel.value }
+  {
+    label: 'K线总量',
+    value: formatInt(summary.value.data_inventory_total_rows),
+    detail: formatBytes(summary.value.data_inventory_total_file_size_bytes)
+  },
+  { label: '运行链路', value: runtimeLabel.value, detail: latestTaskText.value === '无' ? '暂无任务' : `最近 ${latestTaskText.value}` }
 ])
 const assetOverviewCards = computed(() =>
   IMPORTANT_ASSET_TYPES.map((asset) => {
@@ -880,15 +895,6 @@ const assetOverviewCards = computed(() =>
   })
 )
 
-const readinessColumns = [
-  { key: 'timeframe', label: '周期' },
-  { key: 'asset_type_label', label: '资产' },
-  { key: 'status', label: '状态' },
-  { key: 'total_count', label: '总数' },
-  { key: 'cached_count', label: '可用' },
-  { key: 'missing_count', label: '缺口' },
-  { key: 'latest_end_at', label: '最近结束' }
-]
 const planColumns = [
   { key: 'stock_code', label: '代码' },
   { key: 'timeframe', label: '周期' },
@@ -967,6 +973,7 @@ const segmentColumns = [
 ]
 
 onMounted(async () => {
+  restoreResearchSnapshots()
   await loadConfig()
   await Promise.all([loadOverview(false), loadTasks()])
   window.setInterval(loadTasks, 2500)
@@ -1099,6 +1106,50 @@ async function runReviewSearch() {
   }
 }
 
+function saveActiveResearchSnapshot() {
+  saveResearchSnapshot(activeResearchTab.value)
+}
+
+function saveResearchSnapshot(tab: ResearchTabKey) {
+  const result = researchResultFor(tab)
+  if (!result) {
+    showNotice('info', '没有可保存结果', '先运行当前研究模块，再保存快照。')
+    return
+  }
+  const snapshot: ResearchSnapshot = {
+    id: `${tab}-${Date.now()}`,
+    tab,
+    title: researchSnapshotTitle(tab),
+    createdAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+    summary: researchSnapshotSummary(tab, result),
+    payload: researchSnapshotPayload(tab),
+    result: cloneJson(result)
+  }
+  researchSnapshots.value = [snapshot, ...researchSnapshots.value].slice(0, MAX_RESEARCH_SNAPSHOTS)
+  persistResearchSnapshots()
+  showNotice('success', '快照已保存', `${activeResearchMetaFor(tab).label}结果已保存到本机浏览器。`)
+}
+
+function loadResearchSnapshot(snapshot: ResearchSnapshot) {
+  activeResearchTab.value = snapshot.tab
+  const base = snapshot.payload?.base || {}
+  if (base.data_root) settings.data_root = normalizeDataRoot(String(base.data_root))
+  if ('adjust' in base) settings.adjust = String(base.adjust || '')
+  if (base.timeframe) researchTimeframe.value = String(base.timeframe)
+  const form = snapshot.payload?.form || {}
+  if (snapshot.tab === 'history') Object.assign(historyForm, form)
+  if (snapshot.tab === 'cross') Object.assign(crossForm, form)
+  if (snapshot.tab === 'review') Object.assign(reviewForm, form)
+  setResearchResult(snapshot.tab, cloneJson(snapshot.result))
+  showNotice('success', '快照已载入', snapshot.title)
+}
+
+function deleteResearchSnapshot(snapshotId: string) {
+  researchSnapshots.value = researchSnapshots.value.filter((snapshot) => snapshot.id !== snapshotId)
+  persistResearchSnapshots()
+  showNotice('info', '快照已删除', '本地研究快照列表已更新。')
+}
+
 async function loadTasks() {
   try {
     const data = await apiGet('/tasks')
@@ -1171,6 +1222,78 @@ function researchPayloadBase() {
     adjust: settings.adjust,
     timeframe: researchTimeframe.value
   }
+}
+
+function researchSnapshotPayload(tab: ResearchTabKey) {
+  const form = {
+    history: { ...historyForm },
+    cross: { ...crossForm },
+    review: { ...reviewForm }
+  }[tab]
+  return {
+    base: researchPayloadBase(),
+    form: cloneJson(form)
+  }
+}
+
+function researchSnapshotTitle(tab: ResearchTabKey) {
+  if (tab === 'history') return `历史相似 · ${historyForm.symbol || '-'} · ${historyForm.as_of || '-'}`
+  if (tab === 'cross') return `横截面相似 · ${crossForm.target_symbol || '-'} · ${crossForm.start || '-'} 至 ${crossForm.end || '-'}`
+  const count = parseSymbols(reviewForm.symbols).length
+  return `多股复盘 · ${formatInt(count)} 标的 · ${reviewForm.start || '-'} 至 ${reviewForm.end || '-'}`
+}
+
+function researchSnapshotSummary(tab: ResearchTabKey, result: Record<string, any>) {
+  const payloadSummary = result.summary || {}
+  if (tab === 'history') return `${formatInt(payloadSummary.match_count)} 个历史窗口 · ${payloadSummary.timeframe || researchTimeframe.value}`
+  if (tab === 'cross') return `${formatInt(payloadSummary.match_count)} 个候选匹配 · ${payloadSummary.timeframe || researchTimeframe.value}`
+  return `${formatInt(payloadSummary.ranked_count)} 个排序标的 · ${payloadSummary.timeframe || researchTimeframe.value}`
+}
+
+function researchResultFor(tab: ResearchTabKey) {
+  if (tab === 'history') return historyResult.value
+  if (tab === 'cross') return crossResult.value
+  return reviewResult.value
+}
+
+function setResearchResult(tab: ResearchTabKey, result: Record<string, any>) {
+  if (tab === 'history') historyResult.value = result
+  if (tab === 'cross') crossResult.value = result
+  if (tab === 'review') reviewResult.value = result
+}
+
+function activeResearchMetaFor(tab: ResearchTabKey) {
+  return researchTabs.find((item) => item.key === tab) || researchTabs[0]
+}
+
+function restoreResearchSnapshots() {
+  const raw = window.localStorage.getItem(RESEARCH_SNAPSHOT_STORAGE_KEY)
+  if (!raw) return
+  try {
+    const parsed = JSON.parse(raw)
+    researchSnapshots.value = Array.isArray(parsed) ? parsed.filter(isResearchSnapshot).slice(0, MAX_RESEARCH_SNAPSHOTS) : []
+  } catch {
+    window.localStorage.removeItem(RESEARCH_SNAPSHOT_STORAGE_KEY)
+  }
+}
+
+function persistResearchSnapshots() {
+  window.localStorage.setItem(RESEARCH_SNAPSHOT_STORAGE_KEY, JSON.stringify(researchSnapshots.value))
+}
+
+function isResearchSnapshot(value: any): value is ResearchSnapshot {
+  return (
+    value &&
+    ['history', 'cross', 'review'].includes(value.tab) &&
+    typeof value.id === 'string' &&
+    typeof value.title === 'string' &&
+    value.result &&
+    typeof value.result === 'object'
+  )
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value))
 }
 
 function saveSettings() {
