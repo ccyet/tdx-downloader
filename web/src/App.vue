@@ -440,6 +440,10 @@
                   <input v-model.number="reviewForm.min_segment_bars" type="number" min="1" />
                 </label>
                 <label class="span-full">
+                  <span>对标指数</span>
+                  <input v-model="reviewForm.benchmark_symbol" type="text" placeholder="000300.SH" />
+                </label>
+                <label class="span-full">
                   <span>复盘标的</span>
                   <textarea v-model="reviewForm.symbols" rows="5"></textarea>
                 </label>
@@ -456,8 +460,28 @@
               <Panel title="排序锐评" subtitle="本地行情">
                 <DataTable :rows="displayReviewRows" :columns="reviewColumns" empty="暂无复盘排序。" />
               </Panel>
+              <Panel title="对标比较" subtitle="指数关系">
+                <DataTable :rows="displayComparisonRows" :columns="comparisonColumns" empty="暂无对标比较。" />
+              </Panel>
               <Panel title="关键波段" subtitle="首位标的">
                 <DataTable :rows="displaySegmentRows" :columns="segmentColumns" empty="暂无关键波段。" />
+              </Panel>
+              <Panel title="AI 锐评接口" subtitle="证据与提示词">
+                <div v-if="reviewResult?.ai" class="ai-interface">
+                  <div class="kv-list compact">
+                    <div class="kv-row"><span>证据模式</span><strong>{{ reviewResult.ai.evidence?.mode || '-' }}</strong></div>
+                    <div class="kv-row"><span>消息数量</span><strong>{{ reviewResult.ai.messages?.length || 0 }}</strong></div>
+                  </div>
+                  <label>
+                    <span>模型 messages</span>
+                    <textarea :value="aiMessagesText" rows="8" readonly></textarea>
+                  </label>
+                  <label>
+                    <span>证据 JSON</span>
+                    <textarea :value="aiEvidenceText" rows="8" readonly></textarea>
+                  </label>
+                </div>
+                <EmptyState v-else title="暂无 AI 证据" body="生成复盘后展示可直接提交给模型的 evidence/messages。" />
               </Panel>
             </div>
           </section>
@@ -721,6 +745,7 @@ const reviewForm = reactive({
   symbols: '000001.SZ\n600519.SH\n300750.SZ\n601318.SH',
   start: offsetDateText(-20),
   end: todayText(),
+  benchmark_symbol: '000300.SH',
   min_swing_return: 0.05,
   min_segment_bars: 3
 })
@@ -759,9 +784,14 @@ const displayCrossRows = computed(() =>
 const displayReviewRows = computed(() =>
   (reviewResult.value?.ranking || []).map((row: Record<string, any>) => displayResearchRecord(row))
 )
+const displayComparisonRows = computed(() =>
+  (reviewResult.value?.comparisons || []).map((row: Record<string, any>) => displayResearchRecord(row))
+)
 const displaySegmentRows = computed(() =>
   (reviewResult.value?.reviews?.[0]?.main_segments || []).map((row: Record<string, any>) => displayResearchRecord(row))
 )
+const aiMessagesText = computed(() => JSON.stringify(reviewResult.value?.ai?.messages || [], null, 2))
+const aiEvidenceText = computed(() => JSON.stringify(reviewResult.value?.ai?.evidence || {}, null, 2))
 const uniqueCacheTimeframes = computed(() => uniqueStrings(cacheRows.value.map((row: Record<string, any>) => row.timeframe)))
 const uniqueCacheStatuses = computed(() =>
   uniqueStrings(cacheRows.value.map((row: Record<string, any>) => row.status)).map((value) => ({
@@ -902,6 +932,16 @@ const reviewColumns = [
   { key: '当前性质', label: '性质' },
   { key: '锐评结论', label: '结论' }
 ]
+const comparisonColumns = [
+  { key: '代码', label: '代码' },
+  { key: '标的', label: '对标' },
+  { key: '目标收益', label: '目标收益' },
+  { key: '对比收益', label: '对比收益' },
+  { key: '超额收益', label: '超额' },
+  { key: '相关性', label: '相关' },
+  { key: '波动关系', label: '关系' },
+  { key: '强弱结论', label: '结论' }
+]
 const segmentColumns = [
   { key: '起点', label: '起点' },
   { key: '终点', label: '终点' },
@@ -1032,6 +1072,7 @@ async function runReviewSearch() {
       symbols: parseSymbols(reviewForm.symbols),
       start: reviewForm.start,
       end: reviewForm.end,
+      benchmark_symbol: reviewForm.benchmark_symbol,
       min_swing_return: Number(reviewForm.min_swing_return || 0),
       min_segment_bars: Number(reviewForm.min_segment_bars || 1)
     })

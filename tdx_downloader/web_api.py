@@ -37,7 +37,8 @@ from tdx_downloader.data.parallels_runtime import download_with_runtime, should_
 from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES
 from tdx_downloader.data.storage import load_local_bars
 from tdx_downloader.research.history import HistorySearchConfig, search_history
-from tdx_downloader.research.review import ReviewConfig, analyze_price_review, rank_review_results
+from tdx_downloader.research.review import ReviewConfig, analyze_price_review, build_comparison_stats, rank_review_results
+from tdx_downloader.research.review_ai import build_multi_review_ai_evidence, build_review_ai_messages
 from tdx_downloader.research.similarity import CrossSectionSearchConfig, search_cross_section
 
 DEFAULT_TDX_PATH = "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"
@@ -132,6 +133,7 @@ class ReviewSearchPayload(ResearchBasePayload):
     symbols: list[str] = Field(default_factory=list)
     start: str
     end: str
+    benchmark_symbol: str = ""
     min_swing_return: float = 0.05
     min_segment_bars: int = 3
     max_segments: int = 6
@@ -346,11 +348,12 @@ def _register_routes(app: FastAPI) -> None:
             symbols = normalize_symbol_tuple(payload.symbols)
             if not symbols:
                 raise ValueError("多股复盘至少需要 1 个标的代码。")
+            benchmark_symbols = normalize_symbol_tuple([payload.benchmark_symbol]) if payload.benchmark_symbol else ()
             bars = load_local_bars(
                 data_root=payload.data_root,
                 timeframe=timeframe,
                 adjust=payload.adjust,
-                symbols=symbols,
+                symbols=[*symbols, *benchmark_symbols],
                 start=payload.start,
                 end=payload.end,
             )
@@ -368,11 +371,22 @@ def _register_routes(app: FastAPI) -> None:
                 )
                 for symbol in symbols
             ]
+            comparisons = _review_comparisons(results, bars, benchmark_symbols[0] if benchmark_symbols else "")
             ranking = rank_review_results(
                 results,
+                comparisons,
                 stock_names=payload.stock_names,
                 direction_by_symbol=payload.direction_by_symbol,
             )
+            warnings = [warning for result in results for warning in result.warnings]
+            evidence = build_multi_review_ai_evidence(
+                results,
+                comparisons,
+                stock_names=payload.stock_names,
+                direction_by_symbol=payload.direction_by_symbol,
+                warnings=warnings,
+            )
+            messages = build_review_ai_messages(evidence)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
@@ -384,6 +398,7 @@ def _register_routes(app: FastAPI) -> None:
                 "ranked_count": len(ranking),
             },
             "ranking": _records(ranking),
+            "comparisons": _records(comparisons),
             "reviews": [
                 {
                     "symbol": result.symbol,
@@ -395,6 +410,10 @@ def _register_routes(app: FastAPI) -> None:
                 }
                 for result in results
             ],
+            "ai": {
+                "evidence": _json_dict(evidence),
+                "messages": [_json_dict(message) for message in messages],
+            },
         }
 
     @app.post("/api/pick-directory")
@@ -466,6 +485,18 @@ def _cross_section_read_end(end: str, forward_windows: tuple[int, ...]) -> str:
     max_forward = max(forward_windows) if forward_windows else 0
     padding_days = max(14, int(max_forward) * 5 + 7)
     return (pd.Timestamp(end) + pd.Timedelta(days=padding_days)).date().isoformat()
+
+
+def _review_comparisons(results: list[Any], bars: pd.DataFrame, benchmark_symbol: str) -> pd.DataFrame:
+    if not benchmark_symbol:
+        return pd.DataFrame()
+    benchmark = bars.loc[bars["stock_code"] == benchmark_symbol].copy()
+    rows: list[dict[str, object]] = []
+    for result in results:
+        if result.window.empty:
+            continue
+        rows.append({"代码": result.symbol, **build_comparison_stats(result.window, benchmark, benchmark_symbol)})
+    return pd.DataFrame(rows)
 
 
 def _open_native_directory_dialog(initial_directory: str | Path, title: str) -> Path | None:

@@ -231,6 +231,7 @@ def test_api_research_review_ranks_local_cache(tmp_path) -> None:
         [
             _bars("000001.SZ", [10, 10.5, 11, 12, 13, 14]),
             _bars("000002.SZ", [10, 9.8, 9.5, 9.7, 9.6, 9.4]),
+            _bars("000300.SH", [10, 10.1, 10.2, 10.4, 10.6, 10.8]),
         ],
         ignore_index=True,
     )
@@ -245,6 +246,7 @@ def test_api_research_review_ranks_local_cache(tmp_path) -> None:
             "symbols": ["000001.SZ", "000002.SZ"],
             "start": "2026-01-01",
             "end": "2026-01-08",
+            "benchmark_symbol": "000300.SH",
             "stock_names": {"000001.SZ": "强势样例", "000002.SZ": "弱势样例"},
         },
     )
@@ -254,3 +256,9 @@ def test_api_research_review_ranks_local_cache(tmp_path) -> None:
     assert data["summary"]["ranked_count"] == 2
     assert data["ranking"][0]["代码"] == "000001.SZ"
     assert "锐评结论" in data["ranking"][0]
+    assert data["ranking"][0]["对标指数"] == "000300.SH"
+    assert data["comparisons"][0]["标的"] == "000300.SH"
+    assert data["ai"]["evidence"]["mode"] == "multi_stock"
+    assert data["ai"]["evidence"]["comparisons"][0]["标的"] == "000300.SH"
+    assert data["ai"]["messages"][0]["role"] == "system"
+    assert "critique" in data["ai"]["messages"][0]["content"]

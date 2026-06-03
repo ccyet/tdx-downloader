@@ -683,6 +683,10 @@ main {
   gap: 10px;
 }
 
+.kv-list.compact {
+  gap: 8px;
+}
+
 .split-row,
 .kv-row,
 .event-row {
@@ -741,6 +745,35 @@ main {
   min-width: 0;
   overflow-wrap: anywhere;
   font-size: 12px;
+}
+
+.ai-interface {
+  display: grid;
+  gap: 12px;
+}
+
+.ai-interface label {
+  display: grid;
+  gap: 7px;
+}
+
+.ai-interface label > span {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ai-interface textarea {
+  width: 100%;
+  border: 1px solid #dbe5ef;
+  border-radius: 12px;
+  background: #fbfcfe;
+  padding: 11px 12px;
+  color: #111827;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
 }
 
 .task-form {

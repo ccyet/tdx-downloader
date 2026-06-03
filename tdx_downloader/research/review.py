@@ -32,6 +32,14 @@ class ReviewResult:
     warnings: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class EqualWeightResult:
+    label: str
+    frame: pd.DataFrame
+    coverage: float
+    warning: str = ""
+
+
 def analyze_price_review(bars: pd.DataFrame, config: ReviewConfig) -> ReviewResult:
     symbol = normalize_symbol(config.symbol)
     if not symbol:
@@ -71,6 +79,80 @@ def analyze_price_review(bars: pd.DataFrame, config: ReviewConfig) -> ReviewResu
         main_segments=main_segments,
         warnings=tuple(warnings),
     )
+
+
+def build_comparison_stats(target_window: pd.DataFrame, comparison: pd.DataFrame, label: str) -> dict[str, object]:
+    aligned = _aligned_close_frame(target_window, comparison)
+    if aligned.empty or len(aligned) < 2:
+        return {
+            "标的": label,
+            "样本数": int(len(aligned)),
+            "目标收益": float("nan"),
+            "对比收益": float("nan"),
+            "超额收益": float("nan"),
+            "相关性": float("nan"),
+            "同步关系": "数据不足",
+            "波动关系": "数据不足",
+            "强弱结论": "数据不足，无法比较。",
+        }
+
+    target_return = _period_return(aligned["target"])
+    comparison_return = _period_return(aligned["comparison"])
+    excess = target_return - comparison_return
+    corr = _safe_corr(aligned["target"].pct_change(), aligned["comparison"].pct_change())
+    return {
+        "标的": label,
+        "样本数": int(len(aligned)),
+        "目标收益": target_return,
+        "对比收益": comparison_return,
+        "超额收益": excess,
+        "相关性": corr,
+        "同步关系": _sync_label(target_return, comparison_return),
+        "波动关系": _relationship_label(corr),
+        "强弱结论": _strength_label(excess),
+    }
+
+
+def build_equal_weight_series(
+    bars: pd.DataFrame,
+    symbols: list[str] | tuple[str, ...],
+    *,
+    label: str,
+    min_coverage: float = 0.5,
+) -> EqualWeightResult:
+    normalized_symbols = [symbol for symbol in dict.fromkeys(normalize_symbol(item) for item in symbols) if symbol]
+    columns = ["date", "stock_code", "close"]
+    if not normalized_symbols:
+        return EqualWeightResult(label=label, frame=pd.DataFrame(columns=columns), coverage=0.0, warning="成分列表为空。")
+    if bars.empty:
+        return EqualWeightResult(label=label, frame=pd.DataFrame(columns=columns), coverage=0.0, warning=f"{label} 本地成分行情为空。")
+
+    frame = prepare_research_bars(bars)
+    frame["stock_code"] = frame["stock_code"].map(normalize_symbol)
+    frame = frame.loc[frame["stock_code"].isin(normalized_symbols)].dropna(subset=["date", "close"])
+    if frame.empty:
+        return EqualWeightResult(label=label, frame=pd.DataFrame(columns=columns), coverage=0.0, warning=f"{label} 没有匹配到本地成分行情。")
+
+    pivot = frame.pivot_table(index="date", columns="stock_code", values="close", aggfunc="last").sort_index()
+    coverage_by_date = pivot.notna().sum(axis=1) / max(len(normalized_symbols), 1)
+    coverage = float(coverage_by_date.mean()) if not coverage_by_date.empty else 0.0
+    min_coverage = min(max(float(min_coverage), 0.0), 1.0)
+    valid = pivot.loc[coverage_by_date >= min_coverage]
+    if valid.empty or coverage < min_coverage:
+        return EqualWeightResult(
+            label=label,
+            frame=pd.DataFrame(columns=columns),
+            coverage=coverage,
+            warning=f"{label} 本地成分平均覆盖率 {_percent(coverage)}，低于阈值 {_percent(min_coverage)}。",
+        )
+
+    normalized_paths = _normalize_price_frame(valid)
+    equal_weight = normalized_paths.mean(axis=1, skipna=True).dropna()
+    result = pd.DataFrame({"date": equal_weight.index, "stock_code": label, "close": equal_weight.to_numpy(dtype=float)})
+    warning = ""
+    if coverage < 0.95:
+        warning = f"{label} 本地成分平均覆盖率 {_percent(coverage)}，复盘口径为可用成分等权。"
+    return EqualWeightResult(label=label, frame=result.reset_index(drop=True), coverage=coverage, warning=warning)
 
 
 def rank_review_results(
@@ -346,3 +428,82 @@ def _tomorrow_check(turning_point: str, nature: str, grade: str) -> str:
     if grade in {"刷子", "路边"}:
         return f"观察{turning_point}附近是否继续反复。"
     return f"重点看{turning_point}后是否止跌。"
+
+
+def _aligned_close_frame(target: pd.DataFrame, comparison: pd.DataFrame) -> pd.DataFrame:
+    if target.empty or comparison.empty:
+        return pd.DataFrame(columns=["target", "comparison"])
+    target_frame = _close_by_date(target, "target")
+    comparison_frame = _close_by_date(comparison, "comparison")
+    return target_frame.join(comparison_frame, how="inner").dropna().sort_index()
+
+
+def _close_by_date(frame: pd.DataFrame, column_name: str) -> pd.DataFrame:
+    result = frame.copy()
+    result["date"] = pd.to_datetime(result["date"], errors="coerce")
+    result["close"] = pd.to_numeric(result["close"], errors="coerce")
+    return (
+        result.dropna(subset=["date", "close"])
+        .sort_values("date")
+        .drop_duplicates(subset=["date"], keep="last")
+        .set_index("date")[["close"]]
+        .rename(columns={"close": column_name})
+    )
+
+
+def _period_return(values: pd.Series) -> float:
+    clean = pd.to_numeric(values, errors="coerce").dropna()
+    if len(clean) < 2:
+        return float("nan")
+    first = float(clean.iloc[0])
+    if first == 0:
+        return float("nan")
+    return float(clean.iloc[-1] / first - 1.0)
+
+
+def _normalize_price_frame(values: pd.DataFrame) -> pd.DataFrame:
+    first = values.bfill().iloc[0]
+    return values.divide(first.where(first != 0), axis=1) * 100.0
+
+
+def _safe_corr(left: pd.Series, right: pd.Series) -> float:
+    pairs = pd.concat([left, right], axis=1).dropna()
+    if len(pairs) < 2:
+        return float("nan")
+    value = float(pairs.iloc[:, 0].corr(pairs.iloc[:, 1]))
+    return value if np.isfinite(value) else float("nan")
+
+
+def _sync_label(target_return: float, comparison_return: float) -> str:
+    if not np.isfinite(target_return) or not np.isfinite(comparison_return):
+        return "数据不足"
+    if target_return == 0 or comparison_return == 0:
+        return "弱同步"
+    return "同向" if np.sign(target_return) == np.sign(comparison_return) else "反向"
+
+
+def _relationship_label(corr: float) -> str:
+    if not np.isfinite(corr):
+        return "数据不足"
+    if corr >= 0.6:
+        return "同步跟随"
+    if corr <= -0.45:
+        return "反向背离"
+    return "相对独立"
+
+
+def _strength_label(excess: float) -> str:
+    if not np.isfinite(excess):
+        return "数据不足，无法比较。"
+    if excess >= 0.05:
+        return "目标明显强于对比标的。"
+    if excess <= -0.05:
+        return "目标明显弱于对比标的。"
+    return "目标与对比标的接近。"
+
+
+def _percent(value: object) -> str:
+    number = _numeric(value, default=float("nan"))
+    if not np.isfinite(number):
+        return "-"
+    return f"{number:.2%}"
