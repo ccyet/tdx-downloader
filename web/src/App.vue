@@ -292,6 +292,177 @@
           </Panel>
         </section>
 
+        <section v-else-if="activeView === 'research'" class="view-stack">
+          <div class="research-tabs">
+            <button
+              v-for="tab in researchTabs"
+              :key="tab.key"
+              :class="['research-tab', { active: activeResearchTab === tab.key }]"
+              @click="activeResearchTab = tab.key"
+            >
+              <Icon :name="tab.icon" />
+              <span>{{ tab.label }}</span>
+            </button>
+          </div>
+
+          <Panel title="研究参数" subtitle="本地缓存">
+            <div class="filter-row">
+              <label>
+                <span>周期</span>
+                <select v-model="researchTimeframe">
+                  <option v-for="timeframe in config?.timeframes || []" :key="timeframe" :value="timeframe">
+                    {{ timeframe }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                <span>复权</span>
+                <select v-model="settings.adjust">
+                  <option value="qfq">qfq</option>
+                  <option value="hfq">hfq</option>
+                  <option value="">不复权</option>
+                </select>
+              </label>
+              <label class="span-double">
+                <span>行情根目录</span>
+                <input v-model="settings.data_root" type="text" />
+              </label>
+            </div>
+          </Panel>
+
+          <section v-if="activeResearchTab === 'history'" class="content-grid two">
+            <Panel title="历史时序相似" subtitle="单标的">
+              <form class="task-form" @submit.prevent="runHistorySearch">
+                <label>
+                  <span>标的代码</span>
+                  <input v-model="historyForm.symbol" type="text" />
+                </label>
+                <label>
+                  <span>截至日期</span>
+                  <input v-model="historyForm.as_of" type="date" />
+                </label>
+                <label>
+                  <span>窗口K数</span>
+                  <input v-model.number="historyForm.window_size" type="number" min="2" />
+                </label>
+                <label>
+                  <span>返回数量</span>
+                  <input v-model.number="historyForm.top_n" type="number" min="1" />
+                </label>
+                <label>
+                  <span>排除近端K数</span>
+                  <input v-model.number="historyForm.exclusion_bars" type="number" min="0" />
+                </label>
+                <label>
+                  <span>前瞻K数</span>
+                  <input v-model="historyForm.forward_windows" type="text" />
+                </label>
+                <div class="form-actions span-full">
+                  <button class="btn primary" type="submit" :disabled="runningResearch === 'history'">
+                    <Icon name="activity" />
+                    开始搜索
+                  </button>
+                </div>
+              </form>
+            </Panel>
+
+            <Panel title="历史匹配结果" subtitle="按综合相似度排序">
+              <DataTable :rows="displayHistoryRows" :columns="historyColumns" empty="暂无历史匹配结果。" />
+            </Panel>
+          </section>
+
+          <section v-else-if="activeResearchTab === 'cross'" class="content-grid two">
+            <Panel title="横截面相似" subtitle="同区间">
+              <form class="task-form" @submit.prevent="runCrossSectionSearch">
+                <label>
+                  <span>目标标的</span>
+                  <input v-model="crossForm.target_symbol" type="text" />
+                </label>
+                <label>
+                  <span>返回数量</span>
+                  <input v-model.number="crossForm.top_n" type="number" min="1" />
+                </label>
+                <div class="inline-fields span-full">
+                  <label>
+                    <span>开始</span>
+                    <input v-model="crossForm.start" type="date" />
+                  </label>
+                  <label>
+                    <span>结束</span>
+                    <input v-model="crossForm.end" type="date" />
+                  </label>
+                </div>
+                <label>
+                  <span>日期容忍K数</span>
+                  <input v-model.number="crossForm.date_tolerance_bars" type="number" min="0" />
+                </label>
+                <label>
+                  <span>前瞻K数</span>
+                  <input v-model="crossForm.forward_windows" type="text" />
+                </label>
+                <label class="span-full">
+                  <span>候选标的</span>
+                  <textarea v-model="crossForm.universe_symbols" rows="5"></textarea>
+                </label>
+                <div class="form-actions span-full">
+                  <button class="btn primary" type="submit" :disabled="runningResearch === 'cross'">
+                    <Icon name="layers" />
+                    开始搜索
+                  </button>
+                </div>
+              </form>
+            </Panel>
+
+            <Panel title="横截面匹配结果" subtitle="日期容忍后择优">
+              <DataTable :rows="displayCrossRows" :columns="crossColumns" empty="暂无横截面匹配结果。" />
+            </Panel>
+          </section>
+
+          <section v-else class="content-grid two">
+            <Panel title="多股复盘" subtitle="排序锐评">
+              <form class="task-form" @submit.prevent="runReviewSearch">
+                <div class="inline-fields span-full">
+                  <label>
+                    <span>开始</span>
+                    <input v-model="reviewForm.start" type="date" />
+                  </label>
+                  <label>
+                    <span>结束</span>
+                    <input v-model="reviewForm.end" type="date" />
+                  </label>
+                </div>
+                <label>
+                  <span>最小波段幅度</span>
+                  <input v-model.number="reviewForm.min_swing_return" type="number" min="0" step="0.01" />
+                </label>
+                <label>
+                  <span>最小波段K数</span>
+                  <input v-model.number="reviewForm.min_segment_bars" type="number" min="1" />
+                </label>
+                <label class="span-full">
+                  <span>复盘标的</span>
+                  <textarea v-model="reviewForm.symbols" rows="5"></textarea>
+                </label>
+                <div class="form-actions span-full">
+                  <button class="btn primary" type="submit" :disabled="runningResearch === 'review'">
+                    <Icon name="clipboard" />
+                    生成复盘
+                  </button>
+                </div>
+              </form>
+            </Panel>
+
+            <div class="view-stack">
+              <Panel title="排序锐评" subtitle="本地行情">
+                <DataTable :rows="displayReviewRows" :columns="reviewColumns" empty="暂无复盘排序。" />
+              </Panel>
+              <Panel title="关键波段" subtitle="首位标的">
+                <DataTable :rows="displaySegmentRows" :columns="segmentColumns" empty="暂无关键波段。" />
+              </Panel>
+            </div>
+          </section>
+        </section>
+
         <section v-else-if="activeView === 'tasks'" class="content-grid two">
           <Panel title="任务队列" subtitle="后台执行">
             <div class="panel-actions">
@@ -438,6 +609,7 @@ interface NoticePayload {
 }
 
 type DirectoryField = 'data_root' | 'tdx_path'
+type ResearchTabKey = 'history' | 'cross' | 'review'
 
 const IMPORTANT_ASSET_TYPES = [
   { value: 'etf', label: 'ETF', tone: 'blue', icon: 'archive' },
@@ -449,8 +621,15 @@ const navItems = [
   { key: 'dashboard', label: '总览', title: 'TDX 数据运营工作台', description: '查看缓存资产、运行环境和最近任务。', icon: 'dashboard' },
   { key: 'download', label: '下载任务', title: '下载任务', description: '配置代码、周期、时间窗并在后台执行。', icon: 'download' },
   { key: 'cache', label: '缓存资产', title: '缓存资产', description: '查看 SQLite catalog 与本地 parquet 缓存。', icon: 'archive' },
+  { key: 'research', label: '研究工具', title: '研究工具', description: '基于本地 TDX 缓存做相似度搜索和多股复盘。', icon: 'activity' },
   { key: 'tasks', label: '执行记录', title: '执行记录', description: '查看后台任务状态、错误和写入结果。', icon: 'activity' },
   { key: 'settings', label: '系统设置', title: '系统设置', description: '配置默认路径、复权方式和运行参数。', icon: 'settings' }
+]
+
+const researchTabs: Array<{ key: ResearchTabKey; label: string; icon: string }> = [
+  { key: 'history', label: '历史相似', icon: 'activity' },
+  { key: 'cross', label: '横截面相似', icon: 'layers' },
+  { key: 'review', label: '多股复盘', icon: 'clipboard' }
 ]
 
 const SETTINGS_STORAGE_KEY = 'tdx-downloader-web-settings'
@@ -486,14 +665,20 @@ const tasks = ref<TaskPayload[]>([])
 const selectedTaskId = ref('')
 const selectedGroup = ref('核心样例')
 const selectedTimeframe = ref('1d')
+const researchTimeframe = ref('1d')
 const symbolsText = ref('')
 const planning = ref(false)
 const downloading = ref(false)
 const loadingOverview = ref(false)
 const clearingTasks = ref(false)
+const runningResearch = ref<ResearchTabKey | ''>('')
+const activeResearchTab = ref<ResearchTabKey>('history')
 const pickingDirectory = ref<DirectoryField | ''>('')
 const planRows = ref<Array<Record<string, any>>>([])
 const planSummary = ref<Record<string, any>>({})
+const historyResult = ref<Record<string, any> | null>(null)
+const crossResult = ref<Record<string, any> | null>(null)
+const reviewResult = ref<Record<string, any> | null>(null)
 const notice = ref<NoticePayload | null>(null)
 const cacheFilters = reactive({
   keyword: '',
@@ -511,6 +696,33 @@ const settings = reactive({
   mode: 'smart',
   batch_size: 100,
   strict_after_update: true
+})
+
+const historyForm = reactive({
+  symbol: '000001.SZ',
+  as_of: todayText(),
+  window_size: 20,
+  top_n: 10,
+  exclusion_bars: 20,
+  forward_windows: '5,20,60'
+})
+
+const crossForm = reactive({
+  target_symbol: '000001.SZ',
+  universe_symbols: '600519.SH\n300750.SZ\n601318.SH',
+  start: offsetDateText(-20),
+  end: todayText(),
+  top_n: 20,
+  date_tolerance_bars: 0,
+  forward_windows: '3,5,10'
+})
+
+const reviewForm = reactive({
+  symbols: '000001.SZ\n600519.SH\n300750.SZ\n601318.SH',
+  start: offsetDateText(-20),
+  end: todayText(),
+  min_swing_return: 0.05,
+  min_segment_bars: 3
 })
 
 const activeMeta = computed(() => navItems.find((item) => item.key === activeView.value) || navItems[0])
@@ -537,6 +749,18 @@ const displayCacheRows = computed(() => filteredCacheRows.value.map((row: Record
 const displayPlanRows = computed(() => planRows.value.map((row: Record<string, any>) => displayRecord(row)))
 const displayResultRows = computed(() =>
   (selectedTask.value?.result?.records || []).map((row: Record<string, any>) => displayRecord(row))
+)
+const displayHistoryRows = computed(() =>
+  (historyResult.value?.results || []).map((row: Record<string, any>) => displayResearchRecord(row))
+)
+const displayCrossRows = computed(() =>
+  (crossResult.value?.results || []).map((row: Record<string, any>) => displayResearchRecord(row))
+)
+const displayReviewRows = computed(() =>
+  (reviewResult.value?.ranking || []).map((row: Record<string, any>) => displayResearchRecord(row))
+)
+const displaySegmentRows = computed(() =>
+  (reviewResult.value?.reviews?.[0]?.main_segments || []).map((row: Record<string, any>) => displayResearchRecord(row))
 )
 const uniqueCacheTimeframes = computed(() => uniqueStrings(cacheRows.value.map((row: Record<string, any>) => row.timeframe)))
 const uniqueCacheStatuses = computed(() =>
@@ -645,6 +869,47 @@ const resultColumns = [
   { key: 'new_rows', label: '新增行' },
   { key: 'message', label: '信息' }
 ]
+const historyColumns = [
+  { key: 'symbol', label: '代码' },
+  { key: '窗口开始', label: '窗口开始' },
+  { key: '窗口结束', label: '窗口结束' },
+  { key: 'K线数量', label: 'K线' },
+  { key: '综合相似度', label: '综合' },
+  { key: '路径相似度', label: '路径' },
+  { key: '区间收益', label: '收益' },
+  { key: '最大回撤', label: '回撤' },
+  { key: '后5根收益', label: '后5K' }
+]
+const crossColumns = [
+  { key: 'symbol', label: '代码' },
+  { key: '区间开始', label: '区间开始' },
+  { key: '区间结束', label: '区间结束' },
+  { key: '日期偏移', label: '偏移' },
+  { key: '综合相似度', label: '综合' },
+  { key: '路径相似度', label: '路径' },
+  { key: '覆盖率', label: '覆盖' },
+  { key: '区间收益', label: '收益' },
+  { key: '后3根收益', label: '后3K' }
+]
+const reviewColumns = [
+  { key: '排名', label: '排名' },
+  { key: '代码', label: '代码' },
+  { key: '股票', label: '股票' },
+  { key: '强弱等级', label: '等级' },
+  { key: '区间收益', label: '收益' },
+  { key: '最大回撤', label: '回撤' },
+  { key: '上涨K占比', label: '上涨K' },
+  { key: '当前性质', label: '性质' },
+  { key: '锐评结论', label: '结论' }
+]
+const segmentColumns = [
+  { key: '起点', label: '起点' },
+  { key: '终点', label: '终点' },
+  { key: '类型', label: '类型' },
+  { key: 'K线数', label: 'K线' },
+  { key: '区间收益', label: '收益' },
+  { key: '最大回撤', label: '回撤' }
+]
 
 onMounted(async () => {
   await loadConfig()
@@ -662,6 +927,7 @@ async function loadConfig() {
     return
   }
   selectedTimeframe.value = config.value?.defaults?.timeframes?.[0] || '1d'
+  researchTimeframe.value = selectedTimeframe.value
   const firstGroup = config.value?.symbol_groups?.[0]
   if (firstGroup) {
     selectedGroup.value = firstGroup.name
@@ -714,6 +980,66 @@ async function startDownload() {
     showError('提交下载失败', error)
   } finally {
     downloading.value = false
+  }
+}
+
+async function runHistorySearch() {
+  runningResearch.value = 'history'
+  try {
+    historyResult.value = await apiPost('/research/history', {
+      ...researchPayloadBase(),
+      symbol: historyForm.symbol,
+      as_of: historyForm.as_of,
+      window_size: Number(historyForm.window_size || 20),
+      top_n: Number(historyForm.top_n || 10),
+      exclusion_bars: Number(historyForm.exclusion_bars || 0),
+      forward_windows: parseNumberList(historyForm.forward_windows)
+    })
+    showNotice('success', '历史相似完成', `匹配 ${formatInt(historyResult.value?.summary?.match_count)} 个窗口。`)
+  } catch (error) {
+    showError('历史相似失败', error)
+  } finally {
+    runningResearch.value = ''
+  }
+}
+
+async function runCrossSectionSearch() {
+  runningResearch.value = 'cross'
+  try {
+    crossResult.value = await apiPost('/research/cross-section', {
+      ...researchPayloadBase(),
+      target_symbol: crossForm.target_symbol,
+      universe_symbols: parseSymbols(crossForm.universe_symbols),
+      start: crossForm.start,
+      end: crossForm.end,
+      top_n: Number(crossForm.top_n || 20),
+      date_tolerance_bars: Number(crossForm.date_tolerance_bars || 0),
+      forward_windows: parseNumberList(crossForm.forward_windows)
+    })
+    showNotice('success', '横截面搜索完成', `匹配 ${formatInt(crossResult.value?.summary?.match_count)} 个标的。`)
+  } catch (error) {
+    showError('横截面搜索失败', error)
+  } finally {
+    runningResearch.value = ''
+  }
+}
+
+async function runReviewSearch() {
+  runningResearch.value = 'review'
+  try {
+    reviewResult.value = await apiPost('/research/review', {
+      ...researchPayloadBase(),
+      symbols: parseSymbols(reviewForm.symbols),
+      start: reviewForm.start,
+      end: reviewForm.end,
+      min_swing_return: Number(reviewForm.min_swing_return || 0),
+      min_segment_bars: Number(reviewForm.min_segment_bars || 1)
+    })
+    showNotice('success', '复盘已生成', `完成 ${formatInt(reviewResult.value?.summary?.ranked_count)} 个标的排序。`)
+  } catch (error) {
+    showError('复盘生成失败', error)
+  } finally {
+    runningResearch.value = ''
   }
 }
 
@@ -782,6 +1108,15 @@ function payload() {
   }
 }
 
+function researchPayloadBase() {
+  settings.data_root = normalizeDataRoot(settings.data_root)
+  return {
+    data_root: settings.data_root,
+    adjust: settings.adjust,
+    timeframe: researchTimeframe.value
+  }
+}
+
 function saveSettings() {
   settings.data_root = normalizeDataRoot(settings.data_root)
   window.localStorage.setItem(
@@ -841,6 +1176,24 @@ async function apiPost(path: string, body: Record<string, any>) {
 
 function parseSymbols(text: string) {
   return text.split(/[\s,;，、]+/).map((item) => item.trim()).filter(Boolean)
+}
+
+function parseNumberList(text: string) {
+  const values = text
+    .split(/[\s,;，、]+/)
+    .map((item) => Number(item.trim()))
+    .filter((item) => Number.isFinite(item) && item > 0)
+  return values.length ? values : [5]
+}
+
+function todayText() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function offsetDateText(offsetDays: number) {
+  const date = new Date()
+  date.setDate(date.getDate() + offsetDays)
+  return date.toISOString().slice(0, 10)
 }
 
 function compactPath(path: string) {
@@ -924,6 +1277,29 @@ function displayRecord(row: Record<string, any>) {
     before_status: STATUS_LABELS[String(row.before_status || '')] || row.before_status,
     after_status: STATUS_LABELS[String(row.after_status || '')] || row.after_status
   }
+}
+
+function displayResearchRecord(row: Record<string, any>) {
+  const output: Record<string, any> = {}
+  for (const [key, value] of Object.entries(row)) {
+    output[key] = formatResearchValue(key, value)
+  }
+  return output
+}
+
+function formatResearchValue(key: string, value: unknown) {
+  if (value === null || value === undefined || value === '') return '-'
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) return value.slice(0, 10)
+  const number = Number(value)
+  if (!Number.isFinite(number)) return value
+  if (key.includes('收益') || key.includes('回撤') || key.includes('占比') || key.includes('覆盖率')) {
+    return `${(number * 100).toFixed(2)}%`
+  }
+  if (key.includes('相似度') || key.includes('距离') || key === '排序分') {
+    return number.toFixed(4)
+  }
+  if (Number.isInteger(number)) return number.toLocaleString()
+  return number.toFixed(2)
 }
 
 function showNotice(type: NoticePayload['type'], title: string, body: string) {

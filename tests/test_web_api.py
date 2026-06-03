@@ -10,6 +10,22 @@ from tdx_downloader.data.storage import write_local_bars
 from tdx_downloader.web_api import create_app
 
 
+def _bars(symbol: str, closes: list[float], *, start: str = "2026-01-01") -> pd.DataFrame:
+    dates = pd.bdate_range(start, periods=len(closes))
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "stock_code": symbol,
+            "open": closes,
+            "high": [value * 1.01 for value in closes],
+            "low": [value * 0.99 for value in closes],
+            "close": closes,
+            "volume": [1000.0 + index for index, _ in enumerate(closes)],
+            "amount": [100000.0 + index * 100 for index, _ in enumerate(closes)],
+        }
+    )
+
+
 def test_api_config_exposes_sub2api_style_web_defaults() -> None:
     client = TestClient(create_app())
 
@@ -143,3 +159,98 @@ def test_download_task_refreshes_catalog_after_writing_cache(monkeypatch, tmp_pa
     refreshed = query_catalog(data_root=data_root)
     cached = refreshed.loc[(refreshed["stock_code"] == "000750.SZ") & (refreshed["timeframe"] == "1d")]
     assert cached["status"].tolist() == ["cached"]
+
+
+def test_api_research_history_reads_local_timeframe_cache(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    write_local_bars(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        bars=_bars("000001.SZ", [10, 11, 12, 13, 11, 10, 11, 12, 13, 14, 13, 14, 15, 16]),
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/research/history",
+        json={
+            "data_root": str(data_root),
+            "timeframe": "1d",
+            "symbol": "000001.SZ",
+            "as_of": "2026-01-20",
+            "window_size": 4,
+            "top_n": 3,
+            "exclusion_bars": 1,
+            "forward_windows": [2],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["timeframe"] == "1d"
+    assert data["summary"]["match_count"] > 0
+    assert "综合相似度" in data["results"][0]
+
+
+def test_api_research_cross_section_reads_local_cache_with_date_tolerance(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.concat(
+        [
+            _bars("000001.SZ", [10, 11, 12, 13, 14, 15, 16, 17]),
+            _bars("000002.SZ", [8, 9, 10, 11, 12, 13, 15, 16]),
+            _bars("000003.SZ", [20, 19, 18, 17, 16, 15, 14, 13]),
+        ],
+        ignore_index=True,
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/research/cross-section",
+        json={
+            "data_root": str(data_root),
+            "timeframe": "1d",
+            "target_symbol": "000001.SZ",
+            "universe_symbols": ["000002.SZ", "000003.SZ"],
+            "start": "2026-01-06",
+            "end": "2026-01-09",
+            "top_n": 2,
+            "date_tolerance_bars": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["window_size"] == 4
+    assert data["results"][0]["symbol"] == "000002.SZ"
+
+
+def test_api_research_review_ranks_local_cache(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.concat(
+        [
+            _bars("000001.SZ", [10, 10.5, 11, 12, 13, 14]),
+            _bars("000002.SZ", [10, 9.8, 9.5, 9.7, 9.6, 9.4]),
+        ],
+        ignore_index=True,
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/research/review",
+        json={
+            "data_root": str(data_root),
+            "timeframe": "1d",
+            "symbols": ["000001.SZ", "000002.SZ"],
+            "start": "2026-01-01",
+            "end": "2026-01-08",
+            "stock_names": {"000001.SZ": "强势样例", "000002.SZ": "弱势样例"},
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["ranked_count"] == 2
+    assert data["ranking"][0]["代码"] == "000001.SZ"
+    assert "锐评结论" in data["ranking"][0]

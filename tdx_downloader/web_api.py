@@ -35,6 +35,10 @@ from tdx_downloader.data.manager import (
 )
 from tdx_downloader.data.parallels_runtime import download_with_runtime, should_use_parallels_runtime
 from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES
+from tdx_downloader.data.storage import load_local_bars
+from tdx_downloader.research.history import HistorySearchConfig, search_history
+from tdx_downloader.research.review import ReviewConfig, analyze_price_review, rank_review_results
+from tdx_downloader.research.similarity import CrossSectionSearchConfig, search_cross_section
 
 DEFAULT_TDX_PATH = "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"
 DEFAULT_ADJUST = "qfq"
@@ -92,6 +96,47 @@ class DownloadPayload(BaseModel):
 class DirectoryPickerPayload(BaseModel):
     initial_directory: str = ""
     title: str = "选择文件夹"
+
+
+class ResearchBasePayload(BaseModel):
+    data_root: str = DEFAULT_DATA_ROOT
+    adjust: str = DEFAULT_ADJUST
+    timeframe: str = "1d"
+
+
+class HistorySearchPayload(ResearchBasePayload):
+    symbol: str
+    as_of: str = Field(default_factory=lambda: date.today().isoformat())
+    window_size: int = 20
+    top_n: int = 10
+    exclusion_bars: int = 20
+    path_weight: float = 0.7
+    forward_windows: list[int] = Field(default_factory=lambda: [5, 20, 60])
+    lookback_start: str = "1990-01-01"
+    window_start: str | None = None
+
+
+class CrossSectionSearchPayload(ResearchBasePayload):
+    target_symbol: str
+    universe_symbols: list[str] = Field(default_factory=list)
+    start: str
+    end: str
+    top_n: int = 20
+    min_coverage: float = 0.8
+    path_weight: float = 0.7
+    forward_windows: list[int] = Field(default_factory=lambda: [3, 5, 10])
+    date_tolerance_bars: int = 0
+
+
+class ReviewSearchPayload(ResearchBasePayload):
+    symbols: list[str] = Field(default_factory=list)
+    start: str
+    end: str
+    min_swing_return: float = 0.05
+    min_segment_bars: int = 3
+    max_segments: int = 6
+    stock_names: dict[str, str] = Field(default_factory=dict)
+    direction_by_symbol: dict[str, str] = Field(default_factory=dict)
 
 
 @dataclass
@@ -209,6 +254,149 @@ def _register_routes(app: FastAPI) -> None:
         _executor.submit(_run_download_task, task.id, payload, mode)
         return _task_payload(task)
 
+    @app.post("/api/research/history")
+    def research_history(payload: HistorySearchPayload) -> dict[str, Any]:
+        try:
+            timeframe = _single_timeframe(payload.timeframe)
+            bars = load_local_bars(
+                data_root=payload.data_root,
+                timeframe=timeframe,
+                adjust=payload.adjust,
+                symbols=[payload.symbol],
+                start=payload.lookback_start,
+                end=payload.as_of,
+            )
+            result = search_history(
+                bars,
+                HistorySearchConfig(
+                    symbol=payload.symbol,
+                    as_of=payload.as_of,
+                    window_size=payload.window_size,
+                    forward_windows=tuple(payload.forward_windows),
+                    top_n=payload.top_n,
+                    exclusion_bars=payload.exclusion_bars,
+                    path_weight=payload.path_weight,
+                    window_start=payload.window_start,
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "summary": {
+                "symbol": result.symbol,
+                "timeframe": timeframe,
+                "as_of": result.as_of,
+                "window_size": result.window_size,
+                "match_count": len(result.results),
+            },
+            "current_window": _records(result.current_window),
+            "historical_windows": [_records(window) for window in result.historical_windows],
+            "results": _records(result.results),
+        }
+
+    @app.post("/api/research/cross-section")
+    def research_cross_section(payload: CrossSectionSearchPayload) -> dict[str, Any]:
+        try:
+            timeframe = _single_timeframe(payload.timeframe)
+            symbols = normalize_symbol_tuple([payload.target_symbol, *payload.universe_symbols])
+            if len(symbols) < 2:
+                raise ValueError("横截面相似至少需要目标标的和 1 个候选标的。")
+            bars = load_local_bars(
+                data_root=payload.data_root,
+                timeframe=timeframe,
+                adjust=payload.adjust,
+                symbols=symbols,
+                start=_cross_section_read_start(payload.start, payload.date_tolerance_bars),
+                end=_cross_section_read_end(payload.end, tuple(payload.forward_windows)),
+            )
+            result = search_cross_section(
+                bars,
+                CrossSectionSearchConfig(
+                    target_symbol=payload.target_symbol,
+                    universe_symbols=tuple(payload.universe_symbols),
+                    start=payload.start,
+                    end=payload.end,
+                    top_n=payload.top_n,
+                    min_coverage=payload.min_coverage,
+                    path_weight=payload.path_weight,
+                    forward_windows=tuple(payload.forward_windows),
+                    date_tolerance_bars=payload.date_tolerance_bars,
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "summary": {
+                "target_symbol": result.target_symbol,
+                "timeframe": timeframe,
+                "start": result.start,
+                "end": result.end,
+                "window_size": result.window_size,
+                "match_count": len(result.results),
+                "skipped_count": len(result.skipped),
+            },
+            "results": _records(result.results),
+            "skipped": _records(result.skipped),
+        }
+
+    @app.post("/api/research/review")
+    def research_review(payload: ReviewSearchPayload) -> dict[str, Any]:
+        try:
+            timeframe = _single_timeframe(payload.timeframe)
+            symbols = normalize_symbol_tuple(payload.symbols)
+            if not symbols:
+                raise ValueError("多股复盘至少需要 1 个标的代码。")
+            bars = load_local_bars(
+                data_root=payload.data_root,
+                timeframe=timeframe,
+                adjust=payload.adjust,
+                symbols=symbols,
+                start=payload.start,
+                end=payload.end,
+            )
+            results = [
+                analyze_price_review(
+                    bars,
+                    ReviewConfig(
+                        symbol=symbol,
+                        start=payload.start,
+                        end=payload.end,
+                        min_swing_return=payload.min_swing_return,
+                        min_segment_bars=payload.min_segment_bars,
+                        max_segments=payload.max_segments,
+                    ),
+                )
+                for symbol in symbols
+            ]
+            ranking = rank_review_results(
+                results,
+                stock_names=payload.stock_names,
+                direction_by_symbol=payload.direction_by_symbol,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "summary": {
+                "timeframe": timeframe,
+                "start": payload.start,
+                "end": payload.end,
+                "symbol_count": len(symbols),
+                "ranked_count": len(ranking),
+            },
+            "ranking": _records(ranking),
+            "reviews": [
+                {
+                    "symbol": result.symbol,
+                    "start": result.start,
+                    "end": result.end,
+                    "overview": _json_dict(result.overview),
+                    "warnings": list(result.warnings),
+                    "main_segments": _records(result.main_segments),
+                }
+                for result in results
+            ],
+        }
+
     @app.post("/api/pick-directory")
     def pick_directory(payload: DirectoryPickerPayload) -> dict[str, Any]:
         try:
@@ -263,6 +451,21 @@ def _download_config(payload: DownloadPayload) -> DataDownloadConfig:
         min_coverage_ratio=payload.min_coverage_ratio,
         strict_after_update=payload.strict_after_update,
     )
+
+
+def _single_timeframe(timeframe: str) -> str:
+    return normalize_timeframes([timeframe])[0]
+
+
+def _cross_section_read_start(start: str, tolerance_bars: int) -> str:
+    padding_days = max(14, int(tolerance_bars) * 5 + 7)
+    return (pd.Timestamp(start) - pd.Timedelta(days=padding_days)).date().isoformat()
+
+
+def _cross_section_read_end(end: str, forward_windows: tuple[int, ...]) -> str:
+    max_forward = max(forward_windows) if forward_windows else 0
+    padding_days = max(14, int(max_forward) * 5 + 7)
+    return (pd.Timestamp(end) + pd.Timedelta(days=padding_days)).date().isoformat()
 
 
 def _open_native_directory_dialog(initial_directory: str | Path, title: str) -> Path | None:
@@ -428,14 +631,18 @@ def _json_dict(values: dict[str, Any]) -> dict[str, Any]:
 def _json_value(value: Any) -> Any:
     if value is None:
         return None
-    if pd.isna(value):
-        return None
+    if isinstance(value, dict):
+        return _json_dict(value)
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
     if isinstance(value, datetime):
         return value.isoformat()
     if hasattr(value, "item"):
         value = value.item()
+    if pd.isna(value):
+        return None
     if isinstance(value, float) and math.isnan(value):
         return None
     return value

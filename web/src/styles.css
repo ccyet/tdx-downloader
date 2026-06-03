@@ -287,6 +287,37 @@ main {
   gap: 10px;
 }
 
+.research-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.research-tab {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #dbe5ef;
+  border-radius: 12px;
+  background: white;
+  color: #334155;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.research-tab svg {
+  width: 18px;
+  height: 18px;
+}
+
+.research-tab.active {
+  border-color: #99f6e4;
+  background: #ecfdf5;
+  color: #047857;
+}
+
 .btn {
   min-height: 38px;
   display: inline-flex;
@@ -722,6 +753,10 @@ main {
   grid-column: 1 / -1;
 }
 
+.span-double {
+  grid-column: span 2;
+}
+
 .task-form label {
   display: grid;
   gap: 7px;
@@ -962,5 +997,9 @@ td {
   .filter-row,
   .notice-bar {
     grid-template-columns: 1fr;
+  }
+
+  .span-double {
+    grid-column: 1 / -1;
   }
 }
