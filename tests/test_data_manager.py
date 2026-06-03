@@ -224,10 +224,49 @@ def test_audit_rejects_inconsistent_ohlc_for_stock(tmp_path: Path) -> None:
     assert audit.loc[0, "inconsistent_ohlc_rows"] == 1
 
 
-def test_audit_rejects_zero_ohlc_for_stock(tmp_path: Path) -> None:
+def test_audit_rejects_zero_ohlc_for_unadjusted_stock(tmp_path: Path) -> None:
     data_root = tmp_path / "market" / "daily"
     bars = _bars().iloc[[0]].copy()
     bars[["open", "high", "low", "close"]] = 0.0
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="",
+        symbols=("000001.SZ",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "quality_error"
+    assert audit.loc[0, "non_positive_price_rows"] == 1
+
+
+def test_audit_allows_front_adjusted_non_positive_stock_prices(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().iloc[[0]].copy()
+    bars[["open", "high", "low", "close"]] = [-2.0, -1.8, -2.2, -1.9]
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("000001.SZ",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "ok"
+    assert audit.loc[0, "non_positive_price_rows"] == 1
+    assert "前复权" in audit.loc[0, "message"]
+
+
+def test_audit_still_rejects_front_adjusted_inconsistent_ohlc(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().iloc[[0]].copy()
+    bars[["open", "high", "low", "close"]] = [-2.0, -2.4, -2.1, -1.9]
     write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
 
     audit = audit_local_data(
@@ -240,7 +279,7 @@ def test_audit_rejects_zero_ohlc_for_stock(tmp_path: Path) -> None:
     )
 
     assert audit.loc[0, "status"] == "quality_error"
-    assert audit.loc[0, "non_positive_price_rows"] == 1
+    assert audit.loc[0, "inconsistent_ohlc_rows"] == 1
 
 
 def test_audit_relaxes_ohlc_semantics_for_tdx_sector_index(tmp_path: Path) -> None:
