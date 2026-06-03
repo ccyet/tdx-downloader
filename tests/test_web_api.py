@@ -40,6 +40,36 @@ def test_api_config_exposes_sub2api_style_web_defaults() -> None:
     ]
 
 
+def test_catalog_payload_returns_all_cache_records(tmp_path) -> None:
+    row_count = web_api.MAX_TABLE_RECORDS + 1
+    catalog = pd.DataFrame(
+        {
+            "cache_key": [f"key-{index}" for index in range(row_count)],
+            "stock_code": [f"{index:06d}.SZ" for index in range(row_count)],
+            "stock_name": ["测试"] * row_count,
+            "asset_type": ["stock"] * row_count,
+            "data_kind": ["price"] * row_count,
+            "indicator": ["ohlcv"] * row_count,
+            "timeframe": ["1d"] * row_count,
+            "adjust": ["qfq"] * row_count,
+            "storage_format": ["parquet"] * row_count,
+            "status": ["cached"] * row_count,
+            "rows": [10] * row_count,
+            "start_at": ["2026-01-01T00:00:00"] * row_count,
+            "end_at": ["2026-01-10T00:00:00"] * row_count,
+            "file_size_bytes": [1024] * row_count,
+            "modified_at": ["2026-01-10T10:00:00"] * row_count,
+            "path": [""] * row_count,
+            "message": [""] * row_count,
+        }
+    )
+
+    payload = web_api._catalog_payload(catalog, data_root=str(tmp_path), rebuilt=False)
+
+    assert len(payload["records"]) == row_count
+    assert payload["record_count"] == row_count
+
+
 def test_api_symbol_groups_uses_current_local_symbol_metadata(tmp_path) -> None:
     metadata = tmp_path / "metadata"
     metadata.mkdir()

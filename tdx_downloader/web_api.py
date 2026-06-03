@@ -594,11 +594,12 @@ def _catalog_payload(catalog: pd.DataFrame, *, data_root: str, rebuilt: bool) ->
         "by_status": _records(cache_by_status(catalog)),
         "by_dataset": _records(cache_by_dataset(catalog)),
         "readiness": _records(cache_readiness(catalog)),
-        "records": _records(catalog, limit=MAX_TABLE_RECORDS),
+        "records": _records(catalog, limit=None),
+        "record_count": int(len(catalog)),
         "catalog_path": str(path),
         "catalog_exists": path.exists(),
         "rebuilt": rebuilt,
-        "record_limit": MAX_TABLE_RECORDS,
+        "record_limit": None,
     }
 
 
@@ -688,10 +689,11 @@ def _task_payload(task: TaskState) -> dict[str, Any]:
     }
 
 
-def _records(frame: pd.DataFrame, *, limit: int = MAX_TABLE_RECORDS) -> list[dict[str, Any]]:
+def _records(frame: pd.DataFrame, *, limit: int | None = MAX_TABLE_RECORDS) -> list[dict[str, Any]]:
     if frame.empty:
         return []
-    return [_json_dict(record) for record in frame.head(limit).to_dict("records")]
+    records = frame if limit is None else frame.head(limit)
+    return [_json_dict(record) for record in records.to_dict("records")]
 
 
 def _json_dict(values: dict[str, Any]) -> dict[str, Any]:

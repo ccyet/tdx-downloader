@@ -274,7 +274,44 @@
                 </select>
               </label>
             </div>
-            <p class="table-caption">显示 {{ filteredCacheRows.length }} / {{ cacheRows.length }} 条，接口最多返回 500 条。</p>
+            <div class="table-toolbar">
+              <p class="table-caption">
+                显示 {{ cachePageFirst }}-{{ cachePageEnd }} / 筛选 {{ filteredCacheRows.length }} / 总 {{ cacheRows.length }} 条
+              </p>
+              <div class="table-controls">
+                <div class="page-size-group" aria-label="每页条数">
+                  <span>每页</span>
+                  <button
+                    v-for="size in cachePageSizeOptions"
+                    :key="size"
+                    type="button"
+                    :class="['page-size-button', { active: cachePagination.pageSize === size }]"
+                    @click="setCachePageSize(size)"
+                  >
+                    {{ size }}
+                  </button>
+                </div>
+                <div class="pagination-controls">
+                  <button type="button" :disabled="cachePagination.page <= 1" @click="goCachePage(1)">首页</button>
+                  <button type="button" :disabled="cachePagination.page <= 1" @click="goCachePage(cachePagination.page - 1)">上一页</button>
+                  <span>{{ cachePagination.page }} / {{ cacheTotalPages }}</span>
+                  <button
+                    type="button"
+                    :disabled="cachePagination.page >= cacheTotalPages"
+                    @click="goCachePage(cachePagination.page + 1)"
+                  >
+                    下一页
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="cachePagination.page >= cacheTotalPages"
+                    @click="goCachePage(cacheTotalPages)"
+                  >
+                    末页
+                  </button>
+                </div>
+              </div>
+            </div>
             <DataTable :rows="displayCacheRows" :columns="cacheColumns" empty="暂无匹配缓存记录。" />
           </Panel>
         </section>
@@ -620,7 +657,7 @@
               <div class="kv-row"><span>运行链路</span><strong>{{ runtimeLabel }}</strong></div>
               <div class="kv-row"><span>索引文件</span><strong>{{ overview?.catalog_path || '未扫描' }}</strong></div>
               <div class="kv-row"><span>索引状态</span><strong>{{ overview?.catalog_exists ? '存在' : '未生成' }}</strong></div>
-              <div class="kv-row"><span>数据上限</span><strong>表格最多显示 500 条记录</strong></div>
+              <div class="kv-row"><span>缓存表格</span><strong>分页显示完整索引记录</strong></div>
             </div>
             <div class="timeframe-map">
               <div v-for="row in timeframeStorageRows" :key="row.timeframe">
@@ -636,7 +673,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import DataTable from './components/DataTable.vue'
 import EmptyState from './components/EmptyState.vue'
 import Icon from './components/Icon.vue'
@@ -714,6 +751,7 @@ const researchTabs: Array<{ key: ResearchTabKey; label: string; icon: string }> 
 const SETTINGS_STORAGE_KEY = 'tdx-downloader-web-settings'
 const RESEARCH_SNAPSHOT_STORAGE_KEY = 'tdx-downloader-research-snapshots'
 const MAX_RESEARCH_SNAPSHOTS = 60
+const CACHE_PAGE_SIZE_OPTIONS = [25, 50, 100]
 const STATUS_LABELS: Record<string, string> = {
   cached: '可用',
   missing_file: '缺文件',
@@ -769,6 +807,10 @@ const cacheFilters = reactive({
   assetType: '',
   timeframe: '',
   status: ''
+})
+const cachePagination = reactive({
+  page: 1,
+  pageSize: 25
 })
 
 const settings = reactive({
@@ -829,7 +871,15 @@ const filteredCacheRows = computed(() => {
     )
   })
 })
-const displayCacheRows = computed(() => filteredCacheRows.value.map((row: Record<string, any>) => displayRecord(row)))
+const cacheTotalPages = computed(() => Math.max(1, Math.ceil(filteredCacheRows.value.length / cachePagination.pageSize)))
+const cachePageStartIndex = computed(() =>
+  filteredCacheRows.value.length ? (cachePagination.page - 1) * cachePagination.pageSize : 0
+)
+const cachePageEnd = computed(() => Math.min(cachePageStartIndex.value + cachePagination.pageSize, filteredCacheRows.value.length))
+const cachePageFirst = computed(() => (filteredCacheRows.value.length ? cachePageStartIndex.value + 1 : 0))
+const pagedCacheRows = computed(() => filteredCacheRows.value.slice(cachePageStartIndex.value, cachePageEnd.value))
+const displayCacheRows = computed(() => pagedCacheRows.value.map((row: Record<string, any>) => displayCacheRecord(row)))
+const cachePageSizeOptions = CACHE_PAGE_SIZE_OPTIONS
 const displayPlanRows = computed(() => planRows.value.map((row: Record<string, any>) => displayRecord(row)))
 const displayResultRows = computed(() =>
   (selectedTask.value?.result?.records || []).map((row: Record<string, any>) => displayRecord(row))
@@ -927,6 +977,16 @@ const assetOverviewCards = computed(() =>
   })
 )
 
+watch(
+  () => [cacheFilters.keyword, cacheFilters.assetType, cacheFilters.timeframe, cacheFilters.status, cachePagination.pageSize],
+  () => {
+    cachePagination.page = 1
+  }
+)
+watch(cacheTotalPages, () => {
+  goCachePage(cachePagination.page)
+})
+
 const planColumns = [
   { key: 'stock_code', label: '代码' },
   { key: 'timeframe', label: '周期' },
@@ -940,9 +1000,15 @@ const cacheColumns = [
   { key: 'stock_name', label: '名称' },
   { key: 'asset_type', label: '资产' },
   { key: 'timeframe', label: '周期' },
+  { key: 'adjust', label: '复权' },
   { key: 'status', label: '状态' },
   { key: 'rows', label: '行数' },
-  { key: 'end_at', label: '结束' }
+  { key: 'start_at', label: '开始' },
+  { key: 'end_at', label: '结束' },
+  { key: 'file_size_bytes', label: '大小' },
+  { key: 'modified_at', label: '修改' },
+  { key: 'path', label: '路径' },
+  { key: 'message', label: '信息' }
 ]
 const resultColumns = [
   { key: 'stock_code', label: '代码' },
@@ -1554,6 +1620,35 @@ function displayRecord(row: Record<string, any>) {
     before_status: STATUS_LABELS[String(row.before_status || '')] || row.before_status,
     after_status: STATUS_LABELS[String(row.after_status || '')] || row.after_status
   }
+}
+
+function displayCacheRecord(row: Record<string, any>) {
+  return {
+    ...displayRecord(row),
+    start_at: formatDateTimeText(row.start_at),
+    end_at: formatDateTimeText(row.end_at),
+    modified_at: formatDateTimeText(row.modified_at),
+    file_size_bytes: formatBytes(row.file_size_bytes),
+    path: row.path || '',
+    message: row.message || ''
+  }
+}
+
+function setCachePageSize(size: number) {
+  cachePagination.pageSize = size
+  cachePagination.page = 1
+}
+
+function goCachePage(page: number) {
+  cachePagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), cacheTotalPages.value)
+}
+
+function formatDateTimeText(value: unknown) {
+  if (value === null || value === undefined || value === '' || value === 'NaT') return ''
+  const text = String(value)
+  if (/^\d{4}-\d{2}-\d{2}T00:00:00/.test(text)) return text.slice(0, 10)
+  if (/^\d{4}-\d{2}-\d{2}T/.test(text)) return text.replace('T', ' ').replace(/\.\d+.*$/, '').slice(0, 16)
+  return text
 }
 
 function displayResearchRecord(row: Record<string, any>) {
