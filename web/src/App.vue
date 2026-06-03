@@ -586,6 +586,9 @@
                   <span>窗口K线</span>
                   <strong>{{ reviewChartSummary }}</strong>
                 </div>
+                <div v-if="reviewResultStale" class="inline-warning">
+                  参数已变更，点击“生成复盘”后刷新 K 线、排序和锐评。
+                </div>
                 <div class="review-kline-grid">
                   <KlineChart v-for="item in reviewChartItems" :key="item.symbol" :item="item" />
                 </div>
@@ -1000,6 +1003,7 @@ const planSummary = ref<Record<string, any>>({})
 const historyResult = ref<Record<string, any> | null>(null)
 const crossResult = ref<Record<string, any> | null>(null)
 const reviewResult = ref<Record<string, any> | null>(null)
+const reviewResultSignature = ref('')
 const aiReviewOutput = ref<Record<string, any> | null>(null)
 const researchSnapshots = ref<ResearchSnapshot[]>([])
 const notice = ref<NoticePayload | null>(null)
@@ -1177,15 +1181,24 @@ const reviewChartItems = computed(() => {
         name: ranking['股票'] || row.symbol,
         rank: ranking['排名'] || '',
         overview: row.overview || {},
-        candles: row.candles || []
+        candles: row.candles || [],
+        segments: row.main_segments || []
       }
     })
     .sort((left: Record<string, any>, right: Record<string, any>) => Number(left.rank || 9999) - Number(right.rank || 9999))
 })
+const reviewChartActualRange = computed(() => chartActualRange(reviewChartItems.value))
+const reviewResultStale = computed(() => Boolean(reviewResult.value && reviewResultSignature.value !== reviewSearchSignature()))
 const reviewChartSummary = computed(() => {
   const count = reviewChartItems.value.length
   const timeframe = reviewResult.value?.summary?.timeframe || researchTimeframe.value
-  return count ? `${count} 只 · ${timeframe} · ${reviewForm.start} 至 ${reviewForm.end}` : ''
+  const requestedStart = reviewResult.value?.summary?.start || reviewForm.start
+  const requestedEnd = reviewResult.value?.summary?.end || reviewForm.end
+  const actual = reviewChartActualRange.value
+  const parts = [`${count} 只`, timeframe, `请求 ${requestedStart} 至 ${requestedEnd}`]
+  if (actual) parts.push(`实际K线 ${actual.start} 至 ${actual.end}`)
+  if (reviewResultStale.value) parts.push('参数已变更')
+  return count ? parts.join(' · ') : ''
 })
 const aiMessagesText = computed(() => JSON.stringify(reviewResult.value?.ai?.messages || [], null, 2))
 const aiEvidenceText = computed(() => JSON.stringify(reviewResult.value?.ai?.evidence || {}, null, 2))
@@ -1606,6 +1619,7 @@ async function runReviewSearch() {
       min_swing_return: Number(reviewForm.min_swing_return || 0),
       min_segment_bars: Number(reviewForm.min_segment_bars || 1)
     })
+    reviewResultSignature.value = reviewSearchSignature()
     aiReviewOutput.value = null
     showNotice('success', '复盘已生成', `完成 ${formatInt(reviewResult.value?.summary?.ranked_count)} 个标的排序。`)
   } catch (error) {
@@ -1677,6 +1691,7 @@ function loadResearchSnapshot(snapshot: ResearchSnapshot) {
   if (snapshot.tab === 'cross') Object.assign(crossForm, form)
   if (snapshot.tab === 'review') Object.assign(reviewForm, form)
   setResearchResult(snapshot.tab, cloneJson(snapshot.result))
+  if (snapshot.tab === 'review') reviewResultSignature.value = reviewSearchSignature()
   showNotice('success', '快照已载入', snapshot.title)
 }
 
@@ -1766,6 +1781,20 @@ function researchPayloadBase() {
     adjust: settings.adjust,
     timeframe: researchTimeframe.value
   }
+}
+
+function reviewSearchSignature() {
+  return JSON.stringify({
+    data_root: normalizeDataRoot(settings.data_root),
+    adjust: settings.adjust,
+    timeframe: researchTimeframe.value,
+    symbols: parseSymbols(reviewForm.symbols),
+    start: reviewForm.start,
+    end: reviewForm.end,
+    benchmark_symbol: reviewForm.benchmark_symbol,
+    min_swing_return: Number(reviewForm.min_swing_return || 0),
+    min_segment_bars: Number(reviewForm.min_segment_bars || 1)
+  })
 }
 
 function researchSnapshotPayload(tab: ResearchTabKey) {
@@ -1907,6 +1936,16 @@ function parseNumberList(text: string) {
     .map((item) => Number(item.trim()))
     .filter((item) => Number.isFinite(item) && item > 0)
   return values.length ? values : [5]
+}
+
+function chartActualRange(items: Array<Record<string, any>>) {
+  const dates = items
+    .flatMap((item) => (Array.isArray(item.candles) ? item.candles : []))
+    .map((row: Record<string, any>) => String(row.date || '').slice(0, 10))
+    .filter(Boolean)
+    .sort()
+  if (!dates.length) return null
+  return { start: dates[0], end: dates[dates.length - 1] }
 }
 
 function todayText() {

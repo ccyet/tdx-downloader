@@ -9,67 +9,19 @@
       <b :class="returnClass">{{ formatPercent(periodReturn) }}</b>
     </header>
 
-    <svg viewBox="0 0 640 320" role="img" :aria-label="`${displayName}窗口期K线图`">
-      <defs>
-        <linearGradient :id="gradientId" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stop-color="#e8fffb" />
-          <stop offset="100%" stop-color="#ffffff" />
-        </linearGradient>
-      </defs>
-      <rect class="plot-bg" x="44" y="28" width="580" height="206" rx="10" :fill="`url(#${gradientId})`" />
-      <g class="grid">
-        <g v-for="tick in priceTicks" :key="tick.value">
-          <line x1="44" x2="624" :y1="tick.y" :y2="tick.y" />
-          <text x="38" :y="tick.y + 4" text-anchor="end">{{ formatPrice(tick.value) }}</text>
-        </g>
-      </g>
-      <polyline v-if="closeLinePoints" class="close-line" :points="closeLinePoints" />
-      <g class="candles">
-        <g v-for="(candle, index) in normalizedCandles" :key="`${candle.date}-${index}`">
-          <line
-            :class="['wick', candleTone(candle)]"
-            :x1="xFor(index)"
-            :x2="xFor(index)"
-            :y1="priceY(candle.high)"
-            :y2="priceY(candle.low)"
-          />
-          <rect
-            :class="['body', candleTone(candle)]"
-            :x="xFor(index) - candleWidth / 2"
-            :y="bodyY(candle)"
-            :width="candleWidth"
-            :height="bodyHeight(candle)"
-            rx="1"
-          />
-        </g>
-      </g>
-      <g class="volume">
-        <line x1="44" x2="624" y1="286" y2="286" />
-        <rect
-          v-for="(candle, index) in normalizedCandles"
-          :key="`v-${candle.date}-${index}`"
-          :class="['volume-bar', candleTone(candle)]"
-          :x="xFor(index) - volumeWidth / 2"
-          :y="volumeY(candle.volume)"
-          :width="volumeWidth"
-          :height="286 - volumeY(candle.volume)"
-          rx="1"
-        />
-      </g>
-      <text class="axis-label" x="44" y="309">{{ startDate }}</text>
-      <text class="axis-label" x="624" y="309" text-anchor="end">{{ endDate }}</text>
-    </svg>
+    <div ref="chartRoot" class="plotly-kline" role="img" :aria-label="`${displayName}窗口期K线图`"></div>
 
     <footer>
       <span>收盘 {{ formatPrice(lastClose) }}</span>
       <span>回撤 {{ formatPercent(maxDrawdown) }}</span>
       <span>{{ startDate }} - {{ endDate }}</span>
+      <span>拖动缩放 · 双击复位</span>
     </footer>
   </article>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 interface RawCandle {
   date?: string
@@ -78,6 +30,13 @@ interface RawCandle {
   low?: number | null
   close?: number | null
   volume?: number | null
+}
+
+interface RawSegment {
+  start?: string
+  end?: string
+  direction?: string
+  return?: number | null
 }
 
 interface Candle {
@@ -89,6 +48,13 @@ interface Candle {
   volume: number
 }
 
+interface Segment {
+  start: string
+  end: string
+  direction: string
+  return: number
+}
+
 interface KlineItem {
   symbol?: string
   name?: string
@@ -96,29 +62,23 @@ interface KlineItem {
   rank?: number | string
   overview?: Record<string, any>
   candles?: RawCandle[]
+  segments?: RawSegment[]
 }
 
 const props = defineProps<{
   item: KlineItem
 }>()
 
-const chartWidth = 640
-const plotLeft = 44
-const plotRight = 624
-const plotTop = 28
-const plotBottom = 234
-const volumeTop = 252
-const volumeBottom = 286
-const plotWidth = plotRight - plotLeft
-const itemSymbol = computed(() => props.item.symbol || '-')
-const gradientId = computed(() =>
-  `kline-gradient-${[itemSymbol.value, props.item.label || props.item.rank || 'chart'].join('-').replace(/[^a-zA-Z0-9]/g, '-')}`
-)
+const chartRoot = ref<HTMLDivElement | null>(null)
+let resizeObserver: ResizeObserver | null = null
+let plotlyModule: any | null = null
+let plotlyPromise: Promise<any> | null = null
 
+const itemSymbol = computed(() => props.item.symbol || '-')
 const normalizedCandles = computed<Candle[]>(() =>
   (props.item.candles || [])
     .map((row) => ({
-      date: String(row.date || ''),
+      date: formatDate(row.date),
       open: numberValue(row.open),
       high: numberValue(row.high),
       low: numberValue(row.low),
@@ -133,6 +93,16 @@ const normalizedCandles = computed<Candle[]>(() =>
         Number.isFinite(row.low) &&
         Number.isFinite(row.close)
     )
+)
+const normalizedSegments = computed<Segment[]>(() =>
+  (props.item.segments || [])
+    .map((row) => ({
+      start: formatDate(row.start),
+      end: formatDate(row.end),
+      direction: String(row.direction || ''),
+      return: numberValue(row.return)
+    }))
+    .filter((row) => row.start && row.end)
 )
 
 const candleCount = computed(() => normalizedCandles.value.length)
@@ -152,58 +122,139 @@ const maxDrawdown = computed(() => {
   return Number.isFinite(fromOverview) ? fromOverview : candleDrawdown(normalizedCandles.value)
 })
 const returnClass = computed(() => (periodReturn.value >= 0 ? 'positive' : 'negative'))
-const startDate = computed(() => formatDate(normalizedCandles.value[0]?.date))
-const endDate = computed(() => formatDate(normalizedCandles.value[normalizedCandles.value.length - 1]?.date))
+const startDate = computed(() => normalizedCandles.value[0]?.date || '-')
+const endDate = computed(() => normalizedCandles.value[normalizedCandles.value.length - 1]?.date || '-')
 const lastClose = computed(() => normalizedCandles.value[normalizedCandles.value.length - 1]?.close ?? NaN)
 
-const priceRange = computed(() => {
-  if (!normalizedCandles.value.length) return { min: 0, max: 1 }
-  const lows = normalizedCandles.value.map((row) => row.low)
-  const highs = normalizedCandles.value.map((row) => row.high)
-  const min = Math.min(...lows)
-  const max = Math.max(...highs)
-  const span = Math.max(max - min, Math.abs(max) * 0.02, 0.01)
-  return { min: min - span * 0.08, max: max + span * 0.08 }
+const plotData = computed(() => {
+  const candles = normalizedCandles.value
+  return [
+    {
+      type: 'candlestick',
+      x: candles.map((row) => row.date),
+      open: candles.map((row) => row.open),
+      high: candles.map((row) => row.high),
+      low: candles.map((row) => row.low),
+      close: candles.map((row) => row.close),
+      name: displayName.value,
+      increasing: { line: { color: '#d63d2e', width: 1.2 }, fillcolor: '#d63d2e' },
+      decreasing: { line: { color: '#008a55', width: 1.2 }, fillcolor: '#008a55' },
+      hovertemplate: '日期 %{x}<br>开 %{open:.2f}<br>高 %{high:.2f}<br>低 %{low:.2f}<br>收 %{close:.2f}<extra></extra>'
+    },
+    {
+      type: 'bar',
+      x: candles.map((row) => row.date),
+      y: candles.map((row) => row.volume),
+      yaxis: 'y2',
+      name: '成交量',
+      marker: {
+        color: candles.map((row) => (candleTone(row) === 'up' ? 'rgba(214, 61, 46, 0.22)' : 'rgba(0, 138, 85, 0.22)'))
+      },
+      hovertemplate: '成交量 %{y:.0f}<extra></extra>'
+    }
+  ]
 })
 
-const priceTicks = computed(() => {
-  const ticks = []
-  for (let index = 0; index < 4; index += 1) {
-    const ratio = index / 3
-    const value = priceRange.value.max - (priceRange.value.max - priceRange.value.min) * ratio
-    ticks.push({ value, y: plotTop + (plotBottom - plotTop) * ratio })
+const plotLayout = computed(() => ({
+  autosize: true,
+  height: 330,
+  margin: { l: 42, r: 18, t: 8, b: 26 },
+  paper_bgcolor: 'rgba(0,0,0,0)',
+  plot_bgcolor: '#fbfffe',
+  dragmode: 'zoom',
+  hovermode: 'x unified',
+  showlegend: false,
+  shapes: segmentShapes(),
+  xaxis: {
+    type: 'category',
+    rangeslider: { visible: false },
+    showgrid: false,
+    tickfont: { color: '#718096', size: 10 },
+    linecolor: '#dfe9ee',
+    zeroline: false,
+    fixedrange: false
+  },
+  yaxis: {
+    domain: [0.24, 1],
+    title: { text: '价格', font: { color: '#607083', size: 11 } },
+    gridcolor: '#e5edf2',
+    tickfont: { color: '#718096', size: 10 },
+    zeroline: false,
+    fixedrange: false
+  },
+  yaxis2: {
+    domain: [0, 0.16],
+    title: { text: '量', font: { color: '#607083', size: 11 } },
+    showgrid: false,
+    tickfont: { color: '#718096', size: 10 },
+    zeroline: false,
+    fixedrange: false
   }
-  return ticks
-})
+}))
 
-const candleWidth = computed(() => Math.max(2, Math.min(12, (plotWidth / Math.max(candleCount.value, 1)) * 0.58)))
-const volumeWidth = computed(() => Math.max(1, Math.min(10, candleWidth.value * 0.72)))
-const maxVolume = computed(() => Math.max(...normalizedCandles.value.map((row) => row.volume), 1))
-const closeLinePoints = computed(() =>
-  normalizedCandles.value.map((row, index) => `${xFor(index)},${priceY(row.close)}`).join(' ')
+const plotConfig = {
+  responsive: true,
+  displaylogo: false,
+  scrollZoom: true,
+  modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d']
+}
+
+watch(
+  () => props.item,
+  () => {
+    void renderChart()
+  },
+  { deep: true }
 )
 
-function xFor(index: number): number {
-  if (candleCount.value <= 1) return chartWidth / 2
-  return plotLeft + (plotWidth / (candleCount.value - 1)) * index
+onMounted(() => {
+  void renderChart()
+  if (chartRoot.value && 'ResizeObserver' in window) {
+    resizeObserver = new ResizeObserver(() => {
+      if (!chartRoot.value || !plotlyModule) return
+      plotlyModule.Plots.resize(chartRoot.value)
+    })
+    resizeObserver.observe(chartRoot.value)
+  }
+})
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  if (chartRoot.value && plotlyModule) plotlyModule.purge(chartRoot.value)
+})
+
+async function renderChart() {
+  await nextTick()
+  if (!chartRoot.value) return
+  const Plotly = await loadPlotly()
+  await Plotly.react(chartRoot.value, plotData.value as any, plotLayout.value as any, plotConfig as any)
 }
 
-function priceY(price: number): number {
-  const range = priceRange.value.max - priceRange.value.min || 1
-  return plotBottom - ((price - priceRange.value.min) / range) * (plotBottom - plotTop)
+async function loadPlotly() {
+  if (plotlyModule) return plotlyModule
+  if (!plotlyPromise) {
+    plotlyPromise = import('plotly.js-dist-min').then((module) => (module as any).default || module)
+  }
+  plotlyModule = await plotlyPromise
+  return plotlyModule
 }
 
-function volumeY(volume: number): number {
-  const ratio = Math.max(0, Math.min(volume / maxVolume.value, 1))
-  return volumeBottom - ratio * (volumeBottom - volumeTop)
-}
-
-function bodyY(candle: Candle): number {
-  return Math.min(priceY(candle.open), priceY(candle.close))
-}
-
-function bodyHeight(candle: Candle): number {
-  return Math.max(Math.abs(priceY(candle.open) - priceY(candle.close)), 2)
+function segmentShapes() {
+  return normalizedSegments.value.map((segment) => {
+    const isRise = ['上涨', '反弹', 'rise', 'up'].includes(segment.direction)
+    return {
+      type: 'rect',
+      xref: 'x',
+      yref: 'paper',
+      x0: segment.start,
+      x1: segment.end,
+      y0: 0,
+      y1: 1,
+      fillcolor: isRise ? 'rgba(214, 61, 46, 0.08)' : 'rgba(0, 138, 85, 0.08)',
+      line: { width: 0 },
+      layer: 'below'
+    }
+  })
 }
 
 function candleTone(candle: Candle): 'up' | 'down' {
@@ -243,7 +294,7 @@ function formatPrice(value: number): string {
 }
 
 function formatDate(value?: string): string {
-  if (!value) return '-'
+  if (!value) return ''
   return value.slice(0, 10)
 }
 </script>
@@ -307,65 +358,21 @@ footer {
   color: #008a55;
 }
 
-svg {
-  width: 100%;
-  height: auto;
-  display: block;
+.plotly-kline {
+  min-height: 330px;
+  overflow: hidden;
+  border: 1px solid #d6e6e4;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #f9fffe 0%, #ffffff 100%);
 }
 
-.plot-bg {
-  stroke: #d6e6e4;
+.plotly-kline :deep(.modebar) {
+  top: 4px !important;
+  right: 4px !important;
 }
 
-.grid line,
-.volume line {
-  stroke: #dfe9ee;
-  stroke-width: 1;
-}
-
-.grid text,
-.axis-label {
-  fill: #718096;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.close-line {
-  fill: none;
-  stroke: #087f78;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2.2;
-  opacity: 0.68;
-}
-
-.wick,
-.body {
-  stroke-width: 1.4;
-}
-
-.wick.up,
-.body.up {
-  stroke: #d63d2e;
-  fill: #d63d2e;
-}
-
-.wick.down,
-.body.down {
-  stroke: #008a55;
-  fill: #008a55;
-}
-
-.volume-bar {
-  opacity: 0.26;
-}
-
-.volume-bar.up {
-  fill: #d63d2e;
-}
-
-.volume-bar.down {
-  fill: #008a55;
+.plotly-kline :deep(.modebar-btn path) {
+  fill: #607083;
 }
 
 footer {
