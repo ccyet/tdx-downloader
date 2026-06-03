@@ -559,6 +559,15 @@
                   </button>
                 </div>
               </form>
+              <div v-if="reviewChartItems.length" class="review-kline-section">
+                <div class="review-section-head">
+                  <span>窗口K线</span>
+                  <strong>{{ reviewChartSummary }}</strong>
+                </div>
+                <div class="review-kline-grid">
+                  <KlineChart v-for="item in reviewChartItems" :key="item.symbol" :item="item" />
+                </div>
+              </div>
             </Panel>
 
             <div class="view-stack">
@@ -761,6 +770,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import DataTable from './components/DataTable.vue'
 import EmptyState from './components/EmptyState.vue'
 import Icon from './components/Icon.vue'
+import KlineChart from './components/KlineChart.vue'
 import MetricCard from './components/MetricCard.vue'
 import Panel from './components/Panel.vue'
 
@@ -1006,6 +1016,28 @@ const displayComparisonRows = computed(() =>
 const displaySegmentRows = computed(() =>
   (reviewResult.value?.reviews?.[0]?.main_segments || []).map((row: Record<string, any>) => displayResearchRecord(row))
 )
+const reviewChartItems = computed(() => {
+  const rankingRows = reviewResult.value?.ranking || []
+  const rankingBySymbol = new Map<string, Record<string, any>>(rankingRows.map((row: Record<string, any>) => [row['代码'], row]))
+  return (reviewResult.value?.reviews || [])
+    .filter((row: Record<string, any>) => Array.isArray(row.candles) && row.candles.length)
+    .map((row: Record<string, any>) => {
+      const ranking: Record<string, any> = rankingBySymbol.get(row.symbol) || {}
+      return {
+        symbol: row.symbol,
+        name: ranking['股票'] || row.symbol,
+        rank: ranking['排名'] || '',
+        overview: row.overview || {},
+        candles: row.candles || []
+      }
+    })
+    .sort((left: Record<string, any>, right: Record<string, any>) => Number(left.rank || 9999) - Number(right.rank || 9999))
+})
+const reviewChartSummary = computed(() => {
+  const count = reviewChartItems.value.length
+  const timeframe = reviewResult.value?.summary?.timeframe || researchTimeframe.value
+  return count ? `${count} 只 · ${timeframe} · ${reviewForm.start} 至 ${reviewForm.end}` : ''
+})
 const aiMessagesText = computed(() => JSON.stringify(reviewResult.value?.ai?.messages || [], null, 2))
 const aiEvidenceText = computed(() => JSON.stringify(reviewResult.value?.ai?.evidence || {}, null, 2))
 const aiOutputReviewText = computed(() => String(aiReviewOutput.value?.review || ''))

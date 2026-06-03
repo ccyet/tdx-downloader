@@ -1024,6 +1024,46 @@ main {
   box-shadow: inset 0 0 0 1px rgba(9, 199, 190, 0.18);
 }
 
+.review-kline-section {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.review-section-head {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.review-section-head span {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.review-section-head strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-kline-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .check-row {
   display: flex !important;
   align-items: center;
@@ -1304,9 +1344,20 @@ td {
   .path-control,
   .task-form,
   .ai-run-form,
+  .review-kline-grid,
   .filter-row,
   .notice-bar {
     grid-template-columns: 1fr;
+  }
+
+  .review-section-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .review-section-head strong {
+    text-align: left;
+    white-space: normal;
   }
 
   .span-double {

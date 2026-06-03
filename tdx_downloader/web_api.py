@@ -460,6 +460,7 @@ def _register_routes(app: FastAPI) -> None:
                     "overview": _json_dict(result.overview),
                     "warnings": list(result.warnings),
                     "main_segments": _records(result.main_segments),
+                    "candles": _review_candles(result.window),
                 }
                 for result in results
             ],
@@ -572,6 +573,14 @@ def _review_stock_names(payload: ReviewSearchPayload, symbols: tuple[str, ...]) 
         if str(name).strip()
     }
     return {**resolved, **explicit}
+
+
+def _review_candles(window: pd.DataFrame) -> list[dict[str, Any]]:
+    if window.empty:
+        return []
+    columns = ["date", "open", "high", "low", "close", "volume", "amount"]
+    present = [column for column in columns if column in window.columns]
+    return _records(window[present], limit=None)
 
 
 def _call_review_ai(payload: ReviewAIPayload) -> dict[str, Any]:

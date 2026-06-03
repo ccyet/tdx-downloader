@@ -366,6 +366,17 @@ def test_api_research_review_ranks_local_cache(tmp_path) -> None:
     assert "锐评结论" in data["ranking"][0]
     assert data["ranking"][0]["对标指数"] == "000300.SH"
     assert data["comparisons"][0]["标的"] == "000300.SH"
+    strong_review = next(row for row in data["reviews"] if row["symbol"] == "000001.SZ")
+    assert strong_review["candles"][0] == {
+        "date": "2026-01-01T00:00:00",
+        "open": 10.0,
+        "high": 10.1,
+        "low": 9.9,
+        "close": 10.0,
+        "volume": 1000.0,
+        "amount": 100000.0,
+    }
+    assert strong_review["candles"][-1]["close"] == 14.0
     assert data["ai"]["evidence"]["mode"] == "multi_stock"
     assert data["ai"]["evidence"]["comparisons"][0]["标的"] == "000300.SH"
     assert data["ai"]["messages"][0]["role"] == "system"
