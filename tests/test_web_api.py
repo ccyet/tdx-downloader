@@ -370,3 +370,37 @@ def test_api_research_review_ranks_local_cache(tmp_path) -> None:
     assert "critique" in data["ai"]["messages"][0]["content"]
     assert "研究端排序复盘" in data["text"]["review"]
     assert "视频脚本视角" in data["text"]["video_script"]
+
+
+def test_api_research_review_resolves_local_symbol_names(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    metadata = data_root / "metadata"
+    metadata.mkdir(parents=True)
+    (metadata / "symbols.csv").write_text(
+        "stock_code,stock_name\n000001.SZ,本地强势\n000002.SZ,本地弱势\n",
+        encoding="utf-8",
+    )
+    bars = pd.concat(
+        [
+            _bars("000001.SZ", [10, 10.5, 11, 12, 13, 14]),
+            _bars("000002.SZ", [10, 9.8, 9.5, 9.7, 9.6, 9.4]),
+        ],
+        ignore_index=True,
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/research/review",
+        json={
+            "data_root": str(data_root),
+            "timeframe": "1d",
+            "symbols": ["000001.SZ", "000002.SZ"],
+            "start": "2026-01-01",
+            "end": "2026-01-08",
+        },
+    )
+
+    assert response.status_code == 200
+    names = {row["代码"]: row["股票"] for row in response.json()["ranking"]}
+    assert names == {"000001.SZ": "本地强势", "000002.SZ": "本地弱势"}

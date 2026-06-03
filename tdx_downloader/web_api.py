@@ -394,17 +394,18 @@ def _register_routes(app: FastAPI) -> None:
                 for symbol in symbols
             ]
             comparisons = _review_comparisons(results, bars, benchmark_symbols[0] if benchmark_symbols else "")
+            stock_names = _review_stock_names(payload, symbols)
             ranking = rank_review_results(
                 results,
                 comparisons,
-                stock_names=payload.stock_names,
+                stock_names=stock_names,
                 direction_by_symbol=payload.direction_by_symbol,
             )
             warnings = [warning for result in results for warning in result.warnings]
             evidence = build_multi_review_ai_evidence(
                 results,
                 comparisons,
-                stock_names=payload.stock_names,
+                stock_names=stock_names,
                 direction_by_symbol=payload.direction_by_symbol,
                 warnings=warnings,
             )
@@ -412,13 +413,13 @@ def _register_routes(app: FastAPI) -> None:
             review_text = render_multi_review_text(
                 results,
                 comparisons,
-                stock_names=payload.stock_names,
+                stock_names=stock_names,
                 direction_by_symbol=payload.direction_by_symbol,
             )
             video_script_text = render_multi_video_script_text(
                 results,
                 comparisons,
-                stock_names=payload.stock_names,
+                stock_names=stock_names,
                 direction_by_symbol=payload.direction_by_symbol,
             )
         except ValueError as exc:
@@ -535,6 +536,17 @@ def _review_comparisons(results: list[Any], bars: pd.DataFrame, benchmark_symbol
             continue
         rows.append({"代码": result.symbol, **build_comparison_stats(result.window, benchmark, benchmark_symbol)})
     return pd.DataFrame(rows)
+
+
+def _review_stock_names(payload: ReviewSearchPayload, symbols: tuple[str, ...]) -> dict[str, str]:
+    service = DataManagementService(payload.data_root, adjust=payload.adjust)
+    resolved = service.repository.symbol_names(symbols=symbols)
+    explicit = {
+        normalize_symbol_tuple([symbol])[0]: str(name).strip()
+        for symbol, name in payload.stock_names.items()
+        if str(name).strip()
+    }
+    return {**resolved, **explicit}
 
 
 def _open_native_directory_dialog(initial_directory: str | Path, title: str) -> Path | None:
