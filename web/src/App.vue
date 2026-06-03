@@ -40,7 +40,13 @@
         <div class="topbar-actions">
           <span class="runtime-pill">{{ runtimeLabel }}</span>
           <span class="path-pill" :title="settings.data_root">{{ compactPath(settings.data_root) }}</span>
-          <button class="icon-button" :disabled="loadingOverview" @click="loadOverview(false)">
+          <button
+            class="icon-button"
+            :disabled="topbarRefreshing"
+            :title="topbarRefreshTitle"
+            :aria-label="topbarRefreshTitle"
+            @click="refreshActiveView"
+          >
             <Icon name="refresh" />
           </button>
           <div class="avatar">TD</div>
@@ -789,6 +795,7 @@ const symbolsText = ref('')
 const planning = ref(false)
 const downloading = ref(false)
 const loadingOverview = ref(false)
+const refreshingTopbar = ref(false)
 const loadingSymbolGroups = ref(false)
 const refreshingSymbolGroup = ref<SymbolRefreshTarget | ''>('')
 const clearingTasks = ref(false)
@@ -922,6 +929,13 @@ const uniqueAssetTypes = computed(() => {
   }))
 })
 const runtimeLabel = computed(() => config.value?.runtime === 'parallels' ? 'Parallels' : 'Local')
+const topbarRefreshing = computed(() => loadingOverview.value || refreshingTopbar.value)
+const topbarRefreshTitle = computed(() => {
+  if (activeView.value === 'cache') return '扫描缓存并更新索引'
+  if (activeView.value === 'tasks') return '刷新任务进度'
+  if (activeView.value === 'download') return '刷新任务和缓存状态'
+  return '刷新当前页面数据'
+})
 const latestTask = computed(() => tasks.value[0])
 const latestTaskText = computed(() => latestTask.value ? latestTask.value.status : '无')
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value) || tasks.value[0] || null)
@@ -1074,7 +1088,9 @@ onMounted(async () => {
   restoreResearchSnapshots()
   await loadConfig()
   await Promise.all([loadOverview(false), loadTasks()])
-  window.setInterval(loadTasks, 2500)
+  window.setInterval(() => {
+    void loadTasks({ silent: true })
+  }, 2500)
 })
 
 async function loadConfig() {
@@ -1168,10 +1184,35 @@ async function loadOverview(refresh: boolean) {
     })
     overview.value = await apiGet(`/overview?${params.toString()}`)
     if (refresh) showNotice('success', '缓存扫描完成', 'SQLite 索引与缓存概览已刷新。')
+    return true
   } catch (error) {
     showError(refresh ? '缓存扫描失败' : '缓存概览加载失败', error)
+    return false
   } finally {
     loadingOverview.value = false
+  }
+}
+
+async function refreshActiveView() {
+  refreshingTopbar.value = true
+  try {
+    if (activeView.value === 'cache') {
+      await loadOverview(true)
+      return
+    }
+    if (activeView.value === 'tasks') {
+      await loadTasks({ notify: true })
+      return
+    }
+    if (activeView.value === 'download') {
+      const [overviewOk, tasksOk] = await Promise.all([loadOverview(false), loadTasks({ silent: true })])
+      if (overviewOk && tasksOk) showNotice('success', '状态已刷新', '下载任务进度和缓存概览已更新。')
+      return
+    }
+    const [overviewOk, tasksOk] = await Promise.all([loadOverview(false), loadTasks({ silent: true })])
+    if (overviewOk && tasksOk) showNotice('success', '页面已刷新', '概览和任务状态已更新。')
+  } finally {
+    refreshingTopbar.value = false
   }
 }
 
@@ -1309,13 +1350,16 @@ function deleteResearchSnapshot(snapshotId: string) {
   showNotice('info', '快照已删除', '本地研究快照列表已更新。')
 }
 
-async function loadTasks() {
+async function loadTasks(options: { notify?: boolean; silent?: boolean } = {}) {
   try {
     const data = await apiGet('/tasks')
     tasks.value = data.tasks || []
     if (!selectedTaskId.value && tasks.value[0]) selectedTaskId.value = tasks.value[0].id
+    if (options.notify) showNotice('success', '任务进度已刷新', '后台任务队列和过程记录已更新。')
+    return true
   } catch (error) {
-    showError('任务列表加载失败', error)
+    if (!options.silent) showError('任务列表加载失败', error)
+    return false
   }
 }
 
