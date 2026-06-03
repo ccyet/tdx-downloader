@@ -23,6 +23,62 @@
         </button>
       </nav>
 
+      <div v-if="activeView === 'research' && !sidebarCollapsed" class="sidebar-secondary">
+        <details class="side-accordion" open>
+          <summary>
+            <span>研究参数</span>
+            <em>{{ researchTimeframe }} · {{ settings.adjust || '不复权' }}</em>
+          </summary>
+          <div class="side-fields">
+            <label>
+              <span>周期</span>
+              <select v-model="researchTimeframe">
+                <option v-for="timeframe in config?.timeframes || []" :key="timeframe" :value="timeframe">
+                  {{ timeframe }}
+                </option>
+              </select>
+            </label>
+            <label>
+              <span>复权</span>
+              <select v-model="settings.adjust">
+                <option value="qfq">qfq</option>
+                <option value="hfq">hfq</option>
+                <option value="">不复权</option>
+              </select>
+            </label>
+            <label>
+              <span>行情根目录</span>
+              <input v-model="settings.data_root" type="text" />
+            </label>
+          </div>
+        </details>
+
+        <details class="side-accordion">
+          <summary>
+            <span>研究快照</span>
+            <em>{{ activeResearchSnapshots.length }} 个</em>
+          </summary>
+          <div class="side-snapshot-tools">
+            <button class="btn secondary" type="button" :disabled="!activeResearchResult" @click="saveActiveResearchSnapshot">
+              <Icon name="save" />
+              保存当前结果
+            </button>
+          </div>
+          <div v-if="activeResearchSnapshots.length" class="side-snapshot-list">
+            <article v-for="snapshot in activeResearchSnapshots" :key="snapshot.id" class="side-snapshot-row">
+              <button type="button" @click="loadResearchSnapshot(snapshot)">
+                <strong>{{ snapshot.title }}</strong>
+                <span>{{ snapshot.summary }}</span>
+              </button>
+              <button class="icon-button danger" type="button" title="删除快照" @click="deleteResearchSnapshot(snapshot.id)">
+                <Icon name="trash" />
+              </button>
+            </article>
+          </div>
+          <p v-else class="side-empty">暂无当前模块快照。</p>
+        </details>
+      </div>
+
       <div class="sidebar-footer">
         <button class="nav-button" @click="sidebarCollapsed = !sidebarCollapsed">
           <Icon :name="sidebarCollapsed ? 'expand' : 'collapse'" />
@@ -347,58 +403,6 @@
             </button>
           </div>
 
-          <Panel title="研究参数" subtitle="本地缓存">
-            <div class="filter-row">
-              <label>
-                <span>周期</span>
-                <select v-model="researchTimeframe">
-                  <option v-for="timeframe in config?.timeframes || []" :key="timeframe" :value="timeframe">
-                    {{ timeframe }}
-                  </option>
-                </select>
-              </label>
-              <label>
-                <span>复权</span>
-                <select v-model="settings.adjust">
-                  <option value="qfq">qfq</option>
-                  <option value="hfq">hfq</option>
-                  <option value="">不复权</option>
-                </select>
-              </label>
-              <label class="span-double">
-                <span>行情根目录</span>
-                <input v-model="settings.data_root" type="text" />
-              </label>
-            </div>
-          </Panel>
-
-          <Panel title="研究快照" :subtitle="activeResearchMeta.label">
-            <div class="snapshot-toolbar">
-              <span>{{ activeResearchSnapshots.length }} 个当前模块快照</span>
-              <button class="btn secondary" type="button" :disabled="!activeResearchResult" @click="saveActiveResearchSnapshot">
-                <Icon name="save" />
-                保存当前结果
-              </button>
-            </div>
-            <div v-if="activeResearchSnapshots.length" class="snapshot-list">
-              <article v-for="snapshot in activeResearchSnapshots" :key="snapshot.id" class="snapshot-row">
-                <div>
-                  <strong>{{ snapshot.title }}</strong>
-                  <span>{{ snapshot.createdAt }} · {{ snapshot.summary }}</span>
-                </div>
-                <div class="snapshot-actions">
-                  <button class="icon-button" type="button" title="载入快照" @click="loadResearchSnapshot(snapshot)">
-                    <Icon name="download" />
-                  </button>
-                  <button class="icon-button danger" type="button" title="删除快照" @click="deleteResearchSnapshot(snapshot.id)">
-                    <Icon name="trash" />
-                  </button>
-                </div>
-              </article>
-            </div>
-            <EmptyState v-else title="暂无快照" body="运行当前研究模块后可保存结果，之后可一键载入。" />
-          </Panel>
-
           <section v-if="activeResearchTab === 'history'" class="content-grid two">
             <Panel title="历史时序相似" subtitle="单标的">
               <form class="task-form" @submit.prevent="runHistorySearch">
@@ -598,18 +602,69 @@
               <Panel title="关键波段" subtitle="首位标的">
                 <DataTable :rows="displaySegmentRows" :columns="segmentColumns" empty="暂无关键波段。" />
               </Panel>
-              <Panel title="复盘文本" subtitle="默认输出">
-                <div v-if="reviewText || videoScriptText" class="text-output">
-                  <label>
-                    <span>排序复盘</span>
-                    <textarea :value="reviewText" rows="10" readonly></textarea>
-                  </label>
-                  <label>
-                    <span>视频脚本</span>
-                    <textarea :value="videoScriptText" rows="7" readonly></textarea>
-                  </label>
+              <Panel title="复盘与锐评" subtitle="结构化输出">
+                <div v-if="reviewMarkdownBlocks.length || reviewScriptCards.length" class="review-output-stack">
+                  <section v-if="reviewScriptCards.length" class="review-script-wrap">
+                    <div class="review-script-title">逐股锐评卡片</div>
+                    <div class="review-script-grid">
+                      <article
+                        v-for="card in reviewScriptCards"
+                        :key="card.code"
+                        :class="['review-script-card', reviewScriptGradeClass(card.grade)]"
+                      >
+                        <header class="review-script-head">
+                          <div>
+                            <h4>{{ card.title }}</h4>
+                            <span>{{ card.code }} · {{ card.nature }}</span>
+                          </div>
+                          <b>{{ card.grade }}</b>
+                        </header>
+                        <div class="review-script-stats">
+                          <span v-for="stat in card.stats" :key="stat.label">
+                            {{ stat.label }} <strong>{{ stat.value }}</strong>
+                          </span>
+                        </div>
+                        <section>
+                          <span>一句话</span>
+                          <p>{{ card.body }}</p>
+                        </section>
+                        <section>
+                          <span>明日验证</span>
+                          <p>{{ card.tomorrow }}</p>
+                        </section>
+                      </article>
+                    </div>
+                  </section>
+                  <section v-if="reviewMarkdownBlocks.length" class="review-markdown-card">
+                    <article
+                      v-for="(block, index) in reviewMarkdownBlocks"
+                      :key="index"
+                      :class="['review-markdown-block', block.type]"
+                    >
+                      <template v-if="block.type === 'table'">
+                        <div class="review-markdown-table">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th v-for="head in block.headers" :key="head">{{ head }}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr v-for="(row, rowIndex) in block.rows" :key="rowIndex">
+                                <td v-for="(cell, cellIndex) in row" :key="cellIndex">{{ cell }}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </template>
+                      <template v-else>
+                        <h4 v-if="block.title">{{ block.title }}</h4>
+                        <p v-for="(line, lineIndex) in block.lines" :key="lineIndex">{{ line }}</p>
+                      </template>
+                    </article>
+                  </section>
                 </div>
-                <EmptyState v-else title="暂无复盘文本" body="生成复盘后展示默认排序复盘和视频脚本。" />
+                <EmptyState v-else title="暂无复盘输出" body="生成复盘后展示结构化复盘和逐股锐评卡片。" />
               </Panel>
               <Panel title="AI 锐评接口" subtitle="证据与提示词">
                 <div v-if="reviewResult?.ai" class="ai-interface">
@@ -844,6 +899,24 @@ interface ResearchSnapshot {
   summary: string
   payload: Record<string, any>
   result: Record<string, any>
+}
+
+interface ReviewMarkdownBlock {
+  type: 'table' | 'section' | 'paragraph'
+  title: string
+  lines: string[]
+  headers: string[]
+  rows: string[][]
+}
+
+interface ReviewScriptCard {
+  code: string
+  title: string
+  grade: string
+  nature: string
+  body: string
+  tomorrow: string
+  stats: Array<{ label: string; value: string }>
 }
 
 const IMPORTANT_ASSET_TYPES = [
@@ -1122,6 +1195,29 @@ const aiOutputCritiqueText = computed(() => String(aiReviewOutput.value?.critiqu
 const aiScriptCardsText = computed(() => (aiReviewOutput.value ? JSON.stringify(aiReviewOutput.value?.script_cards || [], null, 2) : ''))
 const reviewText = computed(() => String(reviewResult.value?.text?.review || ''))
 const videoScriptText = computed(() => String(reviewResult.value?.text?.video_script || ''))
+const reviewMarkdownBlocks = computed<ReviewMarkdownBlock[]>(() =>
+  markdownBlocks(reviewText.value).filter((block) => !isInlineReviewBlock(block))
+)
+const reviewScriptCards = computed<ReviewScriptCard[]>(() =>
+  (reviewResult.value?.ranking || []).map((row: Record<string, any>) => {
+    const code = String(row['代码'] || '')
+    const stock = String(row['股票'] || '').trim()
+    const grade = String(row['强弱等级'] || '-')
+    return {
+      code,
+      title: stock && stock !== '-' ? `${stock}（${code}）` : code,
+      grade,
+      nature: String(row['当前性质'] || '-'),
+      body: String(row['锐评结论'] || '-'),
+      tomorrow: String(row['明日验证'] || '-'),
+      stats: [
+        { label: '收益', value: formatPercentValue(row['区间收益']) },
+        { label: '回撤', value: formatPercentValue(row['最大回撤']) },
+        { label: '超额', value: formatPercentValue(row['相对超额']) }
+      ]
+    }
+  })
+)
 const activeResearchResult = computed(() => researchResultFor(activeResearchTab.value))
 const activeResearchSnapshots = computed(() =>
   researchSnapshots.value.filter((snapshot) => snapshot.tab === activeResearchTab.value)
@@ -1984,6 +2080,107 @@ function formatResearchValue(key: string, value: unknown) {
   }
   if (Number.isInteger(number)) return number.toLocaleString()
   return number.toFixed(2)
+}
+
+function formatPercentValue(value: unknown) {
+  const number = Number(value)
+  return Number.isFinite(number) ? `${(number * 100).toFixed(2)}%` : '-'
+}
+
+function markdownBlocks(text: string): ReviewMarkdownBlock[] {
+  return text
+    .split(/\n{2,}/)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+    .map((chunk) => {
+      const lines = chunk.split('\n').map((line) => line.trim()).filter(Boolean)
+      const tableLines = lines.filter((line) => line.startsWith('|'))
+      if (tableLines.length) {
+        const rows = tableLines.map(tableCells)
+        const [headers = [], ...bodyRows] = rows.filter((cells) => !isMarkdownDividerRow(cells))
+        return {
+          type: 'table',
+          title: '',
+          lines: [],
+          headers,
+          rows: bodyRows
+        }
+      }
+      return textBlock(lines)
+    })
+}
+
+function textBlock(lines: string[]): ReviewMarkdownBlock {
+  const cleaned = lines.map(cleanMarkdownLine).filter(Boolean)
+  if (!cleaned.length) {
+    return { type: 'paragraph', title: '', lines: [], headers: [], rows: [] }
+  }
+  const [firstLine, ...rest] = cleaned
+  const titledLine = firstLine.match(/^(.+?)[:：]\s*(.*)$/)
+  if (titledLine && rest.length === 0) {
+    return {
+      type: 'section',
+      title: titledLine[1].trim(),
+      lines: titledLine[2] ? [titledLine[2].trim()] : [],
+      headers: [],
+      rows: []
+    }
+  }
+  if (rest.length) {
+    return {
+      type: 'section',
+      title: firstLine.replace(/[:：]$/, ''),
+      lines: rest,
+      headers: [],
+      rows: []
+    }
+  }
+  return {
+    type: 'paragraph',
+    title: '',
+    lines: [firstLine],
+    headers: [],
+    rows: []
+  }
+}
+
+function cleanMarkdownLine(line: string) {
+  return line
+    .replace(/\*\*/g, '')
+    .replace(/^[-*]\s+/, '• ')
+    .trim()
+}
+
+function tableCells(line: string) {
+  return line
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cleanMarkdownLine(cell))
+}
+
+function isMarkdownDividerRow(cells: string[]) {
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s/g, '')))
+}
+
+function reviewScriptGradeClass(grade: string) {
+  const gradeText = String(grade || '')
+  const gradeMap: Record<string, string> = {
+    '夯爆了': 'grade-s',
+    '人上人': 'grade-a',
+    '立棍单打': 'grade-b',
+    '刷子': 'grade-c',
+    '路边': 'grade-d',
+    '混子': 'grade-d',
+    NPC: 'grade-e',
+    '拉完了': 'grade-f'
+  }
+  return gradeMap[gradeText] || 'grade-neutral'
+}
+
+function isInlineReviewBlock(block: ReviewMarkdownBlock) {
+  if (block.title === '逐个锐评') return true
+  return /（\d{6}\.(SH|SZ|BJ)）$/.test(block.title)
 }
 
 function showNotice(type: NoticePayload['type'], title: string, body: string) {
