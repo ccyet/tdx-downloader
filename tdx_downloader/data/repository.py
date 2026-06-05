@@ -879,6 +879,7 @@ def prepare_tdx_backtest_data(
         symbols=normalized_symbols,
         start=start,
         end=end,
+        progress_callback=progress_callback,
     )
     processing_timeframes = (["1d"] if "1d" in normalized_timeframes else []) + [
         timeframe for timeframe in normalized_timeframes if timeframe != "1d"
@@ -976,6 +977,7 @@ def prepare_tdx_backtest_data(
                 symbols=normalized_symbols,
                 start=start,
                 end=end,
+                progress_callback=progress_callback,
             )
 
     after_all = pd.concat(after_audits.values(), ignore_index=True) if after_audits else pd.DataFrame(columns=AUDIT_COLUMNS)
@@ -1020,9 +1022,17 @@ def _expected_sessions_by_symbol_from_daily(
     symbols: list[str],
     start: str,
     end: str,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, list[pd.Timestamp]]:
     start_day = pd.Timestamp(start).normalize()
     end_day = pd.Timestamp(end).normalize()
+    _emit_progress(
+        progress_callback,
+        stage="daily_sessions_start",
+        timeframe="1d",
+        symbol_count=len(symbols),
+        message="开始读取日 K 缓存，建立交易日覆盖锚点。",
+    )
     daily = load_daily_bars(
         data_root=data_root,
         adjust=adjust,
@@ -1030,7 +1040,16 @@ def _expected_sessions_by_symbol_from_daily(
         start=start_day,
         end=end_day,
     )
-    return daily_sessions_by_symbol(daily, start=start, end=end)
+    sessions = daily_sessions_by_symbol(daily, start=start, end=end)
+    _emit_progress(
+        progress_callback,
+        stage="daily_sessions_done",
+        timeframe="1d",
+        symbol_count=len(sessions),
+        row_count=len(daily),
+        message=f"交易日覆盖锚点已建立：{len(sessions)} 个标的，{len(daily)} 行日 K。",
+    )
+    return sessions
 
 
 def _tdx_plan_rows(audit: pd.DataFrame, *, min_coverage_ratio: float | None) -> list[dict[str, object]]:

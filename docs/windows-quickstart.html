@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TDX Downloader Windows 使用指南</title>
+  <style>
+    :root {
+      --bg: #f4f8f8;
+      --surface: #ffffff;
+      --surface-soft: #f7fbfb;
+      --ink: #10202a;
+      --muted: #5d6d76;
+      --line: #d8e4e4;
+      --accent: #0f766e;
+      --accent-soft: #dff5f1;
+      --accent-strong: #075e57;
+      --blue: #2563eb;
+      --amber: #b45309;
+      --red: #b42318;
+      --code: #0e1b22;
+      --shadow: 0 18px 50px rgba(16, 32, 42, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, rgba(223, 245, 241, 0.72), rgba(244, 248, 248, 0) 280px),
+        var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, sans-serif;
+      letter-spacing: 0;
+    }
+
+    a { color: var(--accent-strong); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .page {
+      width: min(1160px, calc(100vw - 36px));
+      margin: 0 auto;
+      padding: 32px 0 56px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.45fr 0.9fr;
+      gap: 20px;
+      align-items: stretch;
+      margin-bottom: 22px;
+    }
+
+    .panel {
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+    }
+
+    .intro {
+      padding: 28px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 10px;
+      border: 1px solid #b7ded8;
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      border-radius: 999px;
+      font-weight: 800;
+      font-size: 13px;
+    }
+
+    h1 {
+      margin: 18px 0 12px;
+      font-size: clamp(30px, 4vw, 48px);
+      line-height: 1.08;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 21px;
+      line-height: 1.25;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .lead {
+      max-width: 760px;
+      font-size: 16px;
+    }
+
+    .aside {
+      padding: 22px;
+    }
+
+    .checklist {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .check {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 10px;
+      align-items: start;
+      padding: 12px;
+      background: var(--surface-soft);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .check em {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      font-style: normal;
+      font-weight: 900;
+    }
+
+    .section {
+      padding: 24px;
+      margin-bottom: 16px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .tile {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--surface-soft);
+    }
+
+    .tile strong {
+      display: block;
+      margin-bottom: 7px;
+      font-size: 15px;
+    }
+
+    .steps {
+      display: grid;
+      gap: 14px;
+      counter-reset: step;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 46px 1fr;
+      gap: 14px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+    }
+
+    .step::before {
+      counter-increment: step;
+      content: counter(step);
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 900;
+    }
+
+    .code-block {
+      position: relative;
+      margin-top: 12px;
+      border-radius: 9px;
+      overflow: hidden;
+      background: var(--code);
+      border: 1px solid #203744;
+    }
+
+    pre {
+      margin: 0;
+      padding: 16px 48px 16px 16px;
+      overflow: auto;
+      color: #d9f7f2;
+      font-family: "Cascadia Code", Consolas, "SFMono-Regular", monospace;
+      font-size: 13px;
+      line-height: 1.62;
+      white-space: pre;
+    }
+
+    .copy {
+      position: absolute;
+      top: 9px;
+      right: 9px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.08);
+      color: #d9f7f2;
+      border-radius: 7px;
+      padding: 5px 8px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .note {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 9px;
+      border: 1px solid #b7ded8;
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      line-height: 1.7;
+      font-size: 14px;
+    }
+
+    .warn {
+      border-color: #f3c98b;
+      background: #fff7ed;
+      color: var(--amber);
+    }
+
+    .danger {
+      border-color: #f4b7ad;
+      background: #fff3f0;
+      color: var(--red);
+    }
+
+    .path-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+    }
+
+    .path-table th,
+    .path-table td {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .path-table th {
+      width: 210px;
+      background: var(--surface-soft);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .path-table tr:last-child th,
+    .path-table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 5px;
+      background: #eaf3f3;
+      color: #0b4f49;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .footer {
+      margin-top: 20px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    @media (max-width: 860px) {
+      .hero,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .step {
+        grid-template-columns: 1fr;
+      }
+
+      pre {
+        padding-right: 16px;
+      }
+
+      .copy {
+        position: static;
+        margin: 10px 0 0 12px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="panel intro">
+        <div class="brand">TDX Downloader · Windows</div>
+        <h1>在 Windows 上 clone、启动并连接通达信</h1>
+        <p class="lead">这份指南面向 Parallels/Windows 11 或独立 Windows 电脑。Windows 侧是真实调用通达信 <code>tqcenter</code> 的环境，因此启动时使用本地模式，不需要 <code>--runtime parallels</code>。</p>
+      </div>
+      <aside class="panel aside">
+        <h2>启动前确认</h2>
+        <div class="checklist">
+          <div class="check"><em>1</em><p>Windows 已安装并登录通达信，默认目录建议为 <code>C:\new_tdx64</code>。</p></div>
+          <div class="check"><em>2</em><p>已安装 Git、Python 3.11+、Node.js LTS。</p></div>
+          <div class="check"><em>3</em><p>如果使用 Mac 外置盘数据，Parallels 共享路径为 <code>\\psf\ccOUT 1</code>。</p></div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="panel section">
+      <h2>一、安装基础工具</h2>
+      <div class="grid">
+        <div class="tile">
+          <strong>Git for Windows</strong>
+          <p>用于 clone GitHub 仓库。安装后重新打开 PowerShell。</p>
+        </div>
+        <div class="tile">
+          <strong>Python 3.11+</strong>
+          <p>安装时勾选 Add python.exe to PATH，或使用 <code>py -3.11</code> 启动。</p>
+        </div>
+        <div class="tile">
+          <strong>Node.js LTS</strong>
+          <p>用于构建前端页面。安装后用 <code>node -v</code> 和 <code>npm -v</code> 检查。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel section">
+      <h2>二、clone 仓库并准备 Python 环境</h2>
+      <div class="steps">
+        <div class="step">
+          <div>
+            <h3>clone 到 Windows 本地目录</h3>
+            <p>建议放在 Windows 本地盘，速度更稳；数据目录仍可使用共享盘。</p>
+            <div class="code-block">
+              <button class="copy" type="button">复制</button>
+              <pre><code>mkdir C:\work
+cd C:\work
+git clone https://github.com/ccyet/tdx-downloader.git
+cd tdx-downloader</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div>
+            <h3>创建并激活虚拟环境</h3>
+            <p>如果 PowerShell 拦截激活脚本，先临时放开当前窗口执行策略。</p>
+            <div class="code-block">
+              <button class="copy" type="button">复制</button>
+              <pre><code>py -3.11 -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div>
+            <h3>构建前端页面</h3>
+            <p>仓库不提交 <code>web/dist</code>，Windows 首次运行前需要构建一次。</p>
+            <div class="code-block">
+              <button class="copy" type="button">复制</button>
+              <pre><code>cd web
+npm install
+npm run build
+cd ..</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel section">
+      <h2>三、启动服务</h2>
+      <p>保持 PowerShell 窗口打开，服务运行期间页面才能访问。</p>
+      <div class="code-block">
+        <button class="copy" type="button">复制</button>
+        <pre><code>python -m tdx_downloader.web_api</code></pre>
+      </div>
+      <div class="note">浏览器打开 <code>http://127.0.0.1:8622/</code>。Windows 上启动后，路径选择按钮会调用系统文件夹选择窗口。</div>
+    </section>
+
+    <section class="panel section">
+      <h2>四、页面里的路径怎么填</h2>
+      <table class="path-table">
+        <tr>
+          <th>行情根目录</th>
+          <td><code>\\psf\ccOUT 1\tdx-data</code> 或 Windows 本地目录，例如 <code>D:\tdx-data</code>。</td>
+        </tr>
+        <tr>
+          <th>TDX PYPlugins/user</th>
+          <td>默认填 <code>C:\new_tdx64\PYPlugins\user</code>。如果通达信装在其他目录，选择对应的 <code>PYPlugins\user</code>。</td>
+        </tr>
+        <tr>
+          <th>复权</th>
+          <td>原则上使用 <code>qfq</code>，即前复权。</td>
+        </tr>
+        <tr>
+          <th>运行模式</th>
+          <td>Windows 侧直接本地运行，不使用 <code>--runtime parallels</code>。</td>
+        </tr>
+      </table>
+    </section>
+
+    <section class="panel section">
+      <h2>五、先做连接诊断</h2>
+      <p>正式批量下载前，先确认 Windows 能真实连接通达信。</p>
+      <div class="code-block">
+        <button class="copy" type="button">复制</button>
+        <pre><code>python -m tdx_downloader.cli tdx-doctor ^
+  --symbols 399006.SZ ^
+  --timeframes 1d ^
+  --start 2026-06-04 ^
+  --end 2026-06-05 ^
+  --tdx-path "C:\new_tdx64\PYPlugins\user" ^
+  --runtime local</code></pre>
+      </div>
+      <div class="note warn">如果分钟线返回 <code>no_data</code>，先在 Windows 通达信里下载对应日期的分钟 K 线；程序不会凭空生成通达信本地没有的数据。</div>
+    </section>
+
+    <section class="panel section">
+      <h2>六、常见问题</h2>
+      <div class="grid">
+        <div class="tile">
+          <strong>页面打不开</strong>
+          <p>确认 PowerShell 里服务未退出，并访问 <code>http://127.0.0.1:8622/</code>，不是 5173。</p>
+        </div>
+        <div class="tile">
+          <strong>文件夹弹窗不出现</strong>
+          <p>服务必须在当前登录桌面用户会话里启动；不要作为 Windows 服务或后台 SYSTEM 会话启动。</p>
+        </div>
+        <div class="tile">
+          <strong>无法导入 tqcenter</strong>
+          <p>确认通达信已启动并登录，且 <code>PYPlugins\user</code> 路径填写正确。</p>
+        </div>
+        <div class="tile">
+          <strong>共享盘路径不可用</strong>
+          <p>先在资源管理器打开 <code>\\psf\ccOUT 1</code>，确认 Parallels 共享已挂载。</p>
+        </div>
+        <div class="tile">
+          <strong>PowerShell 无法激活 venv</strong>
+          <p>执行 <code>Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass</code> 后，再激活虚拟环境。</p>
+        </div>
+        <div class="tile">
+          <strong>npm build 报错</strong>
+          <p>确认 Node.js 是 LTS 版本，重新打开 PowerShell 后再执行 <code>npm install</code>。</p>
+        </div>
+      </div>
+      <div class="note danger">不要把 API Key、通达信账号密码写进源码或提交到 GitHub。页面里的 AI Key 只应保存在本机浏览器。</div>
+    </section>
+
+    <p class="footer">TDX Downloader Windows Quickstart · 建议先跑 tdx-doctor，再执行批量下载。</p>
+  </main>
+
+  <script>
+    document.querySelectorAll(".copy").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const code = button.parentElement.querySelector("pre").innerText;
+        try {
+          await navigator.clipboard.writeText(code);
+          const old = button.textContent;
+          button.textContent = "已复制";
+          setTimeout(() => { button.textContent = old; }, 1200);
+        } catch {
+          button.textContent = "复制失败";
+          setTimeout(() => { button.textContent = "复制"; }, 1200);
+        }
+      });
+    });
+  </script>
+</body>
+</html>

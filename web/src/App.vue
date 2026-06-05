@@ -333,7 +333,31 @@
               </div>
             </Panel>
 
-            <Panel title="下载计划" subtitle="最多显示 500 行">
+            <Panel title="下载计划" subtitle="翻页查看">
+              <div v-if="planRows.length" class="table-toolbar">
+                <p class="table-caption">显示 {{ planPageFirst }}-{{ planPageEnd }} / {{ planRows.length }} 条</p>
+                <div class="table-controls">
+                  <div class="page-size-group">
+                    <span>每页</span>
+                    <button
+                      v-for="size in planPageSizeOptions"
+                      :key="size"
+                      type="button"
+                      :class="['page-size-button', { active: planPagination.pageSize === size }]"
+                      @click="setPlanPageSize(size)"
+                    >
+                      {{ size }}
+                    </button>
+                  </div>
+                  <div class="pagination-controls">
+                    <button type="button" :disabled="planPagination.page <= 1" @click="goPlanPage(1)">首页</button>
+                    <button type="button" :disabled="planPagination.page <= 1" @click="goPlanPage(planPagination.page - 1)">上一页</button>
+                    <span>{{ planPagination.page }} / {{ planTotalPages }}</span>
+                    <button type="button" :disabled="planPagination.page >= planTotalPages" @click="goPlanPage(planPagination.page + 1)">下一页</button>
+                    <button type="button" :disabled="planPagination.page >= planTotalPages" @click="goPlanPage(planTotalPages)">末页</button>
+                  </div>
+                </div>
+              </div>
               <DataTable :rows="displayPlanRows" :columns="planColumns" empty="点击“预览计划”后显示。" />
             </Panel>
           </div>
@@ -519,11 +543,18 @@
           </section>
 
           <section v-else-if="activeResearchTab === 'cross'" class="content-grid two">
-            <Panel title="横截面相似" subtitle="同区间">
+            <Panel title="横截面相似" :subtitle="crossSearchModeLabel">
               <form class="task-form" @submit.prevent="runCrossSectionSearch">
                 <label>
                   <span>目标标的</span>
                   <input v-model="crossForm.target_symbol" type="text" />
+                </label>
+                <label>
+                  <span>搜索方式</span>
+                  <select v-model="crossForm.search_mode">
+                    <option value="same_date">同区间</option>
+                    <option value="traversal">指定区间</option>
+                  </select>
                 </label>
                 <label>
                   <span>返回数量</span>
@@ -551,9 +582,23 @@
                     {{ shortcut.label }}
                   </button>
                 </div>
-                <label>
+                <div v-if="crossForm.search_mode === 'traversal'" class="inline-fields span-full">
+                  <label>
+                    <span>搜索开始</span>
+                    <input v-model="crossForm.traversal_start" type="date" />
+                  </label>
+                  <label>
+                    <span>搜索结束</span>
+                    <input v-model="crossForm.traversal_end" type="date" />
+                  </label>
+                </div>
+                <label v-if="crossForm.search_mode === 'same_date'">
                   <span>日期容忍K数</span>
                   <input v-model.number="crossForm.date_tolerance_bars" type="number" min="0" />
+                </label>
+                <label v-else>
+                  <span>邻近排除K数</span>
+                  <input v-model.number="crossForm.exclusion_bars" type="number" min="0" />
                 </label>
                 <label>
                   <span>前瞻K数</span>
@@ -623,6 +668,11 @@
                   <span>最小波段K数</span>
                   <input v-model.number="reviewForm.min_segment_bars" type="number" min="1" />
                 </label>
+                <label class="review-ai-toggle">
+                  <input v-model="reviewForm.enable_ai_review" type="checkbox" />
+                  <span>启用 AI 锐评</span>
+                  <em>{{ aiConfigReady ? '使用系统设置中的 AI 接口' : '未配置时输出本地默认锐评' }}</em>
+                </label>
                 <label class="span-full">
                   <span>对标指数</span>
                   <input v-model="reviewForm.benchmark_symbol" type="text" placeholder="000300.SH" />
@@ -680,7 +730,7 @@
               </Panel>
               <Panel title="复盘与锐评" subtitle="结构化输出">
                 <div class="panel-actions">
-                  <button class="btn secondary" type="button" :disabled="runningAiReview || !reviewResult?.ai?.messages?.length" @click="runAiReview">
+                  <button class="btn secondary" type="button" :disabled="runningAiReview || !reviewResult?.ai?.messages?.length" @click="runAiReview()">
                     <Icon name="activity" />
                     {{ aiConfigReady ? 'AI覆盖' : '本地规则' }}
                   </button>
@@ -790,7 +840,34 @@
                   </div>
                 </div>
               </section>
-              <div v-if="selectedTask.error" class="error-box">{{ selectedTask.error }}</div>
+              <section v-if="selectedTaskQualityIssues.length" class="task-paged-section quality-issue-list">
+                <div class="table-toolbar">
+                  <p class="table-caption">质量门禁 {{ taskQualityIssuePageFirst }}-{{ taskQualityIssuePageEnd }} / {{ selectedTaskQualityIssues.length }} 条</p>
+                  <div class="table-controls">
+                    <div class="page-size-group">
+                      <span>每页</span>
+                      <button
+                        v-for="size in taskQualityIssuePageSizeOptions"
+                        :key="size"
+                        type="button"
+                        :class="['page-size-button', { active: taskQualityIssuePagination.pageSize === size }]"
+                        @click="setTaskQualityIssuePageSize(size)"
+                      >
+                        {{ size }}
+                      </button>
+                    </div>
+                    <div class="pagination-controls">
+                      <button type="button" :disabled="taskQualityIssuePagination.page <= 1" @click="goTaskQualityIssuePage(1)">首页</button>
+                      <button type="button" :disabled="taskQualityIssuePagination.page <= 1" @click="goTaskQualityIssuePage(taskQualityIssuePagination.page - 1)">上一页</button>
+                      <span>{{ taskQualityIssuePagination.page }} / {{ taskQualityIssueTotalPages }}</span>
+                      <button type="button" :disabled="taskQualityIssuePagination.page >= taskQualityIssueTotalPages" @click="goTaskQualityIssuePage(taskQualityIssuePagination.page + 1)">下一页</button>
+                      <button type="button" :disabled="taskQualityIssuePagination.page >= taskQualityIssueTotalPages" @click="goTaskQualityIssuePage(taskQualityIssueTotalPages)">末页</button>
+                    </div>
+                  </div>
+                </div>
+                <DataTable :rows="pagedTaskQualityIssueRows" :columns="taskQualityIssueColumns" empty="暂无质量门禁明细。" />
+              </section>
+              <div v-else-if="selectedTask.error" class="error-box">{{ selectedTask.error }}</div>
               <section v-if="displayTaskEventRows.length" class="task-paged-section">
                 <div class="table-toolbar">
                   <p class="table-caption">完整事件 {{ taskEventPageFirst }}-{{ taskEventPageEnd }} / {{ displayTaskEventRows.length }} 条</p>
@@ -1043,6 +1120,7 @@ interface ConfigPayload {
   timeframes: string[]
   asset_types: Array<{ value: string; label: string }>
   symbol_groups: SymbolGroup[]
+  symbol_names?: Record<string, string>
   runtime: string
 }
 
@@ -1062,6 +1140,15 @@ interface NoticePayload {
   type: 'success' | 'error' | 'info'
   title: string
   body: string
+}
+
+interface TaskQualityIssue {
+  index: number
+  symbol: string
+  timeframe: string
+  status: string
+  status_label: string
+  message: string
 }
 
 type DateShortcutKey = '20d' | '50d' | 'ytd' | '1y'
@@ -1129,6 +1216,7 @@ const SETTINGS_STORAGE_KEY = 'tdx-downloader-web-settings'
 const RESEARCH_SNAPSHOT_STORAGE_KEY = 'tdx-downloader-research-snapshots'
 const MAX_RESEARCH_SNAPSHOTS = 60
 const CACHE_PAGE_SIZE_OPTIONS = [25, 50, 100]
+const PLAN_PAGE_SIZE_OPTIONS = [25, 50, 100]
 const DEFAULT_ALL_ASSETS_LOOKBACK_DAYS = 20
 const REVIEW_SYMBOL_PICKER_TABS: Array<{ key: ReviewSymbolPickerType; label: string }> = [
   { key: 'etf', label: 'ETF' },
@@ -1143,6 +1231,7 @@ const DATE_RANGE_SHORTCUTS: Array<{ key: DateShortcutKey; label: string }> = [
 const TASK_EVENT_WINDOW_SIZE = 6
 const TASK_EVENT_PAGE_SIZE_OPTIONS = [10, 25, 50]
 const TASK_RESULT_PAGE_SIZE_OPTIONS = [25, 50, 100]
+const TASK_QUALITY_PAGE_SIZE_OPTIONS = [25, 50, 100]
 const STATUS_LABELS: Record<string, string> = {
   cached: '可用',
   missing_file: '缺文件',
@@ -1213,6 +1302,10 @@ const cachePagination = reactive({
   page: 1,
   pageSize: 25
 })
+const planPagination = reactive({
+  page: 1,
+  pageSize: PLAN_PAGE_SIZE_OPTIONS[0]
+})
 const taskEventPagination = reactive({
   page: 1,
   pageSize: TASK_EVENT_PAGE_SIZE_OPTIONS[0]
@@ -1220,6 +1313,10 @@ const taskEventPagination = reactive({
 const taskResultPagination = reactive({
   page: 1,
   pageSize: TASK_RESULT_PAGE_SIZE_OPTIONS[0]
+})
+const taskQualityIssuePagination = reactive({
+  page: 1,
+  pageSize: TASK_QUALITY_PAGE_SIZE_OPTIONS[0]
 })
 
 const settings = reactive({
@@ -1263,8 +1360,12 @@ const crossForm = reactive({
   universe_symbols: '600519.SH\n300750.SZ\n601318.SH',
   start: offsetDateText(-20),
   end: todayText(),
+  search_mode: 'same_date',
+  traversal_start: offsetDateText(-365),
+  traversal_end: todayText(),
   top_n: 20,
   date_tolerance_bars: 0,
+  exclusion_bars: 0,
   forward_windows: '3,5,10'
 })
 
@@ -1274,11 +1375,13 @@ const reviewForm = reactive({
   end: todayText(),
   benchmark_symbol: '000300.SH',
   min_swing_return: 0.05,
-  min_segment_bars: 3
+  min_segment_bars: 3,
+  enable_ai_review: false
 })
 
 const activeMeta = computed(() => navItems.find((item) => item.key === activeView.value) || navItems[0])
 const activeResearchMeta = computed(() => researchTabs.find((item) => item.key === activeResearchTab.value) || researchTabs[0])
+const crossSearchModeLabel = computed(() => (crossForm.search_mode === 'traversal' ? '指定区间' : '同区间'))
 const summary = computed(() => overview.value?.summary || {})
 const assetRows = computed(() => overview.value?.by_asset_type || [])
 const timeframeRows = computed(() => overview.value?.by_timeframe || [])
@@ -1308,6 +1411,15 @@ const cacheSymbolMeta = computed(() => {
   })
   return meta
 })
+const symbolNameMap = computed(() => {
+  const names = new Map<string, string>()
+  Object.entries(config.value?.symbol_names || {}).forEach(([symbol, name]) => {
+    const normalized = normalizeSymbol(symbol)
+    const label = String(name || '').trim()
+    if (normalized && label) names.set(normalized, label)
+  })
+  return names
+})
 const cacheTotalPages = computed(() => Math.max(1, Math.ceil(filteredCacheRows.value.length / cachePagination.pageSize)))
 const cachePageStartIndex = computed(() =>
   filteredCacheRows.value.length ? (cachePagination.page - 1) * cachePagination.pageSize : 0
@@ -1317,7 +1429,13 @@ const cachePageFirst = computed(() => (filteredCacheRows.value.length ? cachePag
 const pagedCacheRows = computed(() => filteredCacheRows.value.slice(cachePageStartIndex.value, cachePageEnd.value))
 const displayCacheRows = computed(() => pagedCacheRows.value.map((row: Record<string, any>) => displayCacheRecord(row)))
 const cachePageSizeOptions = CACHE_PAGE_SIZE_OPTIONS
-const displayPlanRows = computed(() => planRows.value.map((row: Record<string, any>) => displayRecord(row)))
+const planTotalPages = computed(() => Math.max(1, Math.ceil(planRows.value.length / planPagination.pageSize)))
+const planPageStartIndex = computed(() => (planRows.value.length ? (planPagination.page - 1) * planPagination.pageSize : 0))
+const planPageEnd = computed(() => Math.min(planPageStartIndex.value + planPagination.pageSize, planRows.value.length))
+const planPageFirst = computed(() => (planRows.value.length ? planPageStartIndex.value + 1 : 0))
+const pagedPlanRows = computed(() => planRows.value.slice(planPageStartIndex.value, planPageEnd.value))
+const displayPlanRows = computed(() => pagedPlanRows.value.map((row: Record<string, any>) => displayRecord(row)))
+const planPageSizeOptions = PLAN_PAGE_SIZE_OPTIONS
 const displayResultRows = computed(() => pagedTaskResultRows.value.map((row: Record<string, any>) => displayRecord(row)))
 const displayHistoryRows = computed(() =>
   (historyResult.value?.results || []).map((row: Record<string, any>) => displayResearchRecord(row))
@@ -1431,7 +1549,7 @@ const crossChartItems = computed(() => {
   if (Array.isArray(crossResult.value.target_window) && crossResult.value.target_window.length) {
     items.push({
       symbol: crossResult.value.summary?.target_symbol || crossForm.target_symbol,
-      name: crossResult.value.summary?.target_symbol || crossForm.target_symbol,
+      name: crossResult.value.summary?.stock_name || crossResult.value.summary?.target_symbol || crossForm.target_symbol,
       label: '目标窗口',
       candles: crossResult.value.target_window
     })
@@ -1441,7 +1559,7 @@ const crossChartItems = computed(() => {
     if (!row.candles?.length) return
     items.push({
       symbol: row.symbol,
-      name: row.symbol,
+      name: row.name || row['股票'] || row.symbol,
       rank: row.rank || '',
       candles: row.candles
     })
@@ -1450,8 +1568,13 @@ const crossChartItems = computed(() => {
 })
 const crossChartSummary = computed(() => {
   const count = Math.max(crossChartItems.value.length - 1, 0)
-  const timeframe = crossResult.value?.summary?.timeframe || researchTimeframe.value
-  return crossChartItems.value.length ? `目标窗口 + ${count} 个候选匹配 · ${timeframe} · ${crossForm.start} 至 ${crossForm.end}` : ''
+  const summary = crossResult.value?.summary || {}
+  const timeframe = summary.timeframe || researchTimeframe.value
+  if (!crossChartItems.value.length) return ''
+  if (summary.search_mode === 'traversal') {
+    return `目标窗口 + ${count} 个候选匹配 · ${timeframe} · 目标 ${formatDateTimeText(summary.start)} 至 ${formatDateTimeText(summary.end)} · 搜索 ${formatDateTimeText(summary.traversal_start)} 至 ${formatDateTimeText(summary.traversal_end)}`
+  }
+  return `目标窗口 + ${count} 个候选匹配 · ${timeframe} · ${formatDateTimeText(summary.start || crossForm.start)} 至 ${formatDateTimeText(summary.end || crossForm.end)}`
 })
 const reviewChartItems = computed(() => {
   const rankingRows = reviewResult.value?.ranking || []
@@ -1580,6 +1703,29 @@ const selectedTaskEvents = computed(() =>
 const visibleTaskEvents = computed(() =>
   selectedTaskEvents.value.slice(Math.max(0, selectedTaskEvents.value.length - TASK_EVENT_WINDOW_SIZE))
 )
+const selectedTaskQualityIssues = computed(() => parseQualityGateIssues(selectedTask.value?.error || ''))
+const taskQualityIssueTotalPages = computed(() =>
+  Math.max(1, Math.ceil(selectedTaskQualityIssues.value.length / taskQualityIssuePagination.pageSize))
+)
+const taskQualityIssuePageStartIndex = computed(() =>
+  selectedTaskQualityIssues.value.length ? (taskQualityIssuePagination.page - 1) * taskQualityIssuePagination.pageSize : 0
+)
+const taskQualityIssuePageEnd = computed(() =>
+  Math.min(taskQualityIssuePageStartIndex.value + taskQualityIssuePagination.pageSize, selectedTaskQualityIssues.value.length)
+)
+const taskQualityIssuePageFirst = computed(() =>
+  selectedTaskQualityIssues.value.length ? taskQualityIssuePageStartIndex.value + 1 : 0
+)
+const pagedTaskQualityIssueRows = computed(() =>
+  selectedTaskQualityIssues.value.slice(taskQualityIssuePageStartIndex.value, taskQualityIssuePageEnd.value).map((issue) => ({
+    '序号': issue.index,
+    '代码': issue.symbol,
+    '周期': issue.timeframe,
+    '状态': issue.status_label,
+    '信息': issue.message
+  }))
+)
+const taskQualityIssuePageSizeOptions = TASK_QUALITY_PAGE_SIZE_OPTIONS
 const taskEventTotalPages = computed(() => Math.max(1, Math.ceil(selectedTaskEvents.value.length / taskEventPagination.pageSize)))
 const taskEventPageStartIndex = computed(() =>
   selectedTaskEvents.value.length ? (taskEventPagination.page - 1) * taskEventPagination.pageSize : 0
@@ -1622,7 +1768,7 @@ const reviewSymbolPickerRows = computed(() =>
     const meta = cacheSymbolMeta.value.get(symbol)
     return {
       symbol,
-      name: meta?.name || '',
+      name: symbolNameMap.value.get(symbol) || meta?.name || '',
       assetType: meta?.assetType || ''
     }
   })
@@ -1700,15 +1846,22 @@ watch(
 watch(cacheTotalPages, () => {
   goCachePage(cachePagination.page)
 })
+watch(planTotalPages, () => {
+  goPlanPage(planPagination.page)
+})
 watch(selectedTaskId, () => {
   taskEventPagination.page = 1
   taskResultPagination.page = 1
+  taskQualityIssuePagination.page = 1
 })
 watch(taskEventTotalPages, () => {
   goTaskEventPage(taskEventPagination.page)
 })
 watch(taskResultTotalPages, () => {
   goTaskResultPage(taskResultPagination.page)
+})
+watch(taskQualityIssueTotalPages, () => {
+  goTaskQualityIssuePage(taskQualityIssuePagination.page)
 })
 
 const planColumns = [
@@ -1748,6 +1901,13 @@ const taskEventColumns = [
   { key: '信息', label: '信息' },
   { key: '时间', label: '时间' }
 ]
+const taskQualityIssueColumns = [
+  { key: '序号', label: '序号' },
+  { key: '代码', label: '代码' },
+  { key: '周期', label: '周期' },
+  { key: '状态', label: '状态' },
+  { key: '信息', label: '信息' }
+]
 const historyColumns = [
   { key: 'symbol', label: '代码' },
   { key: '股票', label: '股票' },
@@ -1771,9 +1931,11 @@ const historyForwardStatColumns = [
 ]
 const crossColumns = [
   { key: 'symbol', label: '代码' },
+  { key: '股票', label: '名称' },
   { key: '区间开始', label: '区间开始' },
   { key: '区间结束', label: '区间结束' },
   { key: '日期偏移', label: '偏移' },
+  { key: '遍历偏移', label: '遍历' },
   { key: '综合相似度', label: '综合' },
   { key: '路径相似度', label: '路径' },
   { key: '覆盖率', label: '覆盖' },
@@ -1949,6 +2111,7 @@ async function previewPlan() {
     const data = await apiPost('/plan', payload())
     planSummary.value = data.summary || {}
     planRows.value = data.records || []
+    planPagination.page = 1
     showNotice('success', '计划已生成', `待下载 ${formatInt(planSummary.value.fetch_count)} 项，已可用 ${formatInt(planSummary.value.cached_count)} 项。`)
   } catch (error) {
     showError('预览计划失败', error)
@@ -2005,8 +2168,12 @@ async function runCrossSectionSearch() {
       universe_symbols: parseSymbols(crossForm.universe_symbols),
       start: crossForm.start,
       end: crossForm.end,
+      search_mode: crossForm.search_mode,
+      traversal_start: crossForm.traversal_start,
+      traversal_end: crossForm.traversal_end,
       top_n: Number(crossForm.top_n || 20),
       date_tolerance_bars: Number(crossForm.date_tolerance_bars || 0),
+      exclusion_bars: Number(crossForm.exclusion_bars || 0),
       forward_windows: parseNumberList(crossForm.forward_windows)
     })
     showNotice('success', '横截面搜索完成', `匹配 ${formatInt(crossResult.value?.summary?.match_count)} 个标的。`)
@@ -2030,7 +2197,8 @@ async function runReviewSearch() {
       min_segment_bars: Number(reviewForm.min_segment_bars || 1)
     })
     reviewResultSignature.value = reviewSearchSignature()
-    aiReviewOutput.value = null
+    if (reviewForm.enable_ai_review) await runAiReview({ fallbackToLocal: true })
+    else aiReviewOutput.value = null
     showNotice('success', '复盘已生成', `完成 ${formatInt(reviewResult.value?.summary?.ranked_count)} 个标的排序。`)
   } catch (error) {
     showError('复盘生成失败', error)
@@ -2039,14 +2207,18 @@ async function runReviewSearch() {
   }
 }
 
-async function runAiReview() {
+async function runAiReview(options: { fallbackToLocal?: boolean } = {}) {
   if (!reviewResult.value?.ai?.messages?.length) {
     showNotice('error', 'AI 证据缺失', '请先生成多股复盘。')
     return
   }
   if (!aiConfigReady.value) {
     aiReviewOutput.value = null
-    showNotice('info', '使用本地规则锐评', '未填写完整 AI 接口参数，逐股锐评卡片由本地规则生成。')
+    if (options.fallbackToLocal) {
+      showNotice('info', '使用本地规则锐评', 'AI 接口参数未配置完整，本次输出本地默认锐评。')
+    } else {
+      showNotice('info', '使用本地规则锐评', '未填写完整 AI 接口参数，逐股锐评卡片由本地规则生成。')
+    }
     return
   }
   runningAiReview.value = true
@@ -2061,6 +2233,7 @@ async function runAiReview() {
     })
     showNotice('success', 'AI 输出已生成', '模型返回已解析为复盘、分析和视频锐评。')
   } catch (error) {
+    if (options.fallbackToLocal) aiReviewOutput.value = null
     showError('AI 输出生成失败', error)
   } finally {
     runningAiReview.value = false
@@ -2497,6 +2670,22 @@ function parseSymbols(text: string) {
   return text.split(/[\s,;，、]+/).map((item) => item.trim()).filter(Boolean)
 }
 
+function normalizeSymbol(value: string) {
+  const text = String(value || '').trim().toUpperCase().replace('_', '.')
+  if (!text) return ''
+  if (text.includes('.')) {
+    const [code, exchange] = text.split('.', 2)
+    const digits = code.replace(/\D/g, '').padStart(6, '0')
+    const suffix = (exchange || '').slice(0, 2)
+    return digits && ['SH', 'SZ', 'BJ'].includes(suffix) ? `${digits}.${suffix}` : ''
+  }
+  const digits = text.replace(/\D/g, '').slice(-6).padStart(6, '0')
+  if (!digits) return ''
+  if (/^(600|601|603|605|688|689)/.test(digits)) return `${digits}.SH`
+  if (/^(430|830|831|832|833|834|835|836|837|838|839|920)/.test(digits)) return `${digits}.BJ`
+  return `${digits}.SZ`
+}
+
 function parseNumberList(text: string) {
   const values = text
     .split(/[\s,;，、]+/)
@@ -2717,6 +2906,15 @@ function goCachePage(page: number) {
   cachePagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), cacheTotalPages.value)
 }
 
+function setPlanPageSize(size: number) {
+  planPagination.pageSize = size
+  planPagination.page = 1
+}
+
+function goPlanPage(page: number) {
+  planPagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), planTotalPages.value)
+}
+
 function setTaskEventPageSize(size: number) {
   taskEventPagination.pageSize = size
   taskEventPagination.page = 1
@@ -2733,6 +2931,36 @@ function setTaskResultPageSize(size: number) {
 
 function goTaskResultPage(page: number) {
   taskResultPagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), taskResultTotalPages.value)
+}
+
+function setTaskQualityIssuePageSize(size: number) {
+  taskQualityIssuePagination.pageSize = size
+  taskQualityIssuePagination.page = 1
+}
+
+function goTaskQualityIssuePage(page: number) {
+  taskQualityIssuePagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), taskQualityIssueTotalPages.value)
+}
+
+function parseQualityGateIssues(errorText: unknown): TaskQualityIssue[] {
+  const text = String(errorText || '')
+  if (!text.includes('质量门禁')) return []
+  const issues: TaskQualityIssue[] = []
+  const pattern = /(\d{6}\.(?:SH|SZ|BJ))\/([A-Za-z0-9]+)=([a-z_]+)\((.*?)\)(?=\s*[;；]|\s*$)/g
+  let match = pattern.exec(text)
+  while (match) {
+    const status = match[3]
+    issues.push({
+      index: issues.length + 1,
+      symbol: match[1],
+      timeframe: match[2],
+      status,
+      status_label: STATUS_LABELS[status] || status,
+      message: match[4] || '-'
+    })
+    match = pattern.exec(text)
+  }
+  return issues
 }
 
 function formatDateTimeText(value: unknown) {

@@ -293,6 +293,12 @@ def _audit_symbol_file(
     null_volume_amount_rows = int(window[["volume", "amount"]].isna().any(axis=1).sum())
     zero_volume_amount_rows = int(window[["volume", "amount"]].eq(0).any(axis=1).sum())
     negative_volume_amount_rows = int((window[["volume", "amount"]] < 0).any(axis=1).sum())
+    quality_issue_messages = _quality_issue_messages(
+        checked=checked,
+        window=window,
+        adjust=adjust,
+        symbol=symbol,
+    )
 
     normalized = normalize_bars(raw, symbol)
     raw_in_window = normalized.loc[normalized["date"].between(start_ts, end_ts)]
@@ -304,22 +310,13 @@ def _audit_symbol_file(
         end_ts=end_ts,
         expected_sessions=expected_sessions,
     )
-    quality_error = any(
-        value > 0
-        for value in (
-            invalid_date_rows,
-            invalid_symbol_rows,
-            duplicate_rows,
-            null_ohlc_rows,
-            non_positive_price_rows - relaxed_non_positive_price_rows,
-            inconsistent_ohlc_rows - relaxed_ohlc_rows,
-            null_volume_amount_rows,
-            negative_volume_amount_rows,
-        )
-    )
+    quality_error = bool(quality_issue_messages)
     if quality_error:
         status = "quality_error"
-        message = "存在日期或标的代码异常、重复时间、非法价格、OHLC 高低点不一致或量能字段异常。"
+        message = (
+            "存在日期或标的代码异常、重复时间、非法价格、OHLC 高低点不一致或量能字段异常。"
+            f"首个异常：{quality_issue_messages[0]}"
+        )
     elif in_window.empty:
         status = "no_window_data"
         message = "请求窗口内无数据。"
@@ -463,6 +460,107 @@ def _drop_zero_liquidity_bars(bars: pd.DataFrame) -> pd.DataFrame:
         return bars
     tradable = bars["volume"].gt(0) & bars["amount"].gt(0)
     return bars.loc[tradable].reset_index(drop=True)
+
+
+def _quality_issue_messages(
+    *,
+    checked: pd.DataFrame,
+    window: pd.DataFrame,
+    adjust: object,
+    symbol: str,
+) -> list[str]:
+    messages: list[str] = []
+    invalid_dates = checked.loc[checked["date"].isna()]
+    if not invalid_dates.empty:
+        messages.append(f"第 {int(invalid_dates.index[0]) + 1} 行日期无法解析")
+    invalid_symbols = window.loc[window["stock_code"].eq("")]
+    if not invalid_symbols.empty:
+        messages.append(_quality_issue_at(invalid_symbols.iloc[0], "标的代码异常"))
+    duplicates = window.loc[window.duplicated(subset=["stock_code", "date"], keep=False)]
+    if not duplicates.empty:
+        messages.append(_quality_issue_at(duplicates.iloc[0], "重复时间"))
+    null_ohlc = window.loc[window[["open", "high", "low", "close"]].isna().any(axis=1)]
+    if not null_ohlc.empty:
+        columns = _bad_columns(null_ohlc.iloc[0], ("open", "high", "low", "close"), lambda value: pd.isna(value))
+        messages.append(_quality_issue_at(null_ohlc.iloc[0], f"OHLC 字段为空 {','.join(columns)}"))
+
+    allow_adjusted_non_positive_prices = _adjust_allows_non_positive_prices(adjust)
+    is_tdx_sector_index = _is_tdx_sector_index(symbol)
+    if not (allow_adjusted_non_positive_prices or is_tdx_sector_index):
+        non_positive = window.loc[(window[["open", "high", "low", "close"]] <= 0).any(axis=1)]
+        if not non_positive.empty:
+            columns = _bad_columns(
+                non_positive.iloc[0],
+                ("open", "high", "low", "close"),
+                lambda value: not pd.isna(value) and float(value) <= 0,
+            )
+            messages.append(
+                _quality_issue_at(
+                    non_positive.iloc[0],
+                    f"非法价格 {','.join(columns)}",
+                    columns=("open", "high", "low", "close"),
+                )
+            )
+
+    if not is_tdx_sector_index:
+        inconsistent = window.loc[
+            _inconsistent_ohlc_mask(window, require_positive=not allow_adjusted_non_positive_prices)
+        ]
+        if not inconsistent.empty:
+            messages.append(
+                _quality_issue_at(
+                    inconsistent.iloc[0],
+                    "OHLC 高低点不一致",
+                    columns=("open", "high", "low", "close"),
+                )
+            )
+
+    null_volume_amount = window.loc[window[["volume", "amount"]].isna().any(axis=1)]
+    if not null_volume_amount.empty:
+        columns = _bad_columns(null_volume_amount.iloc[0], ("volume", "amount"), lambda value: pd.isna(value))
+        messages.append(_quality_issue_at(null_volume_amount.iloc[0], f"量能字段为空 {','.join(columns)}"))
+    negative_volume_amount = window.loc[(window[["volume", "amount"]] < 0).any(axis=1)]
+    if not negative_volume_amount.empty:
+        columns = _bad_columns(
+            negative_volume_amount.iloc[0],
+            ("volume", "amount"),
+            lambda value: not pd.isna(value) and float(value) < 0,
+        )
+        messages.append(
+            _quality_issue_at(
+                negative_volume_amount.iloc[0],
+                f"量能字段为负 {','.join(columns)}",
+                columns=("volume", "amount"),
+            )
+        )
+    return messages
+
+
+def _quality_issue_at(row: pd.Series, reason: str, *, columns: tuple[str, ...] = ()) -> str:
+    timestamp = pd.Timestamp(row.get("date")) if not pd.isna(row.get("date")) else pd.NaT
+    date_text = str(timestamp.date()) if not pd.isna(timestamp) else "-"
+    value_text = f" {_quality_value_summary(row, columns)}" if columns else ""
+    return f"{date_text} {reason}{value_text}".strip()
+
+
+def _quality_value_summary(row: pd.Series, columns: tuple[str, ...]) -> str:
+    return " ".join(f"{column}={_format_quality_value(row.get(column))}" for column in columns)
+
+
+def _format_quality_value(value: object) -> str:
+    if pd.isna(value):
+        return "NaN"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.6g}"
+
+
+def _bad_columns(row: pd.Series, columns: tuple[str, ...], predicate) -> list[str]:  # type: ignore[no-untyped-def]
+    return [column for column in columns if predicate(row.get(column))]
 
 
 def _inconsistent_ohlc_mask(frame: pd.DataFrame, *, require_positive: bool = True) -> pd.Series:

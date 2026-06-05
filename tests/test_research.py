@@ -14,7 +14,12 @@ from tdx_downloader.research.review import (
 )
 from tdx_downloader.research.features import window_features
 from tdx_downloader.research.scoring import fast_window_feature_arrays
-from tdx_downloader.research.similarity import CrossSectionSearchConfig, search_cross_section
+from tdx_downloader.research.similarity import (
+    CrossSectionSearchConfig,
+    CrossSectionWindowTraversalConfig,
+    search_cross_section,
+    search_cross_section_window_traversal,
+)
 
 
 def _bars(symbol: str, closes: list[float], *, start: str = "2026-01-01") -> pd.DataFrame:
@@ -165,6 +170,40 @@ def test_cross_section_search_keeps_vectorized_date_tolerance_match() -> None:
     assert result.results.iloc[0]["symbol"] == "000002.SZ"
     assert abs(float(result.results.iloc[0]["日期偏移"])) <= 2
     assert "后3根收益" in result.results.columns
+
+
+def test_cross_section_window_traversal_searches_candidate_interval() -> None:
+    bars = pd.concat(
+        [
+            _bars("000001.SZ", [10, 12, 11, 13], start="2026-05-18"),
+            _bars("000002.SZ", [7, 8, 10, 12, 11, 13, 14], start="2021-01-01"),
+            _bars("000003.SZ", [30, 29, 28, 27, 26, 25, 24], start="2021-01-01"),
+        ],
+        ignore_index=True,
+    )
+
+    result = search_cross_section_window_traversal(
+        bars,
+        CrossSectionWindowTraversalConfig(
+            target_symbol="000001.SZ",
+            universe_symbols=("000002.SZ", "000003.SZ"),
+            target_start="2026-05-18",
+            target_end="2026-05-21",
+            traversal_start="2021-01-01",
+            traversal_end="2021-01-11",
+            top_n=2,
+            min_coverage=1.0,
+            forward_windows=(1,),
+        ),
+    )
+
+    assert result.window_size == 4
+    first = result.results.iloc[0]
+    assert first["symbol"] == "000002.SZ"
+    assert first["区间开始"] == pd.Timestamp("2021-01-05")
+    assert first["区间结束"] == pd.Timestamp("2021-01-08")
+    assert first["遍历偏移"] == 2
+    assert "后1根收益" in result.results.columns
 
 
 def test_review_ranking_uses_local_bars_without_external_sources() -> None:

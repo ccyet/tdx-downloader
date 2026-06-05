@@ -193,6 +193,62 @@ def test_parallels_download_continues_after_batch_quality_gate(monkeypatch) -> N
     assert [event["stage"] for event in events].count("parallels_command_start") == 3
 
 
+def test_local_download_retries_tolerant_after_quality_gate(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class Service:
+        data_root = Path("C:/tdx-data")
+        adjust = "qfq"
+
+        def __init__(self) -> None:
+            self.strict_values: list[bool] = []
+
+        def download(
+            self,
+            config: DataDownloadConfig,
+            *,
+            mode: str,
+            progress_callback,
+        ) -> DataDownloadResult:
+            self.strict_values.append(config.strict_after_update)
+            if config.strict_after_update:
+                raise ValueError(
+                    "本地行情数据未通过质量门禁："
+                    "399001.SZ/1d=quality_error(首个异常：2026-01-05 OHLC 高低点不一致 high=9 low=11)"
+                )
+            return DataDownloadResult(
+                table=pd.DataFrame(
+                    {
+                        "stock_code": ["399001.SZ"],
+                        "timeframe": ["1d"],
+                        "action": ["cached"],
+                        "rows_written": [0],
+                    }
+                ),
+                summary={"row_count": 1.0, "fetched_count": 0.0, "cached_count": 1.0},
+            )
+
+    monkeypatch.setattr(parallels_runtime.sys, "platform", "win32")
+    service = Service()
+    events: list[dict[str, object]] = []
+
+    result = download_with_runtime(
+        service,  # type: ignore[arg-type]
+        DataDownloadConfig(
+            symbols=("399001.SZ",),
+            timeframes=("1d",),
+            start="1990-01-01",
+            end="2026-06-05",
+            strict_after_update=True,
+        ),
+        mode="smart",
+        progress_callback=events.append,
+    )
+
+    assert service.strict_values == [True, False]
+    assert result.summary["row_count"] == 1.0
+    retry_event = next(event for event in events if event["stage"] == "local_quality_gate_retry_incomplete")
+    assert "2026-01-05" in str(retry_event["message"])
+
+
 def test_symbol_groups_runtime_uses_parallels_when_local_dynamic_groups_missing(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     commands: list[list[str]] = []
 

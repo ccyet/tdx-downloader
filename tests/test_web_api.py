@@ -90,38 +90,54 @@ def test_api_symbol_groups_uses_current_local_symbol_metadata(tmp_path) -> None:
     response = client.get("/api/symbol-groups", params={"data_root": str(tmp_path), "tdx_path": ""})
 
     assert response.status_code == 200
-    groups = {group["name"]: group["symbols"] for group in response.json()["groups"]}
+    data = response.json()
+    groups = {group["name"]: group["symbols"] for group in data["groups"]}
     assert groups["ETF列表"] == ["510300.SH"]
     assert groups["全A股票"] == ["000001.SZ", "600000.SH"]
     assert groups["板块指数"] == ["880001.SH"]
+    assert data["symbol_names"]["510300.SH"] == "沪深300ETF"
+    assert data["symbol_names"]["880001.SH"] == "种植业"
 
 
 def test_api_symbol_groups_forwards_refresh_target(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    received: list[str] = []
+    received: list[tuple[str, str]] = []
 
-    def fake_symbol_groups(data_root: str, tdx_path: str, *, target: str = "") -> list[dict[str, object]]:
-        received.append(target)
-        return [{"name": "ETF列表", "symbols": ["510300.SH"]}]
+    def fake_symbol_metadata(data_root: str, tdx_path: str) -> pd.DataFrame:
+        received.append((data_root, tdx_path))
+        return pd.DataFrame(
+            [
+                {"stock_code": "510300.SH", "stock_name": "沪深300ETF", "source": "test", "path": ""},
+            ]
+        )
 
-    monkeypatch.setattr(web_api, "shortcut_symbol_groups_with_runtime", fake_symbol_groups)
+    monkeypatch.setattr(web_api, "symbol_metadata_with_runtime", fake_symbol_metadata)
     client = TestClient(create_app())
 
-    response = client.get("/api/symbol-groups", params={"target": "etf"})
+    response = client.get("/api/symbol-groups", params={"data_root": "/tmp/data", "tdx_path": "C:\\tdx", "target": "etf"})
 
     assert response.status_code == 200
-    assert response.json()["groups"] == [{"name": "ETF列表", "symbols": ["510300.SH"]}]
-    assert received == ["etf"]
+    data = response.json()
+    groups = {group["name"]: group["symbols"] for group in data["groups"]}
+    assert groups["ETF列表"] == ["510300.SH"]
+    assert data["symbol_names"]["510300.SH"] == "沪深300ETF"
+    assert received == [("/tmp/data", "C:\\tdx")]
 
 
 def test_api_symbol_groups_sorts_picker_groups_by_recent_amount(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    def fake_symbol_groups(data_root: str, tdx_path: str, *, target: str = "") -> list[dict[str, object]]:
-        return [
-            {"name": "ETF列表", "symbols": ["510300.SH", "159915.SZ", "512100.SH"]},
-            {"name": "板块指数", "symbols": ["880001.SH", "880002.SH"]},
-            {"name": "全A股票", "symbols": ["000001.SZ", "000002.SZ"]},
-        ]
+    def fake_symbol_metadata(data_root: str, tdx_path: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"stock_code": "510300.SH", "stock_name": "沪深300ETF", "source": "test", "path": ""},
+                {"stock_code": "159915.SZ", "stock_name": "创业板ETF", "source": "test", "path": ""},
+                {"stock_code": "512100.SH", "stock_name": "中证1000ETF", "source": "test", "path": ""},
+                {"stock_code": "880001.SH", "stock_name": "种植业", "source": "test", "path": ""},
+                {"stock_code": "880002.SH", "stock_name": "半导体", "source": "test", "path": ""},
+                {"stock_code": "000001.SZ", "stock_name": "平安银行", "source": "test", "path": ""},
+                {"stock_code": "000002.SZ", "stock_name": "万科A", "source": "test", "path": ""},
+            ]
+        )
 
-    monkeypatch.setattr(web_api, "shortcut_symbol_groups_with_runtime", fake_symbol_groups)
+    monkeypatch.setattr(web_api, "symbol_metadata_with_runtime", fake_symbol_metadata)
     write_local_bars(
         data_root=tmp_path,
         timeframe="1d",
@@ -244,6 +260,37 @@ def test_api_pick_directory_surfaces_runtime_error(monkeypatch) -> None:
     assert "暂不支持" in response.json()["detail"]
 
 
+def test_windows_directory_picker_uses_powershell_folder_dialog(monkeypatch, tmp_path) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(command)
+        assert kwargs["timeout"] == 120
+        return web_api.subprocess.CompletedProcess(command, 0, stdout=f"{tmp_path}\n", stderr="")
+
+    monkeypatch.setattr(web_api.sys, "platform", "win32")
+    monkeypatch.setattr(web_api.subprocess, "run", fake_run)
+
+    selected = web_api._open_native_directory_dialog(str(tmp_path), "选择行情根目录")
+
+    assert selected == tmp_path
+    assert calls
+    command = calls[0]
+    assert command[:6] == ["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command"]
+    assert "System.Windows.Forms.FolderBrowserDialog" in command[6]
+    assert command[-2:] == ["选择行情根目录", str(tmp_path)]
+
+
+def test_windows_directory_picker_returns_none_when_cancelled(monkeypatch, tmp_path) -> None:
+    def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        return web_api.subprocess.CompletedProcess(command, 2, stdout="", stderr="")
+
+    monkeypatch.setattr(web_api.sys, "platform", "win32")
+    monkeypatch.setattr(web_api.subprocess, "run", fake_run)
+
+    assert web_api._open_native_directory_dialog(str(tmp_path), "选择目录") is None
+
+
 def test_existing_directory_uses_nearest_existing_parent(tmp_path) -> None:
     missing_child = tmp_path / "missing" / "child"
 
@@ -315,6 +362,8 @@ def test_download_task_refreshes_catalog_after_writing_cache(monkeypatch, tmp_pa
 
     web_api._run_download_task(task.id, payload, "force")
 
+    events = web_api._task_payload(web_api._get_task(task.id))["events"]  # type: ignore[arg-type]
+    assert [event["stage"] for event in events[:2]] == ["task_start", "local_task_start"]
     refreshed = query_catalog(data_root=data_root)
     cached = refreshed.loc[(refreshed["stock_code"] == "000750.SZ") & (refreshed["timeframe"] == "1d")]
     assert cached["status"].tolist() == ["cached"]
@@ -450,6 +499,12 @@ def test_api_research_history_uses_default_index_name(tmp_path) -> None:
 
 def test_api_research_cross_section_reads_local_cache_with_date_tolerance(tmp_path) -> None:
     data_root = tmp_path / "market"
+    metadata = data_root / "metadata"
+    metadata.mkdir(parents=True)
+    (metadata / "symbols.csv").write_text(
+        "stock_code,stock_name\n000001.SZ,平安银行\n000002.SZ,候选银行\n000003.SZ,弱势样例\n",
+        encoding="utf-8",
+    )
     bars = pd.concat(
         [
             _bars("000001.SZ", [10, 11, 12, 13, 14, 15, 16, 17]),
@@ -478,11 +533,60 @@ def test_api_research_cross_section_reads_local_cache_with_date_tolerance(tmp_pa
     assert response.status_code == 200
     data = response.json()
     assert data["summary"]["window_size"] == 4
+    assert data["summary"]["stock_name"] == "平安银行"
     assert data["results"][0]["symbol"] == "000002.SZ"
+    assert data["results"][0]["股票"] == "候选银行"
     assert data["target_window"][0]["stock_code"] == "000001.SZ"
     assert data["target_window"][0]["open"] == 13.0
     assert data["candidate_windows"][0]["symbol"] == "000002.SZ"
+    assert data["candidate_windows"][0]["name"] == "候选银行"
     assert data["candidate_windows"][0]["candles"][0]["stock_code"] == "000002.SZ"
+
+
+def test_api_research_cross_section_window_traversal_uses_search_interval(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    metadata = data_root / "metadata"
+    metadata.mkdir(parents=True)
+    (metadata / "symbols.csv").write_text(
+        "stock_code,stock_name\n000001.SZ,目标样例\n000002.SZ,候选样例\n",
+        encoding="utf-8",
+    )
+    bars = pd.concat(
+        [
+            _bars("000001.SZ", [10, 12, 11, 13], start="2026-05-18"),
+            _bars("000002.SZ", [7, 8, 10, 12, 11, 13, 14], start="2021-01-01"),
+        ],
+        ignore_index=True,
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/research/cross-section",
+        json={
+            "data_root": str(data_root),
+            "timeframe": "1d",
+            "target_symbol": "000001.SZ",
+            "universe_symbols": ["000002.SZ"],
+            "start": "2026-05-18",
+            "end": "2026-05-21",
+            "search_mode": "traversal",
+            "traversal_start": "2021-01-01",
+            "traversal_end": "2021-01-11",
+            "top_n": 1,
+            "min_coverage": 1.0,
+            "forward_windows": [1],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["search_mode"] == "traversal"
+    assert data["summary"]["traversal_start"] == "2021-01-01T00:00:00"
+    assert data["results"][0]["symbol"] == "000002.SZ"
+    assert data["results"][0]["股票"] == "候选样例"
+    assert data["results"][0]["区间开始"] == "2021-01-05T00:00:00"
+    assert data["candidate_windows"][0]["name"] == "候选样例"
 
 
 def test_api_research_review_ranks_local_cache(tmp_path) -> None:

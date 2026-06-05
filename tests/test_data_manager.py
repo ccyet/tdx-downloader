@@ -193,6 +193,41 @@ def test_download_plan_fetches_daily_cache_with_recent_end_boundary_gap(tmp_path
     assert "2026-06-05" in plan.loc[0, "message"]
 
 
+def test_smart_download_reports_daily_session_anchor_progress(tmp_path: Path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-06-03"]),
+            "stock_code": ["399006.SZ"],
+            "open": [4040.0],
+            "high": [4070.0],
+            "low": [4010.0],
+            "close": [4060.0],
+            "volume": [1300000.0],
+            "amount": [520000000.0],
+        }
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+    events: list[dict[str, object]] = []
+
+    result = DataManagementService(data_root, adjust="qfq").download(
+        DataDownloadConfig(
+            symbols=("399006.SZ",),
+            timeframes=("1d",),
+            start="2026-06-03",
+            end="2026-06-03",
+        ),
+        mode="smart",
+        progress_callback=events.append,
+    )
+
+    stages = [str(event["stage"]) for event in events]
+    assert stages[:2] == ["daily_sessions_start", "daily_sessions_done"]
+    assert "audit_start" in stages
+    assert "fetch_skipped" in stages
+    assert result.summary["fetched_count"] == 0
+
+
 def test_write_local_bars_separates_timeframe_directories_from_data_root(tmp_path: Path) -> None:
     data_root = tmp_path / "market"
 
@@ -287,6 +322,32 @@ def test_audit_rejects_inconsistent_ohlc_for_stock(tmp_path: Path) -> None:
 
     assert audit.loc[0, "status"] == "quality_error"
     assert audit.loc[0, "inconsistent_ohlc_rows"] == 1
+
+
+def test_audit_quality_error_message_includes_first_bad_point(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().copy()
+    bars["date"] = pd.to_datetime(["2026-05-25", "2026-05-26"])
+    bars.loc[bars.index[1], "high"] = 9.0
+    bars.loc[bars.index[1], "low"] = 11.0
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("000001.SZ",),
+        start="2026-05-25",
+        end="2026-05-26",
+    )
+
+    message = audit.loc[0, "message"]
+    assert audit.loc[0, "status"] == "quality_error"
+    assert "首个异常" in message
+    assert "OHLC 高低点不一致" in message
+    assert "2026-05-26" in message
+    assert "high=9" in message
+    assert "low=11" in message
 
 
 def test_audit_rejects_zero_ohlc_for_unadjusted_stock(tmp_path: Path) -> None:
