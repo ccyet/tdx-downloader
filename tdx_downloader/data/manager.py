@@ -22,6 +22,7 @@ from tdx_downloader.data.summary import summarize_data_inventory
 ProgressCallback = Callable[[dict[str, object]], None]
 
 DOWNLOAD_MODES = ("smart", "force")
+CATALOG_SYMBOL_SOURCE = "catalog"
 QUICK_SYMBOL_GROUPS = {
     "核心样例": ("000001.SZ", "600519.SH", "300750.SZ", "601318.SH"),
     "宽基指数": ("000001.SH", "399001.SZ", "399006.SZ", "000300.SH", "000852.SH", "000905.SH"),
@@ -276,6 +277,9 @@ def _dynamic_shortcut_groups(metadata: pd.DataFrame | None) -> dict[str, tuple[s
     etfs: list[str] = []
     sector_indexes: list[str] = []
     for row in metadata.itertuples(index=False):
+        source = str(getattr(row, "source", "") or "").strip().lower()
+        if source == CATALOG_SYMBOL_SOURCE:
+            continue
         symbol = normalize_symbol(getattr(row, "stock_code", ""))
         if not symbol:
             continue

@@ -82,6 +82,7 @@ def fast_window_feature_arrays(close: np.ndarray, liquidity: np.ndarray, starts:
     ) - 1.0
     return_windows = np.lib.stride_tricks.sliding_window_view(returns, max(window_size - 1, 1))[starts]
     liquidity_windows = np.lib.stride_tricks.sliding_window_view(liquidity, window_size)[starts]
+    liquidity_return_windows = liquidity_windows[:, 1:] if window_size > 1 else np.empty((len(starts), 0), dtype=float)
     x = np.arange(window_size, dtype=float)
     x_centered = x - x.mean()
     denominator = float(np.sum(x_centered**2)) or 1.0
@@ -95,7 +96,7 @@ def fast_window_feature_arrays(close: np.ndarray, liquidity: np.ndarray, starts:
         "最大回撤": _max_drawdown_matrix(path_matrix),
         "趋势斜率": slopes,
         "下跌放量占比": down_share,
-        "量价相关": np.zeros(len(close_windows), dtype=float),
+        "量价相关": _row_corr(return_windows, liquidity_return_windows),
         "成交规模": np.log1p(np.nanmean(liquidity_windows, axis=1)),
     }
 
@@ -117,6 +118,23 @@ def _max_drawdown_matrix(path_matrix: np.ndarray) -> np.ndarray:
     running_max = np.maximum.accumulate(path_matrix, axis=1)
     drawdowns = path_matrix / np.where(running_max == 0, np.nan, running_max) - 1.0
     return np.nanmin(drawdowns, axis=1)
+
+
+def _row_corr(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    left = np.asarray(left, dtype=float)
+    right = np.asarray(right, dtype=float)
+    if left.size == 0 or right.size == 0:
+        return np.zeros(left.shape[0], dtype=float)
+    mask = np.isfinite(left) & np.isfinite(right)
+    counts = mask.sum(axis=1)
+    left_sum = np.sum(np.where(mask, left, 0.0), axis=1, keepdims=True)
+    right_sum = np.sum(np.where(mask, right, 0.0), axis=1, keepdims=True)
+    safe_counts = np.maximum(counts, 1).reshape(-1, 1)
+    left_centered = np.where(mask, left - left_sum / safe_counts, 0.0)
+    right_centered = np.where(mask, right - right_sum / safe_counts, 0.0)
+    numerator = np.sum(left_centered * right_centered, axis=1)
+    denominator = np.sqrt(np.sum(left_centered**2, axis=1) * np.sum(right_centered**2, axis=1))
+    return np.divide(numerator, denominator, out=np.zeros(left.shape[0], dtype=float), where=(counts >= 2) & (denominator != 0))
 
 
 def _recent_weights(length: int) -> np.ndarray:

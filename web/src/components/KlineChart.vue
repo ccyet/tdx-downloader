@@ -30,6 +30,7 @@ interface RawCandle {
   low?: number | null
   close?: number | null
   volume?: number | null
+  amount?: number | null
 }
 
 interface RawSegment {
@@ -46,6 +47,8 @@ interface Candle {
   low: number
   close: number
   volume: number
+  amount: number
+  turnover: number
 }
 
 interface Segment {
@@ -83,7 +86,9 @@ const normalizedCandles = computed<Candle[]>(() =>
       high: numberValue(row.high),
       low: numberValue(row.low),
       close: numberValue(row.close),
-      volume: Math.max(numberValue(row.volume), 0)
+      volume: Math.max(numberValue(row.volume), 0),
+      amount: Math.max(numberValue(row.amount), 0),
+      turnover: turnoverValue(row)
     }))
     .filter(
       (row) =>
@@ -144,21 +149,21 @@ const plotData = computed(() => {
     {
       type: 'bar',
       x: candles.map((row) => row.date),
-      y: candles.map((row) => row.volume),
+      y: candles.map((row) => row.turnover),
       yaxis: 'y2',
-      name: '成交量',
+      name: '成交额',
       marker: {
         color: candles.map((row) => (candleTone(row) === 'up' ? 'rgba(214, 61, 46, 0.22)' : 'rgba(0, 138, 85, 0.22)'))
       },
-      hovertemplate: '成交量 %{y:.0f}<extra></extra>'
+      hovertemplate: '成交额 %{y:.0f}<extra></extra>'
     }
   ]
 })
 
 const plotLayout = computed(() => ({
   autosize: true,
-  height: 330,
-  margin: { l: 42, r: 18, t: 8, b: 26 },
+  height: 380,
+  margin: { l: 46, r: 18, t: 8, b: 72 },
   paper_bgcolor: 'rgba(0,0,0,0)',
   plot_bgcolor: '#fbfffe',
   dragmode: 'zoom',
@@ -170,12 +175,15 @@ const plotLayout = computed(() => ({
     rangeslider: { visible: false },
     showgrid: false,
     tickfont: { color: '#718096', size: 10 },
+    tickangle: -35,
+    automargin: true,
+    nticks: 8,
     linecolor: '#dfe9ee',
     zeroline: false,
     fixedrange: false
   },
   yaxis: {
-    domain: [0.24, 1],
+    domain: [0.34, 1],
     title: { text: '价格', font: { color: '#607083', size: 11 } },
     gridcolor: '#e5edf2',
     tickfont: { color: '#718096', size: 10 },
@@ -183,8 +191,8 @@ const plotLayout = computed(() => ({
     fixedrange: false
   },
   yaxis2: {
-    domain: [0, 0.16],
-    title: { text: '量', font: { color: '#607083', size: 11 } },
+    domain: [0, 0.2],
+    title: { text: '额', font: { color: '#607083', size: 11 } },
     showgrid: false,
     tickfont: { color: '#718096', size: 10 },
     zeroline: false,
@@ -241,7 +249,6 @@ async function loadPlotly() {
 
 function segmentShapes() {
   return normalizedSegments.value.map((segment) => {
-    const isRise = ['上涨', '反弹', 'rise', 'up'].includes(segment.direction)
     return {
       type: 'rect',
       xref: 'x',
@@ -250,11 +257,16 @@ function segmentShapes() {
       x1: segment.end,
       y0: 0,
       y1: 1,
-      fillcolor: isRise ? 'rgba(214, 61, 46, 0.08)' : 'rgba(0, 138, 85, 0.08)',
+      fillcolor: segmentFillColor(segment.direction),
       line: { width: 0 },
       layer: 'below'
     }
   })
+}
+
+function segmentFillColor(direction: string) {
+  if (['当前窗口', '相似区间', 'window', 'match'].includes(direction)) return 'rgba(9, 199, 190, 0.12)'
+  return ['上涨', '反弹', 'rise', 'up'].includes(direction) ? 'rgba(214, 61, 46, 0.08)' : 'rgba(0, 138, 85, 0.08)'
 }
 
 function candleTone(candle: Candle): 'up' | 'down' {
@@ -280,6 +292,13 @@ function candleDrawdown(candles: Candle[]): number {
 function numberValue(value: unknown): number {
   const number = Number(value)
   return Number.isFinite(number) ? number : NaN
+}
+
+function turnoverValue(row: RawCandle): number {
+  const amount = numberValue(row.amount)
+  if (Number.isFinite(amount) && amount > 0) return amount
+  const volume = numberValue(row.volume)
+  return Number.isFinite(volume) && volume > 0 ? volume : 0
 }
 
 function formatPercent(value: number): string {
@@ -359,7 +378,7 @@ footer {
 }
 
 .plotly-kline {
-  min-height: 330px;
+  min-height: 380px;
   overflow: hidden;
   border: 1px solid #d6e6e4;
   border-radius: 8px;

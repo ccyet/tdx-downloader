@@ -35,6 +35,19 @@ def z_normalize(values: np.ndarray) -> np.ndarray:
     return (values - mean) / std
 
 
+def resample_path(values: np.ndarray, length: int) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+    if len(values) == length:
+        return values
+    if len(values) == 0:
+        return np.zeros(length, dtype=float)
+    if length <= 1:
+        return np.array([float(values[-1])], dtype=float)
+    source_x = np.linspace(0.0, 1.0, len(values))
+    target_x = np.linspace(0.0, 1.0, length)
+    return np.interp(target_x, source_x, values)
+
+
 def max_drawdown(values: np.ndarray) -> float:
     values = np.asarray(values, dtype=float)
     if len(values) == 0:
@@ -82,4 +95,3 @@ def _safe_corr(left: pd.Series, right: pd.Series) -> float:
         return 0.0
     value = float(np.sum(left_centered * right_centered) / denominator)
     return value if np.isfinite(value) else 0.0
-

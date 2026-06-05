@@ -69,6 +69,8 @@ DEFAULT_BATCH_SIZE = 100
 MAX_TABLE_RECORDS = 500
 TASK_HISTORY_LIMIT = 50
 TASK_EVENT_LIMIT = 40
+PICKER_LIQUIDITY_SORT_GROUPS = frozenset({"ETF列表", "板块指数"})
+PICKER_LIQUIDITY_LOOKBACK_BARS = 20
 
 STAGE_LABELS = {
     "task_start": "任务启动",
@@ -132,12 +134,15 @@ class HistorySearchPayload(ResearchBasePayload):
     symbol: str
     as_of: str = Field(default_factory=lambda: date.today().isoformat())
     window_size: int = 20
+    candidate_n: int = 100
     top_n: int = 10
     exclusion_bars: int = 20
+    nearby_gap_days: int = 20
     path_weight: float = 0.7
     forward_windows: list[int] = Field(default_factory=lambda: [5, 20, 60])
     lookback_start: str = "1990-01-01"
     window_start: str | None = None
+    algorithm: str = "baseline_price_feature"
 
 
 class CrossSectionSearchPayload(ResearchBasePayload):
@@ -240,13 +245,14 @@ def _register_routes(app: FastAPI) -> None:
     def symbol_groups(
         data_root: str = DEFAULT_DATA_ROOT,
         tdx_path: str = DEFAULT_TDX_PATH,
+        adjust: str = DEFAULT_ADJUST,
         target: str = "",
     ) -> dict[str, Any]:
         try:
             groups = shortcut_symbol_groups_with_runtime(data_root, tdx_path, target=target)
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"groups": groups}
+        return {"groups": _sort_picker_symbol_groups_by_recent_amount(groups, data_root=data_root, adjust=adjust)}
 
     @app.get("/api/overview")
     def overview(
@@ -317,25 +323,37 @@ def _register_routes(app: FastAPI) -> None:
                     as_of=payload.as_of,
                     window_size=payload.window_size,
                     forward_windows=tuple(payload.forward_windows),
+                    candidate_n=payload.candidate_n,
                     top_n=payload.top_n,
                     exclusion_bars=payload.exclusion_bars,
+                    nearby_gap_days=payload.nearby_gap_days,
                     path_weight=payload.path_weight,
                     window_start=payload.window_start,
+                    algorithm=payload.algorithm,
                 ),
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        stock_names = _history_stock_names(payload, result.symbol)
+        stock_name = stock_names.get(result.symbol, "")
+        result_rows = result.results.copy()
+        if not result_rows.empty and "股票" not in result_rows.columns:
+            result_rows.insert(1, "股票", stock_name)
         return {
             "summary": {
                 "symbol": result.symbol,
+                "stock_name": stock_name,
                 "timeframe": timeframe,
                 "as_of": result.as_of,
+                "window_start": result.current_window["date"].iloc[0] if not result.current_window.empty else None,
                 "window_size": result.window_size,
                 "match_count": len(result.results),
+                "algorithm": payload.algorithm,
             },
             "current_window": _records(result.current_window),
             "historical_windows": [_records(window) for window in result.historical_windows],
-            "results": _records(result.results),
+            "historical_chart_windows": [_records(window) for window in result.historical_chart_windows],
+            "results": _records(result_rows),
         }
 
     @app.post("/api/research/cross-section")
@@ -545,6 +563,78 @@ def _single_timeframe(timeframe: str) -> str:
     return normalize_timeframes([timeframe])[0]
 
 
+def _sort_picker_symbol_groups_by_recent_amount(
+    groups: list[dict[str, Any]],
+    *,
+    data_root: str,
+    adjust: str,
+) -> list[dict[str, Any]]:
+    sortable_symbols = [
+        symbol
+        for group in groups
+        if str(group.get("name", "")) in PICKER_LIQUIDITY_SORT_GROUPS
+        for symbol in _symbol_group_symbols(group)
+    ]
+    scores = _recent_amount_scores(data_root=data_root, adjust=adjust, symbols=sortable_symbols)
+    if not scores:
+        return groups
+
+    sorted_groups: list[dict[str, Any]] = []
+    for group in groups:
+        name = str(group.get("name", ""))
+        symbols = _symbol_group_symbols(group)
+        if name not in PICKER_LIQUIDITY_SORT_GROUPS or not symbols:
+            sorted_groups.append(group)
+            continue
+        ranked = _sort_symbols_by_amount(symbols, scores)
+        sorted_groups.append({**group, "symbols": ranked})
+    return sorted_groups
+
+
+def _symbol_group_symbols(group: dict[str, Any]) -> list[str]:
+    raw_symbols = group.get("symbols", [])
+    if not isinstance(raw_symbols, list | tuple):
+        return []
+    return [symbol for symbol in (normalize_symbol(item) for item in raw_symbols) if symbol]
+
+
+def _recent_amount_scores(*, data_root: str, adjust: str, symbols: list[str]) -> dict[str, float]:
+    unique = normalize_symbol_tuple(symbols)
+    if not unique:
+        return {}
+    bars = load_local_bars(
+        data_root=data_root,
+        timeframe="1d",
+        adjust=adjust,
+        symbols=unique,
+        start="1900-01-01",
+        end="2100-01-01",
+    )
+    if bars.empty or "amount" not in bars.columns:
+        return {}
+    frame = bars.loc[:, ["stock_code", "date", "amount"]].copy()
+    frame["amount"] = pd.to_numeric(frame["amount"], errors="coerce")
+    frame = frame.dropna(subset=["stock_code", "date", "amount"])
+    frame = frame.loc[frame["amount"].gt(0)].sort_values(["stock_code", "date"])
+    if frame.empty:
+        return {}
+    recent = frame.groupby("stock_code", group_keys=False).tail(PICKER_LIQUIDITY_LOOKBACK_BARS)
+    scores = recent.groupby("stock_code")["amount"].mean()
+    return {str(symbol): float(value) for symbol, value in scores.items() if math.isfinite(float(value))}
+
+
+def _sort_symbols_by_amount(symbols: list[str], scores: dict[str, float]) -> list[str]:
+    original_order = {symbol: index for index, symbol in enumerate(symbols)}
+
+    def sort_key(symbol: str) -> tuple[int, float, int]:
+        score = scores.get(symbol)
+        if score is None or not math.isfinite(score):
+            return (1, 0.0, original_order[symbol])
+        return (0, -score, original_order[symbol])
+
+    return sorted(symbols, key=sort_key)
+
+
 def _cross_section_read_start(start: str, tolerance_bars: int) -> str:
     padding_days = max(14, int(tolerance_bars) * 5 + 7)
     return (pd.Timestamp(start) - pd.Timedelta(days=padding_days)).date().isoformat()
@@ -577,6 +667,11 @@ def _review_stock_names(payload: ReviewSearchPayload, symbols: tuple[str, ...]) 
         if str(name).strip()
     }
     return {**resolved, **explicit}
+
+
+def _history_stock_names(payload: HistorySearchPayload, symbol: str) -> dict[str, str]:
+    service = DataManagementService(payload.data_root, adjust=payload.adjust)
+    return service.repository.symbol_names(symbols=(symbol,))
 
 
 def _review_candles(window: pd.DataFrame, *, include_symbol: bool = False) -> list[dict[str, Any]]:

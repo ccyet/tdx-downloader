@@ -128,6 +128,71 @@ def test_data_management_service_force_download_uses_batch_and_progress(tmp_path
     assert "write_done" in [event["stage"] for event in events]
 
 
+def test_download_plan_fetches_daily_cache_with_incomplete_requested_boundary(tmp_path: Path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-01-05", "2026-01-06"]),
+            "stock_code": ["399006.SZ", "399006.SZ"],
+            "open": [3300.0, 3320.0],
+            "high": [3350.0, 3360.0],
+            "low": [3280.0, 3290.0],
+            "close": [3340.0, 3350.0],
+            "volume": [1000000.0, 1200000.0],
+            "amount": [300000000.0, 360000000.0],
+        }
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    service = DataManagementService(data_root, adjust="qfq")
+    plan = service.download_plan(
+        DataDownloadConfig(
+            symbols=("399006.SZ",),
+            timeframes=("1d",),
+            start="2001-01-01",
+            end="2026-06-03",
+        )
+    )
+
+    assert plan.loc[0, "action"] == "fetch"
+    assert plan.loc[0, "reason"] == "coverage_gap"
+    assert plan.loc[0, "before_status"] == "coverage_gap"
+    assert "未覆盖请求窗口" in plan.loc[0, "message"]
+
+
+def test_download_plan_fetches_daily_cache_with_recent_end_boundary_gap(tmp_path: Path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-06-01", "2026-06-02", "2026-06-03"]),
+            "stock_code": ["399006.SZ", "399006.SZ", "399006.SZ"],
+            "open": [4000.0, 4020.0, 4040.0],
+            "high": [4050.0, 4060.0, 4070.0],
+            "low": [3980.0, 3990.0, 4010.0],
+            "close": [4030.0, 4050.0, 4060.0],
+            "volume": [1000000.0, 1200000.0, 1300000.0],
+            "amount": [400000000.0, 480000000.0, 520000000.0],
+        }
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    service = DataManagementService(data_root, adjust="qfq")
+    plan = service.download_plan(
+        DataDownloadConfig(
+            symbols=("399006.SZ",),
+            timeframes=("1d",),
+            start="2026-06-01",
+            end="2026-06-05",
+        )
+    )
+
+    assert plan.loc[0, "action"] == "fetch"
+    assert plan.loc[0, "reason"] == "coverage_gap"
+    assert plan.loc[0, "before_status"] == "coverage_gap"
+    assert "2026-06-03" in plan.loc[0, "message"]
+    assert "2026-06-05" in plan.loc[0, "message"]
+
+
 def test_write_local_bars_separates_timeframe_directories_from_data_root(tmp_path: Path) -> None:
     data_root = tmp_path / "market"
 
@@ -363,6 +428,23 @@ def test_shortcut_symbol_groups_adds_full_a_and_sector_indexes_from_metadata() -
 
     assert groups["全A股票"] == ["000001.SZ", "600000.SH"]
     assert groups["板块指数"] == ["880001.SH", "880002.SH"]
+
+
+def test_shortcut_symbol_groups_does_not_use_catalog_as_market_universe() -> None:
+    metadata = pd.DataFrame(
+        {
+            "stock_code": ["000001.SZ", "510300.SH", "880001.SH"],
+            "stock_name": ["平安银行", "沪深300ETF", "种植业"],
+            "source": ["catalog", "catalog", "catalog"],
+            "path": [""] * 3,
+        }
+    )
+
+    groups = {group["name"]: group["symbols"] for group in shortcut_symbol_groups(metadata=metadata)}
+
+    assert "全A股票" not in groups
+    assert "ETF列表" not in groups
+    assert "板块指数" not in groups
 
 
 def test_tdx_symbol_metadata_reads_current_tdx_tnf_names(tmp_path: Path) -> None:

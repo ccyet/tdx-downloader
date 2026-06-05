@@ -12,6 +12,8 @@ from tdx_downloader.research.review import (
     render_multi_review_text,
     render_multi_video_script_text,
 )
+from tdx_downloader.research.features import window_features
+from tdx_downloader.research.scoring import fast_window_feature_arrays
 from tdx_downloader.research.similarity import CrossSectionSearchConfig, search_cross_section
 
 
@@ -54,6 +56,91 @@ def test_history_search_finds_prior_similar_window() -> None:
     assert result.results.iloc[0]["symbol"] == "000001.SZ"
     assert "综合相似度" in result.results.columns
     assert "后2根收益" in result.results.columns
+
+
+def test_history_search_returns_candidate_windows_with_forward_bars() -> None:
+    bars = _bars(
+        "000001.SZ",
+        [10, 11, 12, 13, 11, 10, 11, 12, 13, 14, 13, 14, 15, 16],
+    )
+
+    result = search_history(
+        bars,
+        HistorySearchConfig(
+            symbol="000001.SZ",
+            as_of="2026-01-20",
+            window_size=4,
+            top_n=2,
+            exclusion_bars=1,
+            forward_windows=(2,),
+        ),
+    )
+
+    assert result.historical_chart_windows
+    assert len(result.historical_chart_windows[0]) == result.window_size + 2
+    assert len(result.historical_windows[0]) == result.window_size
+
+
+def test_history_search_supports_source_algorithm_and_nearby_window_filter() -> None:
+    bars = _bars(
+        "000001.SZ",
+        [10, 11, 12, 13, 10, 11, 12, 13, 10, 11, 12, 13, 10, 11, 12, 13, 10, 11, 12, 13],
+    )
+
+    result = search_history(
+        bars,
+        HistorySearchConfig(
+            symbol="000001.SZ",
+            as_of="2026-01-28",
+            window_size=4,
+            top_n=3,
+            candidate_n=20,
+            exclusion_bars=1,
+            nearby_gap_days=10,
+            forward_windows=(2,),
+            algorithm="return_shape",
+        ),
+    )
+
+    assert result.results["算法"].dropna().unique().tolist() == ["return_shape"]
+    assert {"价格路径距离", "收益路径距离"}.issubset(result.results.columns)
+    windows = [
+        (pd.Timestamp(row["窗口开始"]), pd.Timestamp(row["窗口结束"]))
+        for _, row in result.results.iterrows()
+    ]
+    for index, (left_start, left_end) in enumerate(windows):
+        for right_start, right_end in windows[index + 1:]:
+            assert _window_gap_days(left_start, left_end, right_start, right_end) >= 10
+
+
+def test_history_search_rejects_explicit_window_without_end_coverage() -> None:
+    bars = _bars("000001.SZ", [10, 11, 12, 13, 14, 15])
+
+    with pytest.raises(ValueError, match="未覆盖选定窗口结束"):
+        search_history(
+            bars,
+            HistorySearchConfig(
+                symbol="000001.SZ",
+                window_start="2026-01-01",
+                as_of="2026-02-20",
+                window_size=4,
+                top_n=3,
+                exclusion_bars=1,
+                forward_windows=(2,),
+            ),
+        )
+
+
+def test_history_feature_arrays_include_price_liquidity_correlation() -> None:
+    bars = _bars("000001.SZ", [10, 11, 10.5, 12, 11.5, 13])
+    bars["amount"] = [1000, 1800, 900, 2200, 1100, 2600]
+    close = bars["close"].to_numpy(dtype=float)
+    liquidity = bars["amount"].to_numpy(dtype=float)
+
+    values = fast_window_feature_arrays(close, liquidity, starts=pd.Index([0]).to_numpy(), window_size=len(bars))
+
+    assert values["量价相关"][0] == pytest.approx(window_features(bars)["量价相关"])
+    assert values["量价相关"][0] != 0
 
 
 def test_cross_section_search_keeps_vectorized_date_tolerance_match() -> None:
@@ -134,3 +221,16 @@ def test_build_equal_weight_series_normalizes_without_dataframe_apply(monkeypatc
     assert result.warning == ""
     assert result.coverage == 1.0
     assert result.frame["stock_code"].tolist() == ["等权组合", "等权组合", "等权组合"]
+
+
+def _window_gap_days(
+    left_start: pd.Timestamp,
+    left_end: pd.Timestamp,
+    right_start: pd.Timestamp,
+    right_end: pd.Timestamp,
+) -> int:
+    if left_start <= right_end and right_start <= left_end:
+        return 0
+    if left_end < right_start:
+        return int((right_start - left_end).days)
+    return int((left_start - right_end).days)

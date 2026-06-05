@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 import pandas as pd
 
 from tdx_downloader import web_api
-from tdx_downloader.data.catalog import query_catalog
+from tdx_downloader.data.catalog import build_catalog, query_catalog
+from tdx_downloader.data.inventory import inventory_local_data
 from tdx_downloader.data.manager import DataDownloadResult, download_summary
 from tdx_downloader.data.storage import write_local_bars
 from tdx_downloader.web_api import create_app
@@ -110,6 +111,41 @@ def test_api_symbol_groups_forwards_refresh_target(monkeypatch) -> None:  # type
     assert response.status_code == 200
     assert response.json()["groups"] == [{"name": "ETF列表", "symbols": ["510300.SH"]}]
     assert received == ["etf"]
+
+
+def test_api_symbol_groups_sorts_picker_groups_by_recent_amount(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    def fake_symbol_groups(data_root: str, tdx_path: str, *, target: str = "") -> list[dict[str, object]]:
+        return [
+            {"name": "ETF列表", "symbols": ["510300.SH", "159915.SZ", "512100.SH"]},
+            {"name": "板块指数", "symbols": ["880001.SH", "880002.SH"]},
+            {"name": "全A股票", "symbols": ["000001.SZ", "000002.SZ"]},
+        ]
+
+    monkeypatch.setattr(web_api, "shortcut_symbol_groups_with_runtime", fake_symbol_groups)
+    write_local_bars(
+        data_root=tmp_path,
+        timeframe="1d",
+        adjust="qfq",
+        bars=pd.concat(
+            [
+                _bars("510300.SH", [1.0, 1.1]).assign(amount=[1000.0, 2000.0]),
+                _bars("159915.SZ", [2.0, 2.1]).assign(amount=[9000.0, 11000.0]),
+                _bars("880001.SH", [3.0, 3.1]).assign(amount=[5000.0, 6000.0]),
+                _bars("880002.SH", [4.0, 4.1]).assign(amount=[12000.0, 13000.0]),
+                _bars("000002.SZ", [5.0, 5.1]).assign(amount=[20000.0, 21000.0]),
+            ],
+            ignore_index=True,
+        ),
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/symbol-groups", params={"data_root": str(tmp_path), "adjust": "qfq"})
+
+    assert response.status_code == 200
+    groups = {group["name"]: group["symbols"] for group in response.json()["groups"]}
+    assert groups["ETF列表"] == ["159915.SZ", "510300.SH", "512100.SH"]
+    assert groups["板块指数"] == ["880002.SH", "880001.SH"]
+    assert groups["全A股票"] == ["000001.SZ", "000002.SZ"]
 
 
 def test_api_overview_does_not_require_existing_catalog(tmp_path) -> None:
@@ -315,6 +351,101 @@ def test_api_research_history_reads_local_timeframe_cache(tmp_path) -> None:
     assert "综合相似度" in data["results"][0]
     assert data["current_window"][0]["open"] == 13.0
     assert data["historical_windows"][0][0]["date"].startswith("2026-")
+    assert len(data["historical_chart_windows"][0]) == len(data["historical_windows"][0]) + 2
+
+
+def test_api_research_history_reports_requested_window_start(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    write_local_bars(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        bars=_bars("000001.SZ", [10, 11, 12, 13, 11, 10, 11, 12, 13, 14, 13, 14, 15, 16]),
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/research/history",
+        json={
+            "data_root": str(data_root),
+            "timeframe": "1d",
+            "symbol": "000001.SZ",
+            "window_start": "2026-01-09",
+            "as_of": "2026-01-14",
+            "window_size": 4,
+            "top_n": 3,
+            "exclusion_bars": 1,
+            "forward_windows": [2],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["window_start"].startswith("2026-01-09")
+    assert data["summary"]["window_size"] == 4
+    assert data["current_window"][0]["date"].startswith("2026-01-09")
+    assert data["current_window"][-1]["date"].startswith("2026-01-14")
+
+
+def test_api_research_history_resolves_local_symbol_name(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    metadata = data_root / "metadata"
+    metadata.mkdir(parents=True)
+    (metadata / "symbols.csv").write_text("stock_code,stock_name\n000001.SZ,平安银行\n", encoding="utf-8")
+    write_local_bars(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        bars=_bars("000001.SZ", [10, 11, 12, 13, 11, 10, 11, 12, 13, 14, 13, 14, 15, 16]),
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/research/history",
+        json={
+            "data_root": str(data_root),
+            "timeframe": "1d",
+            "symbol": "000001.SZ",
+            "as_of": "2026-01-20",
+            "window_size": 4,
+            "top_n": 3,
+            "exclusion_bars": 1,
+            "forward_windows": [2],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["stock_name"] == "平安银行"
+    assert data["results"][0]["股票"] == "平安银行"
+
+
+def test_api_research_history_uses_default_index_name(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    write_local_bars(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        bars=_bars("399006.SZ", [10, 11, 12, 13, 11, 10, 11, 12, 13, 14, 13, 14, 15, 16]),
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/research/history",
+        json={
+            "data_root": str(data_root),
+            "timeframe": "1d",
+            "symbol": "399006",
+            "as_of": "2026-01-20",
+            "window_size": 4,
+            "top_n": 3,
+            "exclusion_bars": 1,
+            "forward_windows": [2],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["stock_name"] == "创业板指"
 
 
 def test_api_research_cross_section_reads_local_cache_with_date_tolerance(tmp_path) -> None:
@@ -438,6 +569,40 @@ def test_api_research_review_resolves_local_symbol_names(tmp_path) -> None:
     assert response.status_code == 200
     names = {row["代码"]: row["股票"] for row in response.json()["ranking"]}
     assert names == {"000001.SZ": "本地强势", "000002.SZ": "本地弱势"}
+
+
+def test_api_research_review_resolves_sector_names_from_catalog(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    bars = _bars("880413.SH", [900, 910, 905, 930, 940, 955])
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+    inventory = inventory_local_data(
+        data_root=data_root,
+        adjust="qfq",
+        timeframes=("1d",),
+        symbols=("880413.SH",),
+    )
+    build_catalog(
+        data_root=data_root,
+        inventory=inventory,
+        symbol_metadata=pd.DataFrame(
+            [{"stock_code": "880413.SH", "stock_name": "半导体", "source": "test", "path": ""}]
+        ),
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/research/review",
+        json={
+            "data_root": str(data_root),
+            "timeframe": "1d",
+            "symbols": ["880413.SH"],
+            "start": "2026-01-01",
+            "end": "2026-01-08",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ranking"][0]["股票"] == "半导体"
 
 
 def test_api_research_review_ai_calls_compatible_chat(monkeypatch) -> None:  # type: ignore[no-untyped-def]

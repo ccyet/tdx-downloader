@@ -133,6 +133,7 @@ PLAN_COLUMNS = [
 
 UNLOADABLE_AUDIT_STATUSES = frozenset({"read_error", "missing_columns"})
 DAILY_DEPENDENCY_FAILURE_STATUSES = frozenset({"read_error", "missing_columns", "quality_error"})
+TDX_BOUNDARY_GAP_TOLERANCE = pd.Timedelta(days=7)
 
 
 @dataclass(frozen=True)
@@ -1055,7 +1056,7 @@ def _tdx_plan_rows(audit: pd.DataFrame, *, min_coverage_ratio: float | None) -> 
                 "max_missing_gap_start_at": getattr(row, "max_missing_gap_start_at"),
                 "max_missing_gap_end_at": getattr(row, "max_missing_gap_end_at"),
                 "path": str(row.path),
-                "message": str(row.message),
+                "message": _tdx_plan_message(row, reason=reason),
             }
         )
     return rows
@@ -1063,6 +1064,8 @@ def _tdx_plan_rows(audit: pd.DataFrame, *, min_coverage_ratio: float | None) -> 
 def _audit_row_requires_tdx_update(row: object, *, min_coverage_ratio: float | None) -> bool:
     status = str(getattr(row, "status"))
     if status != "ok":
+        return True
+    if _audit_row_has_boundary_coverage_gap(row):
         return True
     if min_coverage_ratio is None:
         return False
@@ -1072,9 +1075,67 @@ def _audit_row_requires_tdx_update(row: object, *, min_coverage_ratio: float | N
 
 
 def _summary_before_status(row: object, *, min_coverage_ratio: float | None) -> str:
-    if _audit_row_requires_tdx_update(row, min_coverage_ratio=min_coverage_ratio) and str(getattr(row, "status")) == "ok":
+    status = str(getattr(row, "status"))
+    if status != "ok":
+        return status
+    if _audit_row_has_boundary_coverage_gap(row):
+        return "coverage_gap"
+    if _audit_row_requires_tdx_update(row, min_coverage_ratio=min_coverage_ratio):
         return "coverage_below_min"
-    return str(getattr(row, "status"))
+    return status
+
+
+def _tdx_plan_message(row: object, *, reason: str) -> str:
+    if reason != "coverage_gap":
+        return str(getattr(row, "message", ""))
+    start = _format_optional_date(getattr(row, "start", pd.NaT))
+    end = _format_optional_date(getattr(row, "end", pd.NaT))
+    requested_start = _format_optional_date(getattr(row, "requested_start", pd.NaT))
+    requested_end = _format_optional_date(getattr(row, "requested_end", pd.NaT))
+    return f"本地缓存仅覆盖 {start} 至 {end}，未覆盖请求窗口 {requested_start} 至 {requested_end}，将请求 TDX 补齐。"
+
+
+def _audit_row_has_boundary_coverage_gap(row: object) -> bool:
+    """已有缓存只覆盖请求窗口的近端时，不能用本地窗口内日期自证完整。"""
+    rows_in_window = int(getattr(row, "rows_in_window", 0))
+    if rows_in_window <= 0:
+        return False
+    start = _optional_timestamp(getattr(row, "start", pd.NaT))
+    end = _optional_timestamp(getattr(row, "end", pd.NaT))
+    requested_start = _optional_timestamp(getattr(row, "requested_start", pd.NaT))
+    requested_end = _optional_timestamp(getattr(row, "requested_end", pd.NaT))
+    if any(pd.isna(value) for value in (start, end, requested_start, requested_end)):
+        return False
+    end_gap = _audit_row_has_requested_end_gap(
+        row,
+        end=end,
+        requested_end=requested_end,
+    )
+    return bool(
+        start > requested_start + TDX_BOUNDARY_GAP_TOLERANCE
+        or end_gap
+    )
+
+
+def _audit_row_has_requested_end_gap(row: object, *, end: pd.Timestamp, requested_end: pd.Timestamp) -> bool:
+    timeframe = ensure_supported_timeframe(str(getattr(row, "timeframe", "")))
+    if timeframe == "1d":
+        return bool(end.normalize() < requested_end.normalize())
+    return bool(end < requested_end)
+
+
+def _optional_timestamp(value: object) -> pd.Timestamp:
+    try:
+        return pd.Timestamp(value)
+    except (TypeError, ValueError):
+        return pd.NaT
+
+
+def _format_optional_date(value: object) -> str:
+    timestamp = _optional_timestamp(value)
+    if pd.isna(timestamp):
+        return "-"
+    return str(timestamp.date())
 
 
 def _prepare_summary_rows(

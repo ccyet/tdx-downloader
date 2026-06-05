@@ -213,6 +213,26 @@
                 </select>
               </label>
 
+              <div class="quick-update span-full">
+                <div>
+                  <strong>全资产更新</strong>
+                  <span>按当前代码库合并股票、ETF、指数和板块，生成近 N 日任务。</span>
+                </div>
+                <label>
+                  <span>近 N 日</span>
+                  <input v-model.number="allAssetsLookbackDays" type="number" min="1" step="1" />
+                </label>
+                <button
+                  class="btn secondary"
+                  type="button"
+                  :disabled="!allAssetSymbols.length"
+                  @click="applyAllAssetsRecentUpdate"
+                >
+                  <Icon name="refresh" />
+                  应用全资产
+                </button>
+              </div>
+
               <label>
                 <span>周期</span>
                 <select v-model="selectedTimeframe">
@@ -410,12 +430,30 @@
                   <span>标的代码</span>
                   <input v-model="historyForm.symbol" type="text" />
                 </label>
+                <div class="inline-fields span-full">
+                  <label>
+                    <span>开始日期</span>
+                    <input v-model="historyForm.window_start" type="date" />
+                  </label>
+                  <label>
+                    <span>截至日期</span>
+                    <input v-model="historyForm.as_of" type="date" />
+                  </label>
+                </div>
+                <div class="date-shortcuts span-full" aria-label="历史相似日期快捷选项">
+                  <span>快捷</span>
+                  <button
+                    v-for="shortcut in DATE_RANGE_SHORTCUTS"
+                    :key="shortcut.key"
+                    type="button"
+                    :class="['date-shortcut', { active: isHistoryDateShortcutActive(shortcut.key) }]"
+                    @click="applyHistoryDateShortcut(shortcut.key)"
+                  >
+                    {{ shortcut.label }}
+                  </button>
+                </div>
                 <label>
-                  <span>截至日期</span>
-                  <input v-model="historyForm.as_of" type="date" />
-                </label>
-                <label>
-                  <span>窗口K数</span>
+                  <span>窗口K数备用</span>
                   <input v-model.number="historyForm.window_size" type="number" min="2" />
                 </label>
                 <label>
@@ -423,8 +461,16 @@
                   <input v-model.number="historyForm.top_n" type="number" min="1" />
                 </label>
                 <label>
+                  <span>初筛候选</span>
+                  <input v-model.number="historyForm.candidate_n" type="number" min="1" />
+                </label>
+                <label>
                   <span>排除近端K数</span>
                   <input v-model.number="historyForm.exclusion_bars" type="number" min="0" />
+                </label>
+                <label>
+                  <span>样本间隔天数</span>
+                  <input v-model.number="historyForm.nearby_gap_days" type="number" min="0" />
                 </label>
                 <label>
                   <span>前瞻K数</span>
@@ -454,6 +500,21 @@
 
             <Panel title="历史匹配结果" subtitle="按综合相似度排序">
               <DataTable :rows="displayHistoryRows" :columns="historyColumns" empty="暂无历史匹配结果。" />
+              <div v-if="historyStatsRows.length" class="history-stats-block">
+                <div class="history-stat-strip">
+                  <div v-for="row in historyStatsRows" :key="row.label">
+                    <span>{{ row.label }}</span>
+                    <strong>{{ row.value }}</strong>
+                    <em>{{ row.detail }}</em>
+                  </div>
+                </div>
+                <DataTable
+                  v-if="historyForwardStats.length"
+                  :rows="historyForwardStats"
+                  :columns="historyForwardStatColumns"
+                  empty="暂无前瞻统计。"
+                />
+              </div>
             </Panel>
           </section>
 
@@ -566,8 +627,20 @@
                   <span>对标指数</span>
                   <input v-model="reviewForm.benchmark_symbol" type="text" placeholder="000300.SH" />
                 </label>
-                <label class="span-full">
-                  <span>复盘标的</span>
+                <label class="span-full review-symbol-field">
+                  <div class="field-head">
+                    <span>复盘标的</span>
+                    <div class="field-actions">
+                      <button class="mini-action" type="button" @click="openReviewSymbolPicker('etf')">
+                        <Icon name="archive" />
+                        选ETF
+                      </button>
+                      <button class="mini-action" type="button" @click="openReviewSymbolPicker('sector')">
+                        <Icon name="layers" />
+                        选板块
+                      </button>
+                    </div>
+                  </div>
                   <textarea v-model="reviewForm.symbols" rows="5"></textarea>
                 </label>
                 <div class="form-actions span-full">
@@ -606,9 +679,15 @@
                 <DataTable :rows="displaySegmentRows" :columns="segmentColumns" empty="暂无关键波段。" />
               </Panel>
               <Panel title="复盘与锐评" subtitle="结构化输出">
+                <div class="panel-actions">
+                  <button class="btn secondary" type="button" :disabled="runningAiReview || !reviewResult?.ai?.messages?.length" @click="runAiReview">
+                    <Icon name="activity" />
+                    {{ aiConfigReady ? 'AI覆盖' : '本地规则' }}
+                  </button>
+                </div>
                 <div v-if="reviewMarkdownBlocks.length || reviewScriptCards.length" class="review-output-stack">
                   <section v-if="reviewScriptCards.length" class="review-script-wrap">
-                    <div class="review-script-title">逐股锐评卡片</div>
+                    <div class="review-script-title">逐股锐评卡片 · {{ reviewCardSourceLabel }}</div>
                     <div class="review-script-grid">
                       <article
                         v-for="card in reviewScriptCards"
@@ -669,65 +748,6 @@
                 </div>
                 <EmptyState v-else title="暂无复盘输出" body="生成复盘后展示结构化复盘和逐股锐评卡片。" />
               </Panel>
-              <Panel title="AI 锐评接口" subtitle="证据与提示词">
-                <div v-if="reviewResult?.ai" class="ai-interface">
-                  <form class="ai-run-form" @submit.prevent="runAiReview">
-                    <label class="span-full">
-                      <span>接口 URL</span>
-                      <input v-model="aiSettings.base_url" type="url" placeholder="https://api.openai.com/v1" />
-                    </label>
-                    <label class="span-full">
-                      <span>API Key</span>
-                      <input v-model="aiSettings.api_key" type="password" autocomplete="off" placeholder="本次调用使用，不保存" />
-                    </label>
-                    <label>
-                      <span>模型</span>
-                      <input v-model="aiSettings.model" type="text" placeholder="例如 gpt-4o-mini / deepseek-chat" />
-                    </label>
-                    <label>
-                      <span>温度</span>
-                      <input v-model.number="aiSettings.temperature" type="number" min="0" max="2" step="0.1" />
-                    </label>
-                    <div class="form-actions span-full">
-                      <button class="btn primary" type="submit" :disabled="runningAiReview">
-                        <Icon name="activity" />
-                        {{ runningAiReview ? '生成中' : '生成 AI 输出' }}
-                      </button>
-                    </div>
-                  </form>
-                  <div class="ai-output">
-                    <label>
-                      <span>AI 研究复盘</span>
-                      <textarea :value="aiOutputReviewText" rows="7" readonly placeholder="等待模型返回"></textarea>
-                    </label>
-                    <label>
-                      <span>AI 数据分析</span>
-                      <textarea :value="aiOutputAnalysisText" rows="6" readonly placeholder="等待模型返回"></textarea>
-                    </label>
-                    <label>
-                      <span>AI 视频锐评</span>
-                      <textarea :value="aiOutputCritiqueText" rows="6" readonly placeholder="等待模型返回"></textarea>
-                    </label>
-                    <label>
-                      <span>脚本卡片 JSON</span>
-                      <textarea :value="aiScriptCardsText" rows="6" readonly placeholder="等待模型返回"></textarea>
-                    </label>
-                  </div>
-                  <div class="kv-list compact">
-                    <div class="kv-row"><span>证据模式</span><strong>{{ reviewResult.ai.evidence?.mode || '-' }}</strong></div>
-                    <div class="kv-row"><span>消息数量</span><strong>{{ reviewResult.ai.messages?.length || 0 }}</strong></div>
-                  </div>
-                  <label>
-                    <span>模型 messages</span>
-                    <textarea :value="aiMessagesText" rows="8" readonly></textarea>
-                  </label>
-                  <label>
-                    <span>证据 JSON</span>
-                    <textarea :value="aiEvidenceText" rows="8" readonly></textarea>
-                  </label>
-                </div>
-                <EmptyState v-else title="暂无 AI 证据" body="生成复盘后展示可直接提交给模型的 evidence/messages。" />
-              </Panel>
             </div>
           </section>
         </section>
@@ -756,19 +776,75 @@
           </Panel>
 
           <Panel title="过程记录" subtitle="事件流">
-            <div v-if="selectedTask" class="event-list">
-              <div v-for="(event, index) in selectedTask.events" :key="index" class="event-row">
-                <strong>{{ event.label }}</strong>
-                <span>{{ event.message || event.stage }}</span>
-                <em>{{ event.time }}</em>
-              </div>
+            <div v-if="selectedTask" class="task-detail-stack">
+              <section class="event-window">
+                <div class="task-section-head">
+                  <strong>当前进度</strong>
+                  <span>最新 {{ visibleTaskEvents.length }} / {{ selectedTaskEvents.length }} 条</span>
+                </div>
+                <div class="event-list compact">
+                  <div v-for="event in visibleTaskEvents" :key="event.key" class="event-row">
+                    <strong>{{ event.label }}</strong>
+                    <span>{{ event.message }}</span>
+                    <em>{{ event.time }}</em>
+                  </div>
+                </div>
+              </section>
               <div v-if="selectedTask.error" class="error-box">{{ selectedTask.error }}</div>
-              <DataTable
-                v-if="selectedTask.result?.records?.length"
-                :rows="displayResultRows"
-                :columns="resultColumns"
-                empty=""
-              />
+              <section v-if="displayTaskEventRows.length" class="task-paged-section">
+                <div class="table-toolbar">
+                  <p class="table-caption">完整事件 {{ taskEventPageFirst }}-{{ taskEventPageEnd }} / {{ displayTaskEventRows.length }} 条</p>
+                  <div class="table-controls">
+                    <div class="page-size-group">
+                      <span>每页</span>
+                      <button
+                        v-for="size in taskEventPageSizeOptions"
+                        :key="size"
+                        type="button"
+                        :class="['page-size-button', { active: taskEventPagination.pageSize === size }]"
+                        @click="setTaskEventPageSize(size)"
+                      >
+                        {{ size }}
+                      </button>
+                    </div>
+                    <div class="pagination-controls">
+                      <button type="button" :disabled="taskEventPagination.page <= 1" @click="goTaskEventPage(1)">首页</button>
+                      <button type="button" :disabled="taskEventPagination.page <= 1" @click="goTaskEventPage(taskEventPagination.page - 1)">上一页</button>
+                      <span>{{ taskEventPagination.page }} / {{ taskEventTotalPages }}</span>
+                      <button type="button" :disabled="taskEventPagination.page >= taskEventTotalPages" @click="goTaskEventPage(taskEventPagination.page + 1)">下一页</button>
+                      <button type="button" :disabled="taskEventPagination.page >= taskEventTotalPages" @click="goTaskEventPage(taskEventTotalPages)">末页</button>
+                    </div>
+                  </div>
+                </div>
+                <DataTable :rows="pagedTaskEventRows" :columns="taskEventColumns" empty="暂无事件记录。" />
+              </section>
+              <section v-if="selectedTaskResultRows.length" class="task-paged-section">
+                <div class="table-toolbar">
+                  <p class="table-caption">写入结果 {{ taskResultPageFirst }}-{{ taskResultPageEnd }} / {{ selectedTaskResultRows.length }} 条</p>
+                  <div class="table-controls">
+                    <div class="page-size-group">
+                      <span>每页</span>
+                      <button
+                        v-for="size in taskResultPageSizeOptions"
+                        :key="size"
+                        type="button"
+                        :class="['page-size-button', { active: taskResultPagination.pageSize === size }]"
+                        @click="setTaskResultPageSize(size)"
+                      >
+                        {{ size }}
+                      </button>
+                    </div>
+                    <div class="pagination-controls">
+                      <button type="button" :disabled="taskResultPagination.page <= 1" @click="goTaskResultPage(1)">首页</button>
+                      <button type="button" :disabled="taskResultPagination.page <= 1" @click="goTaskResultPage(taskResultPagination.page - 1)">上一页</button>
+                      <span>{{ taskResultPagination.page }} / {{ taskResultTotalPages }}</span>
+                      <button type="button" :disabled="taskResultPagination.page >= taskResultTotalPages" @click="goTaskResultPage(taskResultPagination.page + 1)">下一页</button>
+                      <button type="button" :disabled="taskResultPagination.page >= taskResultTotalPages" @click="goTaskResultPage(taskResultTotalPages)">末页</button>
+                    </div>
+                  </div>
+                </div>
+                <DataTable :rows="displayResultRows" :columns="resultColumns" empty="暂无写入结果。" />
+              </section>
             </div>
             <EmptyState v-else title="未选择任务" body="左侧选择任务查看事件和结果。" />
           </Panel>
@@ -820,6 +896,46 @@
             </form>
           </Panel>
 
+          <Panel title="AI 锐评设置" subtitle="输出参数">
+            <form class="task-form ai-settings-form" @submit.prevent="saveSettings">
+              <label class="span-full">
+                <span>接口 URL</span>
+                <input v-model="aiSettings.base_url" type="url" placeholder="https://api.openai.com/v1" />
+              </label>
+              <label class="span-full">
+                <span>API Key</span>
+                <input v-model="aiSettings.api_key" type="password" autocomplete="off" placeholder="保存到本机浏览器 localStorage" />
+              </label>
+              <label>
+                <span>模型</span>
+                <input v-model="aiSettings.model" type="text" placeholder="例如 deepseek-v4-flash" />
+              </label>
+              <label>
+                <span>温度</span>
+                <input v-model.number="aiSettings.temperature" type="number" min="0" max="2" step="0.1" />
+              </label>
+              <label class="span-full">
+                <span>系统约束</span>
+                <textarea v-model="aiPromptDraft.system" rows="8" placeholder="留空时使用系统默认提示词"></textarea>
+              </label>
+              <label class="span-full">
+                <span>卡片任务提示</span>
+                <textarea v-model="aiPromptDraft.user" rows="4"></textarea>
+              </label>
+              <label class="check-row span-full">
+                <input v-model="aiPromptSaved" type="checkbox" />
+                <span>启用自定义提示词</span>
+              </label>
+              <div class="ai-settings-note span-full">
+                多股复盘生成 AI 覆盖时会读取这里保存的参数；证据 JSON 由当前复盘结果自动附加。
+              </div>
+              <div class="form-actions span-full">
+                <button class="btn primary" type="submit">保存 AI 设置</button>
+                <button class="btn secondary" type="button" @click="resetAiPromptSettings">恢复默认提示词</button>
+              </div>
+            </form>
+          </Panel>
+
           <Panel title="运行状态" subtitle="API">
             <div class="kv-list">
               <div class="kv-row"><span>API</span><strong>http://127.0.0.1:8622</strong></div>
@@ -836,7 +952,72 @@
             </div>
           </Panel>
         </section>
+
       </main>
+    </div>
+
+    <div v-if="reviewSymbolPickerOpen" class="modal-backdrop" @click.self="closeReviewSymbolPicker">
+      <section class="asset-picker-modal" role="dialog" aria-modal="true" aria-labelledby="review-symbol-picker-title">
+        <header class="asset-picker-head">
+          <div>
+            <h3 id="review-symbol-picker-title">选择复盘标的</h3>
+            <p>{{ reviewSymbolPickerSourceSummary }}</p>
+          </div>
+          <button class="icon-button" type="button" aria-label="关闭" @click="closeReviewSymbolPicker">
+            <Icon name="collapse" />
+          </button>
+        </header>
+
+        <div class="asset-picker-tabs">
+          <button
+            v-for="tabItem in REVIEW_SYMBOL_PICKER_TABS"
+            :key="tabItem.key"
+            type="button"
+            :class="['asset-picker-tab', { active: reviewSymbolPickerType === tabItem.key }]"
+            @click="setReviewSymbolPickerType(tabItem.key)"
+          >
+            {{ tabItem.label }}
+            <span>{{ reviewSymbolPickerCount(tabItem.key) }}</span>
+          </button>
+        </div>
+
+        <div class="asset-picker-tools">
+          <input v-model="reviewSymbolPickerKeyword" type="search" placeholder="搜索代码或名称" />
+          <button class="btn secondary" type="button" @click="selectFilteredReviewSymbols">选当前结果</button>
+          <button class="btn secondary" type="button" @click="selectAllReviewSymbols">全选{{ reviewSymbolPickerTypeLabel }}</button>
+          <button class="btn secondary" type="button" @click="clearReviewSymbolSelection">清空</button>
+        </div>
+
+        <div class="asset-picker-summary">
+          <span>显示 {{ formatInt(filteredReviewSymbolPickerRows.length) }} / {{ formatInt(reviewSymbolPickerRows.length) }} · {{ reviewSymbolPickerSortLabel }}</span>
+          <strong>已选 {{ formatInt(reviewSymbolPickerSelection.length) }}</strong>
+        </div>
+
+        <div v-if="filteredReviewSymbolPickerRows.length" class="asset-picker-list">
+          <label
+            v-for="row in filteredReviewSymbolPickerRows"
+            :key="row.symbol"
+            :class="['asset-picker-row', { selected: isReviewSymbolSelected(row.symbol) }]"
+          >
+            <input type="checkbox" :checked="isReviewSymbolSelected(row.symbol)" @change="toggleReviewSymbol(row.symbol)" />
+            <span>
+              <strong>{{ row.symbol }}</strong>
+              <em>{{ row.name || row.assetType || reviewSymbolPickerTypeLabel }}</em>
+            </span>
+          </label>
+        </div>
+        <div v-else class="asset-picker-empty">当前分类暂无可选标的。</div>
+
+        <footer class="asset-picker-footer">
+          <button class="btn secondary" type="button" @click="closeReviewSymbolPicker">取消</button>
+          <button class="btn secondary" type="button" :disabled="!reviewSymbolPickerSelection.length" @click="applyReviewSymbolSelection('append')">
+            追加选中
+          </button>
+          <button class="btn primary" type="button" :disabled="!reviewSymbolPickerSelection.length" @click="applyReviewSymbolSelection('replace')">
+            替换标的
+          </button>
+        </footer>
+      </section>
     </div>
   </div>
 </template>
@@ -893,6 +1074,7 @@ interface DateRangeFields {
 type DirectoryField = 'data_root' | 'tdx_path'
 type ResearchTabKey = 'history' | 'cross' | 'review'
 type SymbolRefreshTarget = 'index' | 'etf'
+type ReviewSymbolPickerType = 'etf' | 'sector'
 
 interface ResearchSnapshot {
   id: string
@@ -947,12 +1129,20 @@ const SETTINGS_STORAGE_KEY = 'tdx-downloader-web-settings'
 const RESEARCH_SNAPSHOT_STORAGE_KEY = 'tdx-downloader-research-snapshots'
 const MAX_RESEARCH_SNAPSHOTS = 60
 const CACHE_PAGE_SIZE_OPTIONS = [25, 50, 100]
+const DEFAULT_ALL_ASSETS_LOOKBACK_DAYS = 20
+const REVIEW_SYMBOL_PICKER_TABS: Array<{ key: ReviewSymbolPickerType; label: string }> = [
+  { key: 'etf', label: 'ETF' },
+  { key: 'sector', label: '板块指数' }
+]
 const DATE_RANGE_SHORTCUTS: Array<{ key: DateShortcutKey; label: string }> = [
   { key: '20d', label: '20日' },
   { key: '50d', label: '50日' },
   { key: 'ytd', label: 'YTD' },
   { key: '1y', label: '近一年' }
 ]
+const TASK_EVENT_WINDOW_SIZE = 6
+const TASK_EVENT_PAGE_SIZE_OPTIONS = [10, 25, 50]
+const TASK_RESULT_PAGE_SIZE_OPTIONS = [25, 50, 100]
 const STATUS_LABELS: Record<string, string> = {
   cached: '可用',
   missing_file: '缺文件',
@@ -962,6 +1152,7 @@ const STATUS_LABELS: Record<string, string> = {
   ok: '通过',
   quality_error: '质量异常',
   no_window_data: '窗口无数据',
+  coverage_gap: '覆盖缺口',
   ready: '准备完成',
   partial: '部分可用',
   empty: '无可用缓存',
@@ -986,6 +1177,11 @@ const selectedTaskId = ref('')
 const selectedGroup = ref('核心样例')
 const selectedTimeframe = ref('1d')
 const researchTimeframe = ref('1d')
+const allAssetsLookbackDays = ref(DEFAULT_ALL_ASSETS_LOOKBACK_DAYS)
+const reviewSymbolPickerOpen = ref(false)
+const reviewSymbolPickerType = ref<ReviewSymbolPickerType>('etf')
+const reviewSymbolPickerKeyword = ref('')
+const reviewSymbolPickerSelection = ref<string[]>([])
 const symbolsText = ref('')
 const planning = ref(false)
 const downloading = ref(false)
@@ -1017,6 +1213,14 @@ const cachePagination = reactive({
   page: 1,
   pageSize: 25
 })
+const taskEventPagination = reactive({
+  page: 1,
+  pageSize: TASK_EVENT_PAGE_SIZE_OPTIONS[0]
+})
+const taskResultPagination = reactive({
+  page: 1,
+  pageSize: TASK_RESULT_PAGE_SIZE_OPTIONS[0]
+})
 
 const settings = reactive({
   data_root: '/Volumes/ccOUT 1/tdx-data',
@@ -1035,13 +1239,22 @@ const aiSettings = reactive({
   model: '',
   temperature: 0.2
 })
+const aiPromptSaved = ref(false)
+const aiPromptDraft = reactive({
+  system: '',
+  user: defaultAiUserPrompt()
+})
 
 const historyForm = reactive({
   symbol: '000001.SZ',
+  window_start: offsetDateText(-20),
   as_of: todayText(),
   window_size: 20,
+  candidate_n: 100,
   top_n: 10,
   exclusion_bars: 20,
+  nearby_gap_days: 20,
+  algorithm: 'baseline_price_feature',
   forward_windows: '5,20,60'
 })
 
@@ -1083,6 +1296,18 @@ const filteredCacheRows = computed(() => {
     )
   })
 })
+const cacheSymbolMeta = computed(() => {
+  const meta = new Map<string, { name: string; assetType: string }>()
+  cacheRows.value.forEach((row: Record<string, any>) => {
+    const symbol = String(row.stock_code || '').trim()
+    if (!symbol || meta.has(symbol)) return
+    meta.set(symbol, {
+      name: String(row.stock_name || '').trim(),
+      assetType: String(row.asset_type || '').trim()
+    })
+  })
+  return meta
+})
 const cacheTotalPages = computed(() => Math.max(1, Math.ceil(filteredCacheRows.value.length / cachePagination.pageSize)))
 const cachePageStartIndex = computed(() =>
   filteredCacheRows.value.length ? (cachePagination.page - 1) * cachePagination.pageSize : 0
@@ -1093,12 +1318,13 @@ const pagedCacheRows = computed(() => filteredCacheRows.value.slice(cachePageSta
 const displayCacheRows = computed(() => pagedCacheRows.value.map((row: Record<string, any>) => displayCacheRecord(row)))
 const cachePageSizeOptions = CACHE_PAGE_SIZE_OPTIONS
 const displayPlanRows = computed(() => planRows.value.map((row: Record<string, any>) => displayRecord(row)))
-const displayResultRows = computed(() =>
-  (selectedTask.value?.result?.records || []).map((row: Record<string, any>) => displayRecord(row))
-)
+const displayResultRows = computed(() => pagedTaskResultRows.value.map((row: Record<string, any>) => displayRecord(row)))
 const displayHistoryRows = computed(() =>
   (historyResult.value?.results || []).map((row: Record<string, any>) => displayResearchRecord(row))
 )
+const historySymbol = computed(() => historyResult.value?.summary?.symbol || historyForm.symbol)
+const historyStockName = computed(() => String(historyResult.value?.summary?.stock_name || '').trim())
+const historyDisplayName = computed(() => historyStockName.value || historySymbol.value)
 const displayCrossRows = computed(() =>
   (crossResult.value?.results || []).map((row: Record<string, any>) => displayResearchRecord(row))
 )
@@ -1113,24 +1339,27 @@ const displaySegmentRows = computed(() =>
 )
 const historyChartItems = computed(() => {
   if (!historyResult.value) return []
-  const symbol = historyResult.value.summary?.symbol || historyForm.symbol
+  const symbol = historySymbol.value
   const items: Array<Record<string, any>> = []
   if (Array.isArray(historyResult.value.current_window) && historyResult.value.current_window.length) {
     items.push({
       symbol,
-      name: symbol,
+      name: historyDisplayName.value,
       label: '当前窗口',
-      candles: historyResult.value.current_window
+      candles: historyResult.value.current_window,
+      segments: [klineSegment(historyResult.value.current_window, '当前窗口')]
     })
   }
   const historicalWindows = historyResult.value.historical_windows || []
+  const historicalChartWindows = historyResult.value.historical_chart_windows || []
   historicalWindows.slice(0, 5).forEach((candles: Array<Record<string, any>>, index: number) => {
     if (!candles.length) return
     items.push({
       symbol,
-      name: symbol,
+      name: historyDisplayName.value,
       label: `历史 #${index + 1}`,
-      candles
+      candles: historicalChartWindows[index]?.length ? historicalChartWindows[index] : candles,
+      segments: [klineSegment(candles, '相似区间')]
     })
   })
   return items
@@ -1139,7 +1368,62 @@ const historyChartSummary = computed(() => {
   const count = Math.max(historyChartItems.value.length - 1, 0)
   const timeframe = historyResult.value?.summary?.timeframe || researchTimeframe.value
   const windowSize = historyResult.value?.summary?.window_size || historyForm.window_size
-  return historyChartItems.value.length ? `当前窗口 + ${count} 个历史匹配 · ${timeframe} · ${windowSize} 根K线` : ''
+  const range = historyCurrentWindowRange.value
+  const rangeText = range ? ` · ${range.start} 至 ${range.end}` : ''
+  return historyChartItems.value.length ? `当前窗口 + ${count} 个历史匹配 · ${timeframe}${rangeText} · ${windowSize} 根K线` : ''
+})
+const historyCurrentWindowRange = computed(() => chartActualRange([{ candles: historyResult.value?.current_window || [] }]))
+const historyStatsRows = computed(() => {
+  if (!historyResult.value) return []
+  const results = historyResult.value.results || []
+  const first = results[0] || {}
+  const currentWindow = historyResult.value.current_window || []
+  const currentReturn = candleWindowReturn(currentWindow)
+  const range = historyCurrentWindowRange.value
+  return [
+    {
+      label: '当前标的',
+      value: historyStockName.value ? `${historyStockName.value}` : historySymbol.value,
+      detail: historyStockName.value ? historySymbol.value : '未解析名称'
+    },
+    {
+      label: '当前窗口收益',
+      value: formatPercentValue(currentReturn),
+      detail: range ? `${range.start} 至 ${range.end}` : '-'
+    },
+    {
+      label: '最高综合相似度',
+      value: formatDecimalValue(first['综合相似度'], 4),
+      detail: historyWindowLabel(first)
+    },
+    {
+      label: '有效样本',
+      value: `${formatInt(results.length)} / ${formatInt(historyResult.value.summary?.match_count)}`,
+      detail: String(historyResult.value.summary?.algorithm || historyForm.algorithm)
+    }
+  ]
+})
+const historyForwardStats = computed(() => {
+  const rows = historyResult.value?.results || []
+  if (!rows.length) return []
+  return historyForwardReturnKeys(rows).map((item) => {
+    const values = rows.map((row: Record<string, any>) => Number(row[item.key])).filter((value: number) => Number.isFinite(value))
+    const bestRow = rows.reduce((best: Record<string, any> | null, row: Record<string, any>) => {
+      const value = Number(row[item.key])
+      if (!Number.isFinite(value)) return best
+      if (!best || value > Number(best[item.key])) return row
+      return best
+    }, null)
+    return {
+      '观察窗口': `后${item.horizon}根`,
+      '样本数': formatInt(values.length),
+      '平均收益': formatPercentValue(meanValue(values)),
+      '中位收益': formatPercentValue(medianValue(values)),
+      '胜率': formatPercentValue(values.length ? values.filter((value: number) => value > 0).length / values.length : NaN),
+      '最好窗口': historyWindowLabel(bestRow || {}),
+      '最好收益': formatPercentValue(bestRow ? bestRow[item.key] : NaN)
+    }
+  })
 })
 const crossChartItems = computed(() => {
   if (!crossResult.value) return []
@@ -1200,18 +1484,18 @@ const reviewChartSummary = computed(() => {
   if (reviewResultStale.value) parts.push('参数已变更')
   return count ? parts.join(' · ') : ''
 })
-const aiMessagesText = computed(() => JSON.stringify(reviewResult.value?.ai?.messages || [], null, 2))
-const aiEvidenceText = computed(() => JSON.stringify(reviewResult.value?.ai?.evidence || {}, null, 2))
-const aiOutputReviewText = computed(() => String(aiReviewOutput.value?.review || ''))
-const aiOutputAnalysisText = computed(() => String(aiReviewOutput.value?.analysis || ''))
-const aiOutputCritiqueText = computed(() => String(aiReviewOutput.value?.critique || ''))
-const aiScriptCardsText = computed(() => (aiReviewOutput.value ? JSON.stringify(aiReviewOutput.value?.script_cards || [], null, 2) : ''))
+const aiConfigReady = computed(() =>
+  Boolean(aiSettings.base_url.trim() && aiSettings.api_key.trim() && aiSettings.model.trim())
+)
+const aiDefaultSystemPrompt = computed(() =>
+  String((reviewResult.value?.ai?.messages || []).find((message: Record<string, string>) => message.role === 'system')?.content || '')
+)
 const reviewText = computed(() => String(reviewResult.value?.text?.review || ''))
 const videoScriptText = computed(() => String(reviewResult.value?.text?.video_script || ''))
 const reviewMarkdownBlocks = computed<ReviewMarkdownBlock[]>(() =>
   markdownBlocks(reviewText.value).filter((block) => !isInlineReviewBlock(block))
 )
-const reviewScriptCards = computed<ReviewScriptCard[]>(() =>
+const localReviewScriptCards = computed<ReviewScriptCard[]>(() =>
   (reviewResult.value?.ranking || []).map((row: Record<string, any>) => {
     const code = String(row['代码'] || '')
     const stock = String(row['股票'] || '').trim()
@@ -1231,6 +1515,30 @@ const reviewScriptCards = computed<ReviewScriptCard[]>(() =>
     }
   })
 )
+const aiReviewScriptCards = computed<ReviewScriptCard[]>(() =>
+  (aiReviewOutput.value?.script_cards || []).map((card: Record<string, any>, index: number) => {
+    const rankingRow = reviewResult.value?.ranking?.[index] || {}
+    const code = String(card.code || card.symbol || rankingRow['代码'] || '')
+    const title = String(card.title || rankingRow['股票'] || code || `AI卡片${index + 1}`)
+    return {
+      code,
+      title,
+      grade: String(card.grade || rankingRow['强弱等级'] || '-'),
+      nature: String(card.nature || card.current_nature || rankingRow['当前性质'] || 'AI锐评'),
+      body: String(card.body || card.review || card.summary || '-'),
+      tomorrow: String(card.tomorrow_check || card.tomorrow || card.next_check || rankingRow['明日验证'] || '-'),
+      stats: [
+        { label: '来源', value: 'AI覆盖' },
+        { label: '收益', value: formatPercentValue(rankingRow['区间收益']) },
+        { label: '回撤', value: formatPercentValue(rankingRow['最大回撤']) }
+      ]
+    }
+  })
+)
+const reviewScriptCards = computed<ReviewScriptCard[]>(() =>
+  aiReviewScriptCards.value.length ? aiReviewScriptCards.value : localReviewScriptCards.value
+)
+const reviewCardSourceLabel = computed(() => (aiReviewScriptCards.value.length ? 'AI覆盖' : '本地规则'))
 const activeResearchResult = computed(() => researchResultFor(activeResearchTab.value))
 const activeResearchSnapshots = computed(() =>
   researchSnapshots.value.filter((snapshot) => snapshot.tab === activeResearchTab.value)
@@ -1260,7 +1568,78 @@ const topbarRefreshTitle = computed(() => {
 const latestTask = computed(() => tasks.value[0])
 const latestTaskText = computed(() => latestTask.value ? latestTask.value.status : '无')
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value) || tasks.value[0] || null)
+const selectedTaskEvents = computed(() =>
+  (selectedTask.value?.events || []).map((event: Record<string, any>, index: number) => ({
+    key: `${index}-${event.time || event.stage || event.label || ''}`,
+    index: index + 1,
+    label: String(event.label || event.stage || '-'),
+    message: String(event.message || event.stage || '-'),
+    time: formatDateTimeText(event.time)
+  }))
+)
+const visibleTaskEvents = computed(() =>
+  selectedTaskEvents.value.slice(Math.max(0, selectedTaskEvents.value.length - TASK_EVENT_WINDOW_SIZE))
+)
+const taskEventTotalPages = computed(() => Math.max(1, Math.ceil(selectedTaskEvents.value.length / taskEventPagination.pageSize)))
+const taskEventPageStartIndex = computed(() =>
+  selectedTaskEvents.value.length ? (taskEventPagination.page - 1) * taskEventPagination.pageSize : 0
+)
+const taskEventPageEnd = computed(() => Math.min(taskEventPageStartIndex.value + taskEventPagination.pageSize, selectedTaskEvents.value.length))
+const taskEventPageFirst = computed(() => (selectedTaskEvents.value.length ? taskEventPageStartIndex.value + 1 : 0))
+const displayTaskEventRows = computed(() =>
+  selectedTaskEvents.value.map((event) => ({
+    '序号': event.index,
+    '阶段': event.label,
+    '信息': event.message,
+    '时间': event.time
+  }))
+)
+const pagedTaskEventRows = computed(() => displayTaskEventRows.value.slice(taskEventPageStartIndex.value, taskEventPageEnd.value))
+const taskEventPageSizeOptions = TASK_EVENT_PAGE_SIZE_OPTIONS
+const selectedTaskResultRows = computed(() => selectedTask.value?.result?.records || [])
+const taskResultTotalPages = computed(() => Math.max(1, Math.ceil(selectedTaskResultRows.value.length / taskResultPagination.pageSize)))
+const taskResultPageStartIndex = computed(() =>
+  selectedTaskResultRows.value.length ? (taskResultPagination.page - 1) * taskResultPagination.pageSize : 0
+)
+const taskResultPageEnd = computed(() =>
+  Math.min(taskResultPageStartIndex.value + taskResultPagination.pageSize, selectedTaskResultRows.value.length)
+)
+const taskResultPageFirst = computed(() => (selectedTaskResultRows.value.length ? taskResultPageStartIndex.value + 1 : 0))
+const pagedTaskResultRows = computed(() => selectedTaskResultRows.value.slice(taskResultPageStartIndex.value, taskResultPageEnd.value))
+const taskResultPageSizeOptions = TASK_RESULT_PAGE_SIZE_OPTIONS
 const parsedSymbols = computed(() => parseSymbols(symbolsText.value))
+const allAssetSymbols = computed(() =>
+  uniqueStringsInOrder((config.value?.symbol_groups || []).flatMap((group) => group.symbols))
+)
+const reviewSymbolPickerTypeLabel = computed(() =>
+  REVIEW_SYMBOL_PICKER_TABS.find((item) => item.key === reviewSymbolPickerType.value)?.label || '标的'
+)
+const reviewSymbolPickerGroups = computed(() =>
+  reviewSymbolGroupsForType(reviewSymbolPickerType.value)
+)
+const reviewSymbolPickerRows = computed(() =>
+  uniqueStringsInOrder(reviewSymbolPickerGroups.value.flatMap((group) => group.symbols)).map((symbol) => {
+    const meta = cacheSymbolMeta.value.get(symbol)
+    return {
+      symbol,
+      name: meta?.name || '',
+      assetType: meta?.assetType || ''
+    }
+  })
+)
+const filteredReviewSymbolPickerRows = computed(() => {
+  const keyword = reviewSymbolPickerKeyword.value.trim().toLowerCase()
+  if (!keyword) return reviewSymbolPickerRows.value
+  return reviewSymbolPickerRows.value.filter((row) =>
+    `${row.symbol} ${row.name} ${row.assetType}`.toLowerCase().includes(keyword)
+  )
+})
+const reviewSymbolPickerSelectionSet = computed(() => new Set(reviewSymbolPickerSelection.value))
+const reviewSymbolPickerSourceSummary = computed(() => {
+  const names = reviewSymbolPickerGroups.value.map((group) => group.name).join(' / ') || reviewSymbolPickerTypeLabel.value
+  return `${names} · ${formatInt(reviewSymbolPickerRows.value.length)} 只`
+})
+const reviewSymbolPickerSortLabel = computed(() => '近20K成交额降序')
 const overviewTimeframes = computed(() =>
   sortTimeframes([
     ...timeframeRows.value.map((row: Record<string, any>) => row.timeframe),
@@ -1321,6 +1700,16 @@ watch(
 watch(cacheTotalPages, () => {
   goCachePage(cachePagination.page)
 })
+watch(selectedTaskId, () => {
+  taskEventPagination.page = 1
+  taskResultPagination.page = 1
+})
+watch(taskEventTotalPages, () => {
+  goTaskEventPage(taskEventPagination.page)
+})
+watch(taskResultTotalPages, () => {
+  goTaskResultPage(taskResultPagination.page)
+})
 
 const planColumns = [
   { key: 'stock_code', label: '代码' },
@@ -1353,8 +1742,15 @@ const resultColumns = [
   { key: 'new_rows', label: '新增行' },
   { key: 'message', label: '信息' }
 ]
+const taskEventColumns = [
+  { key: '序号', label: '序号' },
+  { key: '阶段', label: '阶段' },
+  { key: '信息', label: '信息' },
+  { key: '时间', label: '时间' }
+]
 const historyColumns = [
   { key: 'symbol', label: '代码' },
+  { key: '股票', label: '股票' },
   { key: '窗口开始', label: '窗口开始' },
   { key: '窗口结束', label: '窗口结束' },
   { key: 'K线数量', label: 'K线' },
@@ -1363,6 +1759,15 @@ const historyColumns = [
   { key: '区间收益', label: '收益' },
   { key: '最大回撤', label: '回撤' },
   { key: '后5根收益', label: '后5K' }
+]
+const historyForwardStatColumns = [
+  { key: '观察窗口', label: '观察窗口' },
+  { key: '样本数', label: '样本数' },
+  { key: '平均收益', label: '平均收益' },
+  { key: '中位收益', label: '中位收益' },
+  { key: '胜率', label: '胜率' },
+  { key: '最好窗口', label: '最好窗口' },
+  { key: '最好收益', label: '最好收益' }
 ]
 const crossColumns = [
   { key: 'symbol', label: '代码' },
@@ -1442,7 +1847,8 @@ async function loadSymbolGroups(preserveSelected: boolean, refreshTarget: Symbol
     settings.data_root = normalizeDataRoot(settings.data_root)
     const params = new URLSearchParams({
       data_root: settings.data_root,
-      tdx_path: settings.tdx_path
+      tdx_path: settings.tdx_path,
+      adjust: settings.adjust
     })
     if (refreshTarget) params.set('target', refreshTarget)
     const data = await apiGet(`/symbol-groups?${params.toString()}`)
@@ -1572,10 +1978,14 @@ async function runHistorySearch() {
     historyResult.value = await apiPost('/research/history', {
       ...researchPayloadBase(),
       symbol: historyForm.symbol,
+      window_start: historyForm.window_start || null,
       as_of: historyForm.as_of,
       window_size: Number(historyForm.window_size || 20),
+      candidate_n: Number(historyForm.candidate_n || 100),
       top_n: Number(historyForm.top_n || 10),
       exclusion_bars: Number(historyForm.exclusion_bars || 0),
+      nearby_gap_days: Number(historyForm.nearby_gap_days || 20),
+      algorithm: historyForm.algorithm,
       forward_windows: parseNumberList(historyForm.forward_windows)
     })
     showNotice('success', '历史相似完成', `匹配 ${formatInt(historyResult.value?.summary?.match_count)} 个窗口。`)
@@ -1634,8 +2044,9 @@ async function runAiReview() {
     showNotice('error', 'AI 证据缺失', '请先生成多股复盘。')
     return
   }
-  if (!aiSettings.base_url.trim() || !aiSettings.api_key.trim() || !aiSettings.model.trim()) {
-    showNotice('error', 'AI 配置缺失', '请填写接口 URL、API Key 和模型名称。')
+  if (!aiConfigReady.value) {
+    aiReviewOutput.value = null
+    showNotice('info', '使用本地规则锐评', '未填写完整 AI 接口参数，逐股锐评卡片由本地规则生成。')
     return
   }
   runningAiReview.value = true
@@ -1644,7 +2055,7 @@ async function runAiReview() {
       base_url: aiSettings.base_url.trim(),
       api_key: aiSettings.api_key.trim(),
       model: aiSettings.model.trim(),
-      messages: reviewResult.value.ai.messages || [],
+      messages: reviewAiMessagesForRequest(),
       evidence: reviewResult.value.ai.evidence || {},
       temperature: Number(aiSettings.temperature ?? 0.2)
     })
@@ -1654,6 +2065,33 @@ async function runAiReview() {
   } finally {
     runningAiReview.value = false
   }
+}
+
+function resetAiPromptSettings() {
+  aiPromptDraft.system = ''
+  aiPromptDraft.user = defaultAiUserPrompt()
+  aiPromptSaved.value = false
+  showNotice('info', '已恢复默认提示词', 'AI 覆盖将使用系统生成的默认 messages。')
+}
+
+function ensureAiPromptDraft() {
+  if (!aiPromptDraft.system.trim()) aiPromptDraft.system = aiDefaultSystemPrompt.value
+  if (!aiPromptDraft.user.trim()) aiPromptDraft.user = defaultAiUserPrompt()
+}
+
+function reviewAiMessagesForRequest() {
+  if (!aiPromptSaved.value) return reviewResult.value?.ai?.messages || []
+  const system = aiPromptDraft.system.trim() || aiDefaultSystemPrompt.value
+  const userPrompt = aiPromptDraft.user.trim() || defaultAiUserPrompt()
+  const evidence = JSON.stringify(reviewResult.value?.ai?.evidence || {}, null, 2)
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: `${userPrompt}\n\n证据 JSON:\n${evidence}` },
+  ]
+}
+
+function defaultAiUserPrompt() {
+  return '请基于当前多股复盘证据生成逐股锐评卡片，保持 JSON 输出格式，重点强化排序理由、当前性质和明日验证。'
 }
 
 function saveActiveResearchSnapshot() {
@@ -1760,6 +2198,95 @@ function applySymbolGroup() {
   if (group) symbolsText.value = group.symbols.join('\n')
 }
 
+function applyAllAssetsRecentUpdate() {
+  const days = Math.max(1, Math.trunc(Number(allAssetsLookbackDays.value) || DEFAULT_ALL_ASSETS_LOOKBACK_DAYS))
+  allAssetsLookbackDays.value = days
+  if (!allAssetSymbols.value.length) {
+    showNotice('error', '全资产更新不可用', '当前代码库为空，请先刷新指数或 ETF 列表。')
+    return
+  }
+  selectedGroup.value = 'custom'
+  symbolsText.value = allAssetSymbols.value.join('\n')
+  settings.start = offsetDateText(-days)
+  settings.end = todayText()
+  planRows.value = []
+  planSummary.value = {}
+  showNotice('success', '已应用全资产更新', `已载入 ${formatInt(allAssetSymbols.value.length)} 只资产，时间窗为近 ${days} 日。`)
+}
+
+function openReviewSymbolPicker(type: ReviewSymbolPickerType) {
+  reviewSymbolPickerOpen.value = true
+  reviewSymbolPickerType.value = type
+  reviewSymbolPickerKeyword.value = ''
+  prefillReviewSymbolSelection()
+}
+
+function closeReviewSymbolPicker() {
+  reviewSymbolPickerOpen.value = false
+}
+
+function setReviewSymbolPickerType(type: ReviewSymbolPickerType) {
+  reviewSymbolPickerType.value = type
+  reviewSymbolPickerKeyword.value = ''
+  prefillReviewSymbolSelection()
+}
+
+function reviewSymbolGroupsForType(type: ReviewSymbolPickerType) {
+  const groups = config.value?.symbol_groups || []
+  if (type === 'etf') return groups.filter((group) => group.name.toUpperCase().includes('ETF'))
+  return groups.filter((group) => group.name.includes('板块指数'))
+}
+
+function reviewSymbolPickerCount(type: ReviewSymbolPickerType) {
+  return formatInt(uniqueStringsInOrder(reviewSymbolGroupsForType(type).flatMap((group) => group.symbols)).length)
+}
+
+function prefillReviewSymbolSelection() {
+  const current = new Set(parseSymbols(reviewForm.symbols))
+  const currentGroupSymbols = reviewSymbolPickerRows.value.map((row) => row.symbol)
+  const selected = currentGroupSymbols.filter((symbol) => current.has(symbol))
+  reviewSymbolPickerSelection.value = selected.length ? selected : currentGroupSymbols
+}
+
+function isReviewSymbolSelected(symbol: string) {
+  return reviewSymbolPickerSelectionSet.value.has(symbol)
+}
+
+function toggleReviewSymbol(symbol: string) {
+  if (isReviewSymbolSelected(symbol)) {
+    reviewSymbolPickerSelection.value = reviewSymbolPickerSelection.value.filter((item) => item !== symbol)
+    return
+  }
+  reviewSymbolPickerSelection.value = uniqueStringsInOrder([...reviewSymbolPickerSelection.value, symbol])
+}
+
+function selectFilteredReviewSymbols() {
+  reviewSymbolPickerSelection.value = uniqueStringsInOrder([
+    ...reviewSymbolPickerSelection.value,
+    ...filteredReviewSymbolPickerRows.value.map((row) => row.symbol)
+  ])
+}
+
+function selectAllReviewSymbols() {
+  reviewSymbolPickerSelection.value = reviewSymbolPickerRows.value.map((row) => row.symbol)
+}
+
+function clearReviewSymbolSelection() {
+  reviewSymbolPickerSelection.value = []
+}
+
+function applyReviewSymbolSelection(mode: 'append' | 'replace') {
+  const selected = reviewSymbolPickerSelection.value
+  if (!selected.length) return
+  const symbols = mode === 'append' ? uniqueStringsInOrder([...parseSymbols(reviewForm.symbols), ...selected]) : selected
+  reviewForm.symbols = symbols.join('\n')
+  reviewResult.value = null
+  aiReviewOutput.value = null
+  reviewResultSignature.value = ''
+  closeReviewSymbolPicker()
+  showNotice('success', '复盘标的已更新', `${mode === 'append' ? '追加' : '替换'} ${formatInt(selected.length)} 只${reviewSymbolPickerTypeLabel.value}。`)
+}
+
 function isSymbolGroup(value: any): value is SymbolGroup {
   return value && typeof value.name === 'string' && Array.isArray(value.symbols)
 }
@@ -1810,7 +2337,7 @@ function researchSnapshotPayload(tab: ResearchTabKey) {
 }
 
 function researchSnapshotTitle(tab: ResearchTabKey) {
-  if (tab === 'history') return `历史相似 · ${historyForm.symbol || '-'} · ${historyForm.as_of || '-'}`
+  if (tab === 'history') return `历史相似 · ${historyForm.symbol || '-'} · ${historyForm.window_start || '-'} 至 ${historyForm.as_of || '-'}`
   if (tab === 'cross') return `横截面相似 · ${crossForm.target_symbol || '-'} · ${crossForm.start || '-'} 至 ${crossForm.end || '-'}`
   const count = parseSymbols(reviewForm.symbols).length
   return `多股复盘 · ${formatInt(count)} 标的 · ${reviewForm.start || '-'} 至 ${reviewForm.end || '-'}`
@@ -1871,6 +2398,7 @@ function cloneJson<T>(value: T): T {
 
 function saveSettings() {
   settings.data_root = normalizeDataRoot(settings.data_root)
+  ensureAiPromptDraft()
   window.localStorage.setItem(
     SETTINGS_STORAGE_KEY,
     JSON.stringify({
@@ -1878,18 +2406,31 @@ function saveSettings() {
       adjust: settings.adjust,
       tdx_path: settings.tdx_path,
       batch_size: settings.batch_size,
-      strict_after_update: settings.strict_after_update
+      strict_after_update: settings.strict_after_update,
+      ai: {
+        base_url: aiSettings.base_url,
+        api_key: aiSettings.api_key,
+        model: aiSettings.model,
+        temperature: aiSettings.temperature,
+        prompt_enabled: aiPromptSaved.value,
+        prompt_system: aiPromptDraft.system,
+        prompt_user: aiPromptDraft.user
+      }
     })
   )
-  showNotice('success', '设置已保存', '下次打开控制台会自动使用当前路径和运行参数。')
+  showNotice('success', '设置已保存', '下次打开控制台会自动使用当前路径、运行参数和 AI 锐评设置。')
 }
 
 function resetSettings() {
   window.localStorage.removeItem(SETTINGS_STORAGE_KEY)
   Object.assign(settings, config.value?.defaults || {})
+  Object.assign(aiSettings, defaultAiSettings())
+  aiPromptDraft.system = ''
+  aiPromptDraft.user = defaultAiUserPrompt()
+  aiPromptSaved.value = false
   settings.data_root = normalizeDataRoot(settings.data_root)
   selectedTimeframe.value = config.value?.defaults?.timeframes?.[0] || '1d'
-  showNotice('info', '已恢复默认', '已恢复 API 提供的默认路径和运行参数。')
+  showNotice('info', '已恢复默认', '已恢复 API 提供的默认路径、运行参数和默认 AI 设置。')
 }
 
 function restoreSettings() {
@@ -1898,9 +2439,35 @@ function restoreSettings() {
   try {
     const saved = JSON.parse(raw)
     if (saved.data_root) saved.data_root = normalizeDataRoot(saved.data_root)
-    Object.assign(settings, saved)
+    Object.assign(settings, {
+      data_root: saved.data_root || settings.data_root,
+      adjust: saved.adjust ?? settings.adjust,
+      tdx_path: saved.tdx_path || settings.tdx_path,
+      batch_size: saved.batch_size ?? settings.batch_size,
+      strict_after_update: saved.strict_after_update ?? settings.strict_after_update
+    })
+    if (saved.ai && typeof saved.ai === 'object') {
+      Object.assign(aiSettings, {
+        base_url: saved.ai.base_url || aiSettings.base_url,
+        api_key: saved.ai.api_key || '',
+        model: saved.ai.model || '',
+        temperature: saved.ai.temperature ?? aiSettings.temperature
+      })
+      aiPromptDraft.system = String(saved.ai.prompt_system || '')
+      aiPromptDraft.user = String(saved.ai.prompt_user || defaultAiUserPrompt())
+      aiPromptSaved.value = Boolean(saved.ai.prompt_enabled)
+    }
   } catch {
     window.localStorage.removeItem(SETTINGS_STORAGE_KEY)
+  }
+}
+
+function defaultAiSettings() {
+  return {
+    base_url: 'https://api.openai.com/v1',
+    api_key: '',
+    model: '',
+    temperature: 0.2
   }
 }
 
@@ -1948,6 +2515,43 @@ function chartActualRange(items: Array<Record<string, any>>) {
   return { start: dates[0], end: dates[dates.length - 1] }
 }
 
+function candleWindowReturn(candles: Array<Record<string, any>>) {
+  if (!candles.length) return NaN
+  const first = Number(candles[0]?.close)
+  const last = Number(candles[candles.length - 1]?.close)
+  if (!Number.isFinite(first) || !Number.isFinite(last) || first === 0) return NaN
+  return last / first - 1
+}
+
+function historyForwardReturnKeys(rows: Array<Record<string, any>>) {
+  const byHorizon = new Map<number, string>()
+  rows.forEach((row) => {
+    Object.keys(row).forEach((key) => {
+      const match = /^t_plus_(\d+)_return$/.exec(key) || /^后(\d+)根收益$/.exec(key)
+      const horizon = Number(match?.[1] || 0)
+      if (!horizon) return
+      if (!byHorizon.has(horizon) || key.startsWith('t_plus_')) byHorizon.set(horizon, key)
+    })
+  })
+  return Array.from(byHorizon.entries())
+    .map(([horizon, key]) => ({ key, horizon }))
+    .sort((left, right) => left.horizon - right.horizon)
+}
+
+function historyWindowLabel(row: Record<string, any>) {
+  const start = formatDateOnly(row['窗口开始'])
+  const end = formatDateOnly(row['窗口结束'])
+  return start && end ? `${start} 至 ${end}` : '-'
+}
+
+function klineSegment(candles: Array<Record<string, any>>, direction: string) {
+  return {
+    start: String(candles[0]?.date || '').slice(0, 10),
+    end: String(candles[candles.length - 1]?.date || '').slice(0, 10),
+    direction
+  }
+}
+
 function todayText() {
   return formatDateText(new Date())
 }
@@ -1964,9 +2568,20 @@ function applyDateShortcut(target: DateRangeFields, key: DateShortcutKey) {
   target.end = range.end
 }
 
+function applyHistoryDateShortcut(key: DateShortcutKey) {
+  const range = dateRangeForShortcut(key)
+  historyForm.window_start = range.start
+  historyForm.as_of = range.end
+}
+
 function isDateShortcutActive(target: DateRangeFields, key: DateShortcutKey) {
   const range = dateRangeForShortcut(key)
   return target.start === range.start && target.end === range.end
+}
+
+function isHistoryDateShortcutActive(key: DateShortcutKey) {
+  const range = dateRangeForShortcut(key)
+  return historyForm.window_start === range.start && historyForm.as_of === range.end
 }
 
 function dateRangeForShortcut(key: DateShortcutKey): DateRangeFields {
@@ -2038,6 +2653,18 @@ function uniqueStrings(values: unknown[]) {
   return Array.from(new Set(values.map((value) => String(value || '')).filter(Boolean))).sort()
 }
 
+function uniqueStringsInOrder(values: unknown[]) {
+  const seen = new Set<string>()
+  const output: string[] = []
+  for (const value of values) {
+    const item = String(value || '').trim()
+    if (!item || seen.has(item)) continue
+    seen.add(item)
+    output.push(item)
+  }
+  return output
+}
+
 function sortTimeframes(values: unknown[]) {
   return uniqueStrings(values).sort((left, right) => timeframeRank(left) - timeframeRank(right) || left.localeCompare(right))
 }
@@ -2090,11 +2717,36 @@ function goCachePage(page: number) {
   cachePagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), cacheTotalPages.value)
 }
 
+function setTaskEventPageSize(size: number) {
+  taskEventPagination.pageSize = size
+  taskEventPagination.page = 1
+}
+
+function goTaskEventPage(page: number) {
+  taskEventPagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), taskEventTotalPages.value)
+}
+
+function setTaskResultPageSize(size: number) {
+  taskResultPagination.pageSize = size
+  taskResultPagination.page = 1
+}
+
+function goTaskResultPage(page: number) {
+  taskResultPagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), taskResultTotalPages.value)
+}
+
 function formatDateTimeText(value: unknown) {
   if (value === null || value === undefined || value === '' || value === 'NaT') return ''
   const text = String(value)
   if (/^\d{4}-\d{2}-\d{2}T00:00:00/.test(text)) return text.slice(0, 10)
   if (/^\d{4}-\d{2}-\d{2}T/.test(text)) return text.replace('T', ' ').replace(/\.\d+.*$/, '').slice(0, 16)
+  return text
+}
+
+function formatDateOnly(value: unknown) {
+  if (value === null || value === undefined || value === '' || value === 'NaT') return ''
+  const text = String(value)
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10)
   return text
 }
 
@@ -2124,6 +2776,24 @@ function formatResearchValue(key: string, value: unknown) {
 function formatPercentValue(value: unknown) {
   const number = Number(value)
   return Number.isFinite(number) ? `${(number * 100).toFixed(2)}%` : '-'
+}
+
+function formatDecimalValue(value: unknown, digits = 2) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number.toFixed(digits) : '-'
+}
+
+function meanValue(values: number[]) {
+  if (!values.length) return NaN
+  return values.reduce((total, value) => total + value, 0) / values.length
+}
+
+function medianValue(values: number[]) {
+  if (!values.length) return NaN
+  const sorted = [...values].sort((left, right) => left - right)
+  const middle = Math.floor(sorted.length / 2)
+  if (sorted.length % 2) return sorted[middle]
+  return (sorted[middle - 1] + sorted[middle]) / 2
 }
 
 function markdownBlocks(text: string): ReviewMarkdownBlock[] {
