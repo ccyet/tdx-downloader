@@ -51,7 +51,22 @@ def download_with_runtime(
             )
             return service.download(config, mode=mode, progress_callback=progress_callback)
         return download_with_parallels_cli(service, config, mode=mode, progress_callback=progress_callback)
-    return service.download(config, mode=mode, progress_callback=progress_callback)
+    try:
+        return service.download(config, mode=mode, progress_callback=progress_callback)
+    except (RuntimeError, ValueError) as exc:
+        if not _is_quality_gate_error(exc) or not config.strict_after_update:
+            raise
+        _emit_progress(
+            progress_callback,
+            stage="local_quality_gate_retry_incomplete",
+            message=f"本地质量门禁未完全通过，已保留失败项并继续后续结果：{exc}",
+            error=str(exc),
+        )
+        return service.download(
+            replace(config, strict_after_update=False),
+            mode=mode,
+            progress_callback=progress_callback,
+        )
 
 
 def shortcut_symbol_groups_with_runtime(

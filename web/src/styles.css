@@ -845,6 +845,12 @@ main {
   gap: 10px;
 }
 
+.task-list {
+  max-height: 520px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
 .task-detail-stack {
   display: grid;
   gap: 14px;
@@ -925,6 +931,8 @@ main {
 
 .event-list.compact .event-row {
   grid-template-columns: minmax(96px, 132px) minmax(0, 1fr);
+  max-height: 132px;
+  overflow-y: auto;
   padding: 10px 12px;
 }
 
@@ -1277,6 +1285,43 @@ main {
 
 .review-symbol-field textarea {
   min-height: 132px;
+}
+
+.review-ai-toggle {
+  display: grid !important;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px !important;
+  min-width: 0;
+  min-height: 40px;
+  padding: 9px 12px;
+  border: 1px solid rgba(20, 184, 166, 0.34);
+  border-radius: 10px;
+  background: rgba(240, 253, 250, 0.72);
+}
+
+.review-ai-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.review-ai-toggle > span {
+  color: var(--ink) !important;
+  font-size: 13px !important;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.review-ai-toggle em {
+  min-width: 0;
+  color: var(--muted);
+  font-style: normal;
+  font-size: 12px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .modal-backdrop {
@@ -1816,12 +1861,18 @@ td {
 }
 
 .error-box {
+  max-height: 240px;
+  overflow-y: auto;
   border-radius: 8px;
   background: #fff0ee;
   color: #9d1710;
   padding: 12px;
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.quality-issue-list {
+  border-color: rgba(239, 68, 68, 0.16);
 }
 
 @media (max-width: 1180px) {

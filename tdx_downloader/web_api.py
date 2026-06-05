@@ -39,12 +39,12 @@ from tdx_downloader.data.manager import (
 )
 from tdx_downloader.data.parallels_runtime import (
     download_with_runtime,
-    shortcut_symbol_groups_with_runtime,
     should_use_parallels_runtime,
     symbol_metadata_with_runtime,
 )
 from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES, inclusive_end_timestamp, normalize_symbol
 from tdx_downloader.data.storage import load_local_bars
+from tdx_downloader.data.symbols import DEFAULT_STOCK_NAME_BY_CODE, load_symbol_metadata
 from tdx_downloader.research.history import HistorySearchConfig, search_history
 from tdx_downloader.research.review import (
     ReviewConfig,
@@ -60,7 +60,12 @@ from tdx_downloader.research.review_ai import (
     build_review_ai_messages,
     parse_review_ai_result,
 )
-from tdx_downloader.research.similarity import CrossSectionSearchConfig, search_cross_section
+from tdx_downloader.research.similarity import (
+    CrossSectionSearchConfig,
+    CrossSectionWindowTraversalConfig,
+    search_cross_section,
+    search_cross_section_window_traversal,
+)
 
 DEFAULT_TDX_PATH = "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"
 DEFAULT_ADJUST = "qfq"
@@ -74,9 +79,11 @@ PICKER_LIQUIDITY_LOOKBACK_BARS = 20
 
 STAGE_LABELS = {
     "task_start": "任务启动",
+    "local_task_start": "Windows 本地",
     "parallels_task_start": "Windows 调度",
     "parallels_command_start": "Windows 执行",
     "parallels_batch_retry_incomplete": "质量容错",
+    "local_quality_gate_retry_incomplete": "质量容错",
     "parallels_command_done": "Windows 返回",
     "tdx_connection_check": "连接检查",
     "tdx_connection_ok": "连接成功",
@@ -84,6 +91,8 @@ STAGE_LABELS = {
     "task_summary": "结果汇总",
     "catalog_refresh_start": "刷新索引",
     "catalog_refresh_done": "索引完成",
+    "daily_sessions_start": "交易日锚点",
+    "daily_sessions_done": "锚点完成",
     "audit_start": "审计缓存",
     "audit_done": "审计完成",
     "fetch_start": "请求 TDX",
@@ -150,9 +159,13 @@ class CrossSectionSearchPayload(ResearchBasePayload):
     universe_symbols: list[str] = Field(default_factory=list)
     start: str
     end: str
+    search_mode: str = "same_date"
+    traversal_start: str | None = None
+    traversal_end: str | None = None
     top_n: int = 20
     min_coverage: float = 0.8
     path_weight: float = 0.7
+    exclusion_bars: int = 0
     forward_windows: list[int] = Field(default_factory=lambda: [3, 5, 10])
     date_tolerance_bars: int = 0
 
@@ -223,6 +236,8 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/api/config")
     def config() -> dict[str, Any]:
         today = date.today()
+        symbol_metadata = load_symbol_metadata(DEFAULT_DATA_ROOT, tdx_path=DEFAULT_TDX_PATH)
+        groups = shortcut_symbol_groups(metadata=symbol_metadata)
         return {
             "defaults": {
                 "data_root": DEFAULT_DATA_ROOT,
@@ -237,7 +252,8 @@ def _register_routes(app: FastAPI) -> None:
             },
             "timeframes": list(SUPPORTED_TIMEFRAMES),
             "asset_types": [{"value": key, "label": label} for key, label in ASSET_TYPE_LABELS.items()],
-            "symbol_groups": shortcut_symbol_groups(data_root=DEFAULT_DATA_ROOT, tdx_path=DEFAULT_TDX_PATH),
+            "symbol_groups": groups,
+            "symbol_names": _symbol_group_names(groups, symbol_metadata=symbol_metadata),
             "runtime": "parallels" if should_use_parallels_runtime() else "local",
         }
 
@@ -249,10 +265,15 @@ def _register_routes(app: FastAPI) -> None:
         target: str = "",
     ) -> dict[str, Any]:
         try:
-            groups = shortcut_symbol_groups_with_runtime(data_root, tdx_path, target=target)
+            symbol_metadata = symbol_metadata_with_runtime(data_root, tdx_path)
+            groups = shortcut_symbol_groups(metadata=symbol_metadata)
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"groups": _sort_picker_symbol_groups_by_recent_amount(groups, data_root=data_root, adjust=adjust)}
+        sorted_groups = _sort_picker_symbol_groups_by_recent_amount(groups, data_root=data_root, adjust=adjust)
+        return {
+            "groups": sorted_groups,
+            "symbol_names": _symbol_group_names(sorted_groups, symbol_metadata=symbol_metadata),
+        }
 
     @app.get("/api/overview")
     def overview(
@@ -363,44 +384,80 @@ def _register_routes(app: FastAPI) -> None:
             symbols = normalize_symbol_tuple([payload.target_symbol, *payload.universe_symbols])
             if len(symbols) < 2:
                 raise ValueError("横截面相似至少需要目标标的和 1 个候选标的。")
+            search_mode = _cross_section_search_mode(payload.search_mode)
             bars = load_local_bars(
                 data_root=payload.data_root,
                 timeframe=timeframe,
                 adjust=payload.adjust,
                 symbols=symbols,
-                start=_cross_section_read_start(payload.start, payload.date_tolerance_bars),
-                end=_cross_section_read_end(payload.end, tuple(payload.forward_windows)),
+                start=_cross_section_payload_read_start(payload, search_mode),
+                end=_cross_section_payload_read_end(payload, search_mode),
             )
-            result = search_cross_section(
-                bars,
-                CrossSectionSearchConfig(
-                    target_symbol=payload.target_symbol,
-                    universe_symbols=tuple(payload.universe_symbols),
-                    start=payload.start,
-                    end=payload.end,
-                    top_n=payload.top_n,
-                    min_coverage=payload.min_coverage,
-                    path_weight=payload.path_weight,
-                    forward_windows=tuple(payload.forward_windows),
-                    date_tolerance_bars=payload.date_tolerance_bars,
-                ),
-            )
+            if search_mode == "traversal":
+                traversal_start = payload.traversal_start or payload.start
+                traversal_end = payload.traversal_end or payload.end
+                result = search_cross_section_window_traversal(
+                    bars,
+                    CrossSectionWindowTraversalConfig(
+                        target_symbol=payload.target_symbol,
+                        universe_symbols=tuple(payload.universe_symbols),
+                        target_start=payload.start,
+                        target_end=payload.end,
+                        traversal_start=traversal_start,
+                        traversal_end=traversal_end,
+                        top_n=payload.top_n,
+                        min_coverage=payload.min_coverage,
+                        path_weight=payload.path_weight,
+                        exclusion_bars=payload.exclusion_bars,
+                        forward_windows=tuple(payload.forward_windows),
+                    ),
+                )
+            else:
+                result = search_cross_section(
+                    bars,
+                    CrossSectionSearchConfig(
+                        target_symbol=payload.target_symbol,
+                        universe_symbols=tuple(payload.universe_symbols),
+                        start=payload.start,
+                        end=payload.end,
+                        top_n=payload.top_n,
+                        min_coverage=payload.min_coverage,
+                        path_weight=payload.path_weight,
+                        forward_windows=tuple(payload.forward_windows),
+                        date_tolerance_bars=payload.date_tolerance_bars,
+                    ),
+                )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        stock_names = _cross_section_stock_names(payload, symbols)
+        stock_name = stock_names.get(result.target_symbol, "")
+        result_rows = result.results.copy()
+        if not result_rows.empty and "股票" not in result_rows.columns:
+            result_rows.insert(1, "股票", result_rows["symbol"].map(lambda value: stock_names.get(normalize_symbol(value), "")))
+        summary = {
+            "target_symbol": result.target_symbol,
+            "stock_name": stock_name,
+            "timeframe": timeframe,
+            "start": result.start if hasattr(result, "start") else result.target_start,
+            "end": result.end if hasattr(result, "end") else result.target_end,
+            "window_size": result.window_size,
+            "match_count": len(result.results),
+            "skipped_count": len(result.skipped),
+            "search_mode": search_mode,
+        }
+        if search_mode == "traversal":
+            summary.update(
+                {
+                    "traversal_start": result.traversal_start,
+                    "traversal_end": result.traversal_end,
+                }
+            )
         return {
-            "summary": {
-                "target_symbol": result.target_symbol,
-                "timeframe": timeframe,
-                "start": result.start,
-                "end": result.end,
-                "window_size": result.window_size,
-                "match_count": len(result.results),
-                "skipped_count": len(result.skipped),
-            },
-            "results": _records(result.results),
+            "summary": summary,
+            "results": _records(result_rows),
             "skipped": _records(result.skipped),
-            "target_window": _symbol_window_candles(bars, result.target_symbol, result.start, result.end),
-            "candidate_windows": _cross_section_candidate_windows(bars, result.results),
+            "target_window": _symbol_window_candles(bars, result.target_symbol, summary["start"], summary["end"]),
+            "candidate_windows": _cross_section_candidate_windows(bars, result_rows, stock_names=stock_names),
         }
 
     @app.post("/api/research/review")
@@ -635,6 +692,45 @@ def _sort_symbols_by_amount(symbols: list[str], scores: dict[str, float]) -> lis
     return sorted(symbols, key=sort_key)
 
 
+def _symbol_group_names(
+    groups: list[dict[str, Any]],
+    *,
+    symbol_metadata: pd.DataFrame,
+) -> dict[str, str]:
+    symbols = normalize_symbol_tuple(symbol for group in groups for symbol in group.get("symbols", []))
+    names = {symbol: DEFAULT_STOCK_NAME_BY_CODE[symbol] for symbol in symbols if symbol in DEFAULT_STOCK_NAME_BY_CODE}
+    if not symbol_metadata.empty:
+        for row in symbol_metadata.itertuples(index=False):
+            symbol = normalize_symbol(getattr(row, "stock_code", ""))
+            name = str(getattr(row, "stock_name", "") or "").strip()
+            if symbol in symbols and name:
+                names[symbol] = name
+    return names
+
+
+def _cross_section_search_mode(value: str) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {"same_date", "same", "cross", "同区间"}:
+        return "same_date"
+    if normalized in {"traversal", "window_traversal", "search_interval", "指定区间", "窗口遍历"}:
+        return "traversal"
+    raise ValueError("横截面搜索模式仅支持 same_date 或 traversal。")
+
+
+def _cross_section_payload_read_start(payload: CrossSectionSearchPayload, search_mode: str) -> str:
+    if search_mode == "traversal":
+        values = [pd.Timestamp(payload.start), pd.Timestamp(payload.traversal_start or payload.start)]
+        return min(values).date().isoformat()
+    return _cross_section_read_start(payload.start, payload.date_tolerance_bars)
+
+
+def _cross_section_payload_read_end(payload: CrossSectionSearchPayload, search_mode: str) -> str:
+    if search_mode == "traversal":
+        end = max(pd.Timestamp(payload.end), pd.Timestamp(payload.traversal_end or payload.end))
+        return _cross_section_read_end(end.date().isoformat(), tuple(payload.forward_windows))
+    return _cross_section_read_end(payload.end, tuple(payload.forward_windows))
+
+
 def _cross_section_read_start(start: str, tolerance_bars: int) -> str:
     padding_days = max(14, int(tolerance_bars) * 5 + 7)
     return (pd.Timestamp(start) - pd.Timedelta(days=padding_days)).date().isoformat()
@@ -674,6 +770,11 @@ def _history_stock_names(payload: HistorySearchPayload, symbol: str) -> dict[str
     return service.repository.symbol_names(symbols=(symbol,))
 
 
+def _cross_section_stock_names(payload: CrossSectionSearchPayload, symbols: tuple[str, ...]) -> dict[str, str]:
+    service = DataManagementService(payload.data_root, adjust=payload.adjust)
+    return service.repository.symbol_names(symbols=symbols)
+
+
 def _review_candles(window: pd.DataFrame, *, include_symbol: bool = False) -> list[dict[str, Any]]:
     if window.empty:
         return []
@@ -703,9 +804,15 @@ def _symbol_window_candles(
     return _review_candles(window, include_symbol=True)
 
 
-def _cross_section_candidate_windows(bars: pd.DataFrame, results: pd.DataFrame) -> list[dict[str, Any]]:
+def _cross_section_candidate_windows(
+    bars: pd.DataFrame,
+    results: pd.DataFrame,
+    *,
+    stock_names: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     if results.empty:
         return []
+    name_map = stock_names or {}
     rows: list[dict[str, Any]] = []
     for index, row in results.reset_index(drop=True).iterrows():
         symbol = normalize_symbol(row.get("symbol", ""))
@@ -717,6 +824,7 @@ def _cross_section_candidate_windows(bars: pd.DataFrame, results: pd.DataFrame) 
             {
                 "rank": index + 1,
                 "symbol": symbol,
+                "name": name_map.get(symbol, ""),
                 "start": _json_value(start),
                 "end": _json_value(end),
                 "candles": _symbol_window_candles(bars, symbol, pd.Timestamp(start), pd.Timestamp(end)),
@@ -813,9 +921,14 @@ def _ai_message_content(payload: dict[str, Any]) -> str:
 
 
 def _open_native_directory_dialog(initial_directory: str | Path, title: str) -> Path | None:
-    if sys.platform != "darwin":
-        raise RuntimeError("当前系统暂不支持弹窗选择文件夹，请直接输入路径。")
+    if sys.platform == "darwin":
+        return _open_macos_directory_dialog(initial_directory, title)
+    if sys.platform.startswith("win"):
+        return _open_windows_directory_dialog(initial_directory, title)
+    raise RuntimeError("当前系统暂不支持弹窗选择文件夹，请直接输入路径。")
 
+
+def _open_macos_directory_dialog(initial_directory: str | Path, title: str) -> Path | None:
     script = """
 on run argv
     set dialogPrompt to item 1 of argv
@@ -843,6 +956,64 @@ end run
         if "User canceled" in stderr or "用户已取消" in stderr:
             return None
         raise RuntimeError(stderr or "系统文件夹选择失败。")
+
+    selected = result.stdout.strip()
+    if not selected:
+        return None
+    return Path(selected).expanduser()
+
+
+def _open_windows_directory_dialog(initial_directory: str | Path, title: str) -> Path | None:
+    script = r"""
+param(
+    [string]$DialogTitle,
+    [string]$InitialDirectory
+)
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Application]::EnableVisualStyles()
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = $DialogTitle
+$dialog.SelectedPath = $InitialDirectory
+$dialog.ShowNewFolderButton = $true
+$result = $dialog.ShowDialog()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    Write-Output $dialog.SelectedPath
+    exit 0
+}
+if ($result -eq [System.Windows.Forms.DialogResult]::Cancel) {
+    exit 2
+}
+exit 1
+"""
+    initial_path = Path(initial_directory) if str(initial_directory).strip() else Path.home()
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-STA",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+                title or "选择文件夹",
+                str(_existing_directory(initial_path)),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("文件夹选择窗口超时，请重新点击选择。") from exc
+    except OSError as exc:
+        raise RuntimeError("无法打开 Windows 文件夹选择窗口，请确认服务在当前桌面用户会话中启动。") from exc
+
+    if result.returncode == 2:
+        return None
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Windows 文件夹选择失败。")
 
     selected = result.stdout.strip()
     if not selected:
@@ -890,6 +1061,14 @@ def _run_download_task(task_id: str, payload: DownloadPayload, mode: str) -> Non
     try:
         if should_use_parallels_runtime():
             _append_event(task_id, {"stage": "parallels_task_start", "message": "按任务计划调度 Parallels/Windows。"})
+        else:
+            _append_event(
+                task_id,
+                {
+                    "stage": "local_task_start",
+                    "message": "Windows 本地模式已启动，将先审计缓存，再按需连接通达信。",
+                },
+            )
         result = download_with_runtime(service, config, mode=mode, progress_callback=on_progress)
         if should_use_parallels_runtime():
             rows_written = int(float(result.summary.get("rows_written") or 0))
