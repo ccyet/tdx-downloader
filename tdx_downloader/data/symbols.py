@@ -1,20 +1,35 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 
 import pandas as pd
 
+from tdx_downloader.data.catalog import catalog_path_for
 from tdx_downloader.data.schema import TIMEFRAME_DIR_NAMES, normalize_symbol, unique_symbols
 
 SYMBOL_METADATA_COLUMNS = ["stock_code", "stock_name", "source", "path"]
 DEFAULT_STOCK_NAME_BY_CODE = {
+    "000001.SH": "上证指数",
     "000001.SZ": "平安银行",
     "000002.SZ": "万科A",
     "000003.SZ": "PT金田A",
+    "000016.SH": "上证50",
+    "000300.SH": "沪深300",
     "000333.SZ": "美的集团",
+    "000688.SH": "科创50",
+    "000852.SH": "中证1000",
+    "000905.SH": "中证500",
     "002415.SZ": "海康威视",
     "300059.SZ": "东方财富",
     "300750.SZ": "宁德时代",
+    "399001.SZ": "深证成指",
+    "399006.SZ": "创业板指",
+    "510300.SH": "沪深300ETF华泰柏",
+    "510500.SH": "中证500ETF南方",
+    "512100.SH": "中证1000ETF南方",
+    "588000.SH": "科创50ETF华夏",
+    "159915.SZ": "创业板ETF易方达",
     "600000.SH": "浦发银行",
     "600036.SH": "招商银行",
     "600519.SH": "贵州茅台",
@@ -24,10 +39,11 @@ DEFAULT_STOCK_NAME_BY_CODE = {
 
 
 def load_symbol_metadata(data_root: str | Path, *, tdx_path: str | Path = "") -> pd.DataFrame:
-    """加载股票代码和名称；优先使用行情目录 sidecar，其次使用 TDX 本地缓存。"""
+    """加载股票代码和名称；优先使用 sidecar/TDX，本地 catalog 补缺失名称。"""
     frames = [_load_sidecar_symbol_metadata(data_root)]
     if tdx_path:
         frames.append(load_tdx_symbol_metadata(tdx_path))
+    frames.append(_load_catalog_symbol_metadata(data_root))
     return _merge_symbol_metadata(frames)
 
 
@@ -50,7 +66,7 @@ def resolve_symbol_names(
 
 
 def load_tdx_symbol_metadata(tdx_path: str | Path) -> pd.DataFrame:
-    """从通达信 hq_cache 的 shm/szm/bjm.tnf 读取股票名称。"""
+    """从通达信 hq_cache 的 tnf 代码表读取股票名称。"""
     rows: list[dict[str, object]] = []
     for path in _tdx_tnf_candidates(tdx_path):
         rows.extend(_read_tdx_tnf_file(path))
@@ -62,6 +78,28 @@ def _load_sidecar_symbol_metadata(data_root: str | Path) -> pd.DataFrame:
     for path in _sidecar_symbol_files(data_root):
         rows.extend(_read_sidecar_symbol_file(path))
     return _metadata_frame(rows)
+
+
+def _load_catalog_symbol_metadata(data_root: str | Path) -> pd.DataFrame:
+    path = catalog_path_for(data_root)
+    if not path.exists():
+        return _metadata_frame([])
+    sql = """
+        SELECT stock_code, stock_name, status, end_at
+        FROM market_data_files
+        WHERE TRIM(stock_code) <> '' AND TRIM(stock_name) <> ''
+        ORDER BY
+            stock_code,
+            CASE WHEN status IN ('cached', 'available', 'ok') THEN 0 ELSE 1 END,
+            end_at DESC
+    """
+    with sqlite3.connect(path) as connection:
+        frame = pd.read_sql_query(sql, connection)
+    rows = [
+        {"stock_code": row.stock_code, "stock_name": row.stock_name, "source": "catalog", "path": str(path)}
+        for row in frame.itertuples(index=False)
+    ]
+    return _metadata_frame(rows).drop_duplicates(subset=["stock_code"], keep="first").reset_index(drop=True)
 
 
 def _sidecar_symbol_files(data_root: str | Path) -> list[Path]:
@@ -130,7 +168,7 @@ def _tdx_tnf_candidates(tdx_path: str | Path) -> list[Path]:
     roots = [base, *base.parents]
     for root in roots:
         for folder in (root / "T0002" / "hq_cache", root / "hq_cache"):
-            for name in ("shm.tnf", "szm.tnf", "bjm.tnf"):
+            for name in ("shs.tnf", "szs.tnf", "bjs.tnf", "shm.tnf", "szm.tnf", "bjm.tnf"):
                 path = folder / name
                 if path.exists():
                     candidates.append(path)
@@ -143,9 +181,10 @@ def _read_tdx_tnf_file(path: Path) -> list[dict[str, object]]:
         return []
     exchange = _tdx_exchange_from_filename(path.name)
     rows: list[dict[str, object]] = []
-    for offset in range(50, len(payload), 314):
-        record = payload[offset : offset + 314]
-        if len(record) < 314:
+    record_size = _tdx_tnf_record_size(payload)
+    for offset in range(50, len(payload), record_size):
+        record = payload[offset : offset + record_size]
+        if len(record) < record_size:
             continue
         code = _decode_record_field(record[0:6], encoding="ascii")
         if not code.isdigit():
@@ -156,6 +195,12 @@ def _read_tdx_tnf_file(path: Path) -> list[dict[str, object]]:
             continue
         rows.append({"stock_code": symbol, "stock_name": name, "source": "tdx_tnf", "path": str(path)})
     return rows
+
+
+def _tdx_tnf_record_size(payload: bytes) -> int:
+    if (len(payload) - 50) % 360 == 0:
+        return 360
+    return 314
 
 
 def _tdx_exchange_from_filename(name: str) -> str:
@@ -171,6 +216,8 @@ def _tdx_exchange_from_filename(name: str) -> str:
 
 def _tdx_record_name(record: bytes) -> str:
     candidates = [
+        _decode_record_field(record[31:47]),
+        _decode_record_field(record[31:63]),
         _decode_record_field(record[23:31]),
         _decode_record_field(record[23:39]),
         _decode_record_field(record[6:14]),

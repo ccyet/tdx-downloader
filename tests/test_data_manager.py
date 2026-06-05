@@ -8,7 +8,13 @@ import pandas as pd
 from tdx_downloader.data.catalog import query_catalog
 from tdx_downloader.data.audit import audit_local_data, data_gap_episodes
 from tdx_downloader.data.inventory import inventory_local_data
-from tdx_downloader.data.manager import DataDownloadConfig, DataManagementService, shortcut_symbols
+from tdx_downloader.data.manager import (
+    DataDownloadConfig,
+    DataManagementService,
+    shortcut_symbol_groups,
+    shortcut_symbols,
+)
+from tdx_downloader.data.symbols import load_tdx_symbol_metadata
 from tdx_downloader.data.storage import write_local_bars
 
 
@@ -122,6 +128,71 @@ def test_data_management_service_force_download_uses_batch_and_progress(tmp_path
     assert "write_done" in [event["stage"] for event in events]
 
 
+def test_download_plan_fetches_daily_cache_with_incomplete_requested_boundary(tmp_path: Path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-01-05", "2026-01-06"]),
+            "stock_code": ["399006.SZ", "399006.SZ"],
+            "open": [3300.0, 3320.0],
+            "high": [3350.0, 3360.0],
+            "low": [3280.0, 3290.0],
+            "close": [3340.0, 3350.0],
+            "volume": [1000000.0, 1200000.0],
+            "amount": [300000000.0, 360000000.0],
+        }
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    service = DataManagementService(data_root, adjust="qfq")
+    plan = service.download_plan(
+        DataDownloadConfig(
+            symbols=("399006.SZ",),
+            timeframes=("1d",),
+            start="2001-01-01",
+            end="2026-06-03",
+        )
+    )
+
+    assert plan.loc[0, "action"] == "fetch"
+    assert plan.loc[0, "reason"] == "coverage_gap"
+    assert plan.loc[0, "before_status"] == "coverage_gap"
+    assert "未覆盖请求窗口" in plan.loc[0, "message"]
+
+
+def test_download_plan_fetches_daily_cache_with_recent_end_boundary_gap(tmp_path: Path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-06-01", "2026-06-02", "2026-06-03"]),
+            "stock_code": ["399006.SZ", "399006.SZ", "399006.SZ"],
+            "open": [4000.0, 4020.0, 4040.0],
+            "high": [4050.0, 4060.0, 4070.0],
+            "low": [3980.0, 3990.0, 4010.0],
+            "close": [4030.0, 4050.0, 4060.0],
+            "volume": [1000000.0, 1200000.0, 1300000.0],
+            "amount": [400000000.0, 480000000.0, 520000000.0],
+        }
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    service = DataManagementService(data_root, adjust="qfq")
+    plan = service.download_plan(
+        DataDownloadConfig(
+            symbols=("399006.SZ",),
+            timeframes=("1d",),
+            start="2026-06-01",
+            end="2026-06-05",
+        )
+    )
+
+    assert plan.loc[0, "action"] == "fetch"
+    assert plan.loc[0, "reason"] == "coverage_gap"
+    assert plan.loc[0, "before_status"] == "coverage_gap"
+    assert "2026-06-03" in plan.loc[0, "message"]
+    assert "2026-06-05" in plan.loc[0, "message"]
+
+
 def test_write_local_bars_separates_timeframe_directories_from_data_root(tmp_path: Path) -> None:
     data_root = tmp_path / "market"
 
@@ -198,6 +269,129 @@ def test_audit_and_gap_calculation_read_only_canonical_parquet_columns(
     assert all(columns == tuple(["date", "stock_code", "open", "high", "low", "close", "volume", "amount"]) for columns in observed_columns)
 
 
+def test_audit_rejects_inconsistent_ohlc_for_stock(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().iloc[[0]].copy()
+    bars["high"] = [9.0]
+    bars["low"] = [11.0]
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("000001.SZ",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "quality_error"
+    assert audit.loc[0, "inconsistent_ohlc_rows"] == 1
+
+
+def test_audit_rejects_zero_ohlc_for_unadjusted_stock(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().iloc[[0]].copy()
+    bars[["open", "high", "low", "close"]] = 0.0
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="",
+        symbols=("000001.SZ",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "quality_error"
+    assert audit.loc[0, "non_positive_price_rows"] == 1
+
+
+def test_audit_allows_front_adjusted_non_positive_stock_prices(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().iloc[[0]].copy()
+    bars[["open", "high", "low", "close"]] = [-2.0, -1.8, -2.2, -1.9]
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("000001.SZ",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "ok"
+    assert audit.loc[0, "non_positive_price_rows"] == 1
+    assert "前复权" in audit.loc[0, "message"]
+
+
+def test_audit_still_rejects_front_adjusted_inconsistent_ohlc(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().iloc[[0]].copy()
+    bars[["open", "high", "low", "close"]] = [-2.0, -2.4, -2.1, -1.9]
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("000001.SZ",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "quality_error"
+    assert audit.loc[0, "inconsistent_ohlc_rows"] == 1
+
+
+def test_audit_relaxes_ohlc_semantics_for_tdx_sector_index(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().iloc[[0]].copy()
+    bars["stock_code"] = ["880016.SH"]
+    bars["open"] = [17.0]
+    bars["high"] = [10.0]
+    bars["low"] = [30.0]
+    bars["close"] = [15.0]
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("880016.SH",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "ok"
+    assert audit.loc[0, "inconsistent_ohlc_rows"] == 1
+    assert "板块指数" in audit.loc[0, "message"]
+
+
+def test_audit_marks_nonstandard_zero_price_tdx_sector_index_cached(tmp_path: Path) -> None:
+    data_root = tmp_path / "market" / "daily"
+    bars = _bars().copy()
+    bars["stock_code"] = ["880774.SH", "880774.SH"]
+    bars.loc[bars.index[0], ["open", "high", "low", "close"]] = 0.0
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    audit = audit_local_data(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        symbols=("880774.SH",),
+        start="2026-05-25",
+        end="2026-05-25",
+    )
+
+    assert audit.loc[0, "status"] == "ok"
+    assert audit.loc[0, "non_positive_price_rows"] == 1
+    assert "非常规" in audit.loc[0, "message"]
+
+
 def test_data_management_service_download_rejects_unknown_mode(tmp_path: Path) -> None:
     service = DataManagementService(tmp_path / "market" / "daily", adjust="qfq")
     config = DataDownloadConfig(
@@ -218,3 +412,52 @@ def test_data_management_service_download_rejects_unknown_mode(tmp_path: Path) -
 def test_shortcut_symbols_exposes_non_manual_groups() -> None:
     assert "000300.SH" in shortcut_symbols("宽基指数")
     assert "510300.SH" in shortcut_symbols("ETF样例")
+
+
+def test_shortcut_symbol_groups_adds_full_a_and_sector_indexes_from_metadata() -> None:
+    metadata = pd.DataFrame(
+        {
+            "stock_code": ["000001.SZ", "600000.SH", "510300.SH", "000300.SH", "880001.SH", "880002.SH"],
+            "stock_name": ["平安银行", "浦发银行", "沪深300ETF", "沪深300", "种植业", "半导体"],
+            "source": ["test"] * 6,
+            "path": [""] * 6,
+        }
+    )
+
+    groups = {group["name"]: group["symbols"] for group in shortcut_symbol_groups(metadata=metadata)}
+
+    assert groups["全A股票"] == ["000001.SZ", "600000.SH"]
+    assert groups["板块指数"] == ["880001.SH", "880002.SH"]
+
+
+def test_shortcut_symbol_groups_does_not_use_catalog_as_market_universe() -> None:
+    metadata = pd.DataFrame(
+        {
+            "stock_code": ["000001.SZ", "510300.SH", "880001.SH"],
+            "stock_name": ["平安银行", "沪深300ETF", "种植业"],
+            "source": ["catalog", "catalog", "catalog"],
+            "path": [""] * 3,
+        }
+    )
+
+    groups = {group["name"]: group["symbols"] for group in shortcut_symbol_groups(metadata=metadata)}
+
+    assert "全A股票" not in groups
+    assert "ETF列表" not in groups
+    assert "板块指数" not in groups
+
+
+def test_tdx_symbol_metadata_reads_current_tdx_tnf_names(tmp_path: Path) -> None:
+    hq_cache = tmp_path / "T0002" / "hq_cache"
+    hq_cache.mkdir(parents=True)
+    record = bytearray(360)
+    record[0:6] = b"880001"
+    name = "种植业".encode("gbk")
+    record[31 : 31 + len(name)] = name
+    (hq_cache / "shs.tnf").write_bytes(bytes(50) + bytes(record))
+
+    metadata = load_tdx_symbol_metadata(tmp_path)
+
+    assert metadata[["stock_code", "stock_name"]].to_dict("records") == [
+        {"stock_code": "880001.SH", "stock_name": "种植业"}
+    ]

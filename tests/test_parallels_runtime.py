@@ -7,10 +7,13 @@ import pandas as pd
 from tdx_downloader.data import parallels_runtime
 from tdx_downloader.data.manager import DataDownloadConfig, DataDownloadResult
 from tdx_downloader.data.parallels_runtime import (
+    download_with_parallels_cli,
     download_with_runtime,
     parse_cli_table,
     parallels_doctor_command,
     parallels_prepare_command,
+    shortcut_symbol_groups_with_runtime,
+    symbol_metadata_with_runtime,
 )
 
 
@@ -90,3 +93,196 @@ def test_parallels_commands_request_json_output() -> None:
     assert prepare[prepare.index("--output") + 1] == "json"
     assert doctor[-2:] == ["--output", "json"]
     assert "--data-root" not in doctor
+
+
+def test_parallels_download_splits_large_symbol_lists(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class Service:
+        data_root = Path("/Volumes/ccOUT 1/tdx-data")
+        adjust = "qfq"
+
+    commands: list[list[str]] = []
+
+    def skip_connection_check(*_: object, **__: object) -> pd.DataFrame:
+        return pd.DataFrame({"status": ["ok"]})
+
+    def fake_run_table(command: list[str]) -> pd.DataFrame:
+        commands.append(command)
+        symbols = command[command.index("--symbols") + 1].split(",")
+        return pd.DataFrame(
+            {
+                "stock_code": symbols,
+                "timeframe": ["1d"] * len(symbols),
+                "action": ["fetched"] * len(symbols),
+                "rows_written": [1] * len(symbols),
+                "new_rows": [1] * len(symbols),
+            }
+        )
+
+    monkeypatch.setattr(parallels_runtime, "verify_parallels_tdx_connection", skip_connection_check)
+    monkeypatch.setattr(parallels_runtime, "run_parallels_cli_table", fake_run_table)
+    symbols = tuple(f"{index:06d}.SZ" for index in range(250))
+
+    result = download_with_parallels_cli(
+        Service(),  # type: ignore[arg-type]
+        DataDownloadConfig(
+            symbols=symbols,
+            timeframes=("1d",),
+            start="2026-06-01",
+            end="2026-06-02",
+            batch_size=100,
+        ),
+        mode="smart",
+    )
+
+    assert len(commands) == 3
+    assert [len(command[command.index("--symbols") + 1].split(",")) for command in commands] == [100, 100, 50]
+    assert len(result.table) == 250
+
+
+def test_parallels_download_continues_after_batch_quality_gate(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class Service:
+        data_root = Path("/Volumes/ccOUT 1/tdx-data")
+        adjust = "qfq"
+
+    commands: list[list[str]] = []
+
+    def skip_connection_check(*_: object, **__: object) -> pd.DataFrame:
+        return pd.DataFrame({"status": ["ok"]})
+
+    def fake_run_table(command: list[str]) -> pd.DataFrame:
+        commands.append(command)
+        symbols = command[command.index("--symbols") + 1].split(",")
+        if symbols == ["000002.SZ"] and "--allow-incomplete-after-update" not in command:
+            raise RuntimeError(
+                "Parallels/Windows 通达信任务失败：本地行情数据未通过质量门禁："
+                "000002.SZ/1d=missing_file(本地 parquet 不存在。)"
+            )
+        return pd.DataFrame(
+            {
+                "stock_code": symbols,
+                "timeframe": ["1d"] * len(symbols),
+                "action": ["fetched"] * len(symbols),
+                "rows_written": [1] * len(symbols),
+                "new_rows": [1] * len(symbols),
+            }
+        )
+
+    monkeypatch.setattr(parallels_runtime, "verify_parallels_tdx_connection", skip_connection_check)
+    monkeypatch.setattr(parallels_runtime, "run_parallels_cli_table", fake_run_table)
+    events: list[dict[str, object]] = []
+
+    result = download_with_parallels_cli(
+        Service(),  # type: ignore[arg-type]
+        DataDownloadConfig(
+            symbols=("000001.SZ", "000002.SZ", "000003.SZ"),
+            timeframes=("1d",),
+            start="2026-06-01",
+            end="2026-06-02",
+            batch_size=1,
+            strict_after_update=True,
+        ),
+        mode="smart",
+        progress_callback=events.append,
+    )
+
+    assert result.summary["fetched_count"] == 3.0
+    assert result.table["stock_code"].tolist() == ["000001.SZ", "000002.SZ", "000003.SZ"]
+    assert commands[2][commands[2].index("--symbols") + 1] == "000002.SZ"
+    assert "--allow-incomplete-after-update" in commands[2]
+    assert "parallels_batch_retry_incomplete" in [event["stage"] for event in events]
+    assert [event["stage"] for event in events].count("parallels_command_start") == 3
+
+
+def test_symbol_groups_runtime_uses_parallels_when_local_dynamic_groups_missing(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    commands: list[list[str]] = []
+
+    def local_groups(*_: object, **__: object) -> list[dict[str, object]]:
+        return [{"name": "核心样例", "symbols": ["000001.SZ"]}]
+
+    def windows_records(command: list[str]) -> list[dict[str, object]]:
+        commands.append(command)
+        return [
+            {"name": "核心样例", "symbols": ["000001.SZ"]},
+            {"name": "ETF列表", "symbols": ["510300.SH"]},
+            {"name": "板块指数", "symbols": ["880001.SH"]},
+            {"name": "全A股票", "symbols": ["000001.SZ", "600000.SH"]},
+        ]
+
+    monkeypatch.setattr(parallels_runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(parallels_runtime, "shortcut_symbol_groups", local_groups)
+    monkeypatch.setattr(parallels_runtime, "run_parallels_cli_records", windows_records)
+
+    groups = shortcut_symbol_groups_with_runtime(
+        Path("/Volumes/ccOUT 1/tdx-data"),
+        Path("/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"),
+    )
+
+    assert {group["name"] for group in groups} >= {"ETF列表", "板块指数", "全A股票"}
+    assert commands[0][2:6] == ["tdx_downloader.cli", "symbol-groups", "--runtime", "parallels"]
+    assert commands[0][-2:] == ["--output", "json"]
+
+
+def test_symbol_groups_target_does_not_require_unrelated_dynamic_groups(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def local_groups(*_: object, **__: object) -> list[dict[str, object]]:
+        return [{"name": "ETF列表", "symbols": ["510300.SH"]}]
+
+    def fail_windows_records(command: list[str]) -> list[dict[str, object]]:
+        raise AssertionError(f"targeted ETF refresh should not call Windows CLI: {command}")
+
+    monkeypatch.setattr(parallels_runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(parallels_runtime, "shortcut_symbol_groups", local_groups)
+    monkeypatch.setattr(parallels_runtime, "run_parallels_cli_records", fail_windows_records)
+
+    groups = shortcut_symbol_groups_with_runtime(
+        Path("/Volumes/ccOUT 1/tdx-data"),
+        Path("/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"),
+        target="etf",
+    )
+
+    assert groups == [{"name": "ETF列表", "symbols": ["510300.SH"]}]
+
+
+def test_symbol_metadata_runtime_uses_windows_when_local_metadata_missing(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    commands: list[list[str]] = []
+
+    def empty_local_metadata(*_: object, **__: object) -> pd.DataFrame:
+        return pd.DataFrame(columns=["stock_code", "stock_name", "source", "path"])
+
+    def windows_records(command: list[str], **_: object) -> list[dict[str, object]]:
+        commands.append(command)
+        return [
+            {
+                "stock_code": "000750.SZ",
+                "stock_name": "国海证券",
+                "source": "tdx_tnf",
+                "path": r"C:\new_tdx64\T0002\hq_cache\szs.tnf",
+            }
+        ]
+
+    monkeypatch.setattr(parallels_runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(parallels_runtime, "load_symbol_metadata", empty_local_metadata)
+    monkeypatch.setattr(parallels_runtime, "run_parallels_cli_records", windows_records)
+
+    metadata = symbol_metadata_with_runtime(
+        Path("/Volumes/ccOUT 1/tdx-data"),
+        Path("/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"),
+    )
+
+    assert metadata.loc[0, "stock_code"] == "000750.SZ"
+    assert metadata.loc[0, "stock_name"] == "国海证券"
+    assert commands[0][2:6] == ["tdx_downloader.cli", "symbol-metadata", "--runtime", "parallels"]
+    assert commands[0][-2:] == ["--output", "json"]
+
+
+def test_symbol_groups_parallels_timeout_is_explicit(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def timeout_run(command: list[str], **_: object) -> object:
+        raise parallels_runtime.subprocess.TimeoutExpired(command, timeout=12)
+
+    monkeypatch.setattr(parallels_runtime.subprocess, "run", timeout_run)
+
+    try:
+        parallels_runtime.run_parallels_cli_records(["python", "-m", "tdx_downloader.cli", "symbol-groups"])
+    except RuntimeError as exc:
+        assert "快捷代码表超时" in str(exc)
+    else:
+        raise AssertionError("timeout should be surfaced")

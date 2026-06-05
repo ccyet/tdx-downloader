@@ -54,6 +54,25 @@ def test_candidate_import_paths_include_pyplugins_sys_for_pyplugins_root() -> No
     assert "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/sys" in normalized
 
 
+def test_fetch_tdx_bars_maps_adjust_to_tdx_dividend_type() -> None:
+    dates = pd.date_range("2026-05-25", periods=1, freq="D")
+    payload = _tdx_payload(dates, opens=[10], highs=[11], lows=[9], closes=[10.5])
+
+    for adjust, expected_dividend_type in (("qfq", "front"), ("hfq", "back"), ("", "none")):
+        fake = _PeriodFakeTq({"1d": payload})
+
+        tdx.fetch_tdx_bars(
+            symbols=("000001.SZ",),
+            timeframe="1d",
+            adjust=adjust,
+            start="2026-05-25",
+            end="2026-05-25",
+            tq_client=fake,
+        )
+
+        assert fake.market_calls[0]["dividend_type"] == expected_dividend_type
+
+
 def test_fetch_tdx_bars_derives_5m_from_1m_when_native_5m_empty() -> None:
     fake = _PeriodFakeTq(
         {

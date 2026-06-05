@@ -26,6 +26,13 @@ class _Args:
     allow_incomplete_after_update = False
 
 
+class _SymbolGroupsArgs:
+    command = "symbol-groups"
+    data_root = DEFAULT_DATA_ROOT
+    tdx_path = "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"
+    output = "json"
+
+
 def test_default_data_root_points_to_external_tdx_data_root() -> None:
     assert DEFAULT_DATA_ROOT == "/Volumes/ccOUT 1/tdx-data"
 
@@ -56,6 +63,27 @@ def test_forward_args_maps_selected_parallels_tdx_path_to_windows_drive() -> Non
     forwarded = _forward_args(args)
 
     assert forwarded[forwarded.index("--tdx-path") + 1] == r"C:\new_tdx64\T0002\dlls"
+
+
+def test_forward_args_maps_symbol_groups_paths_for_windows_cli() -> None:
+    forwarded = _forward_args(_SymbolGroupsArgs())
+
+    assert forwarded[:3] == ["symbol-groups", "--runtime", "local"]
+    assert forwarded[forwarded.index("--data-root") + 1] == r"\\psf\ccOUT 1\tdx-data"
+    assert forwarded[forwarded.index("--tdx-path") + 1] == r"C:\new_tdx64\PYPlugins\user"
+    assert forwarded[-2:] == ["--output", "json"]
+
+
+def test_forward_args_maps_symbol_metadata_paths_for_windows_cli() -> None:
+    args = _SymbolGroupsArgs()
+    args.command = "symbol-metadata"
+
+    forwarded = _forward_args(args)
+
+    assert forwarded[:3] == ["symbol-metadata", "--runtime", "local"]
+    assert forwarded[forwarded.index("--data-root") + 1] == r"\\psf\ccOUT 1\tdx-data"
+    assert forwarded[forwarded.index("--tdx-path") + 1] == r"C:\new_tdx64\PYPlugins\user"
+    assert forwarded[-2:] == ["--output", "json"]
 
 
 def test_parallels_command_runs_windows_cli_inside_repo() -> None:

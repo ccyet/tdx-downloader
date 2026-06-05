@@ -5,8 +5,14 @@ import json
 from pathlib import Path
 import sys
 
-from tdx_downloader.data.manager import DataDownloadConfig, DataManagementService, normalize_symbol_tuple
+from tdx_downloader.data.manager import (
+    DataDownloadConfig,
+    DataManagementService,
+    normalize_symbol_tuple,
+    shortcut_symbol_groups,
+)
 from tdx_downloader.data.repository import MarketDataRepository
+from tdx_downloader.data.symbols import load_symbol_metadata
 from tdx_downloader.data.tdx import diagnose_tdx_source
 from tdx_downloader.data.tdx_parallels import (
     ParallelsTdxConfig,
@@ -73,9 +79,32 @@ def main(argv: list[str] | None = None) -> None:
     inventory_parser.add_argument("--adjust", default="qfq")
     inventory_parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
 
+    groups_parser = subparsers.add_parser("symbol-groups", help="list shortcut symbol groups from local TDX metadata")
+    groups_parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
+    groups_parser.add_argument("--tdx-path", default="")
+    groups_parser.add_argument("--output", choices=["table", "json"], default="table")
+    _add_runtime_args(groups_parser)
+
+    metadata_parser = subparsers.add_parser("symbol-metadata", help="list symbol names from local TDX metadata")
+    metadata_parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
+    metadata_parser.add_argument("--tdx-path", default="")
+    metadata_parser.add_argument("--output", choices=["table", "json"], default="table")
+    _add_runtime_args(metadata_parser)
+
     args = parser.parse_args(argv)
-    if args.command in {"tdx-doctor", "fetch", "prepare-data"} and _resolve_runtime(args.runtime) == "parallels":
+    if args.command in {"tdx-doctor", "fetch", "prepare-data", "symbol-groups", "symbol-metadata"} and _resolve_runtime(args.runtime) == "parallels":
         _run_in_parallels(args)
+        return
+
+    if args.command == "symbol-groups":
+        _print_symbol_groups(
+            shortcut_symbol_groups(data_root=args.data_root, tdx_path=args.tdx_path),
+            args.output,
+        )
+        return
+
+    if args.command == "symbol-metadata":
+        _print_frame(load_symbol_metadata(args.data_root, tdx_path=args.tdx_path), args.output)
         return
 
     symbols = _split_csv(args.symbols)
@@ -193,6 +222,14 @@ def _print_frame(frame, output: str) -> None:
         print(json.dumps(payload, ensure_ascii=False, default=str))
         return
     print(frame.to_string(index=False))
+
+
+def _print_symbol_groups(groups: list[dict[str, object]], output: str) -> None:
+    if output == "json":
+        print(json.dumps(groups, ensure_ascii=False, default=str))
+        return
+    rows = [{"name": group.get("name", ""), "count": len(group.get("symbols", []))} for group in groups]
+    print(json.dumps(rows, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

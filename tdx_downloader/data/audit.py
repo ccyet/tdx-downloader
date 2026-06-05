@@ -89,6 +89,7 @@ DAILY_FILTER_AUDIT_MESSAGE_BY_DATA_STATUS = {
     "missing_columns": "日K parquet 缺少标准字段",
     "quality_error": "日K parquet 存在质量异常",
 }
+TDX_SECTOR_INDEX_PREFIX = "880"
 
 
 def audit_local_data(
@@ -279,8 +280,16 @@ def _audit_symbol_file(
     invalid_symbol_rows = int(window["stock_code"].eq("").sum())
     duplicate_rows = int(window.duplicated(subset=["stock_code", "date"]).sum())
     null_ohlc_rows = int(window[["open", "high", "low", "close"]].isna().any(axis=1).sum())
+    allow_adjusted_non_positive_prices = _adjust_allows_non_positive_prices(adjust)
     non_positive_price_rows = int((window[["open", "high", "low", "close"]] <= 0).any(axis=1).sum())
-    inconsistent_ohlc_rows = int(_inconsistent_ohlc_mask(window).sum())
+    inconsistent_ohlc_rows = int(
+        _inconsistent_ohlc_mask(window, require_positive=not allow_adjusted_non_positive_prices).sum()
+    )
+    is_tdx_sector_index = _is_tdx_sector_index(symbol)
+    relaxed_non_positive_price_rows = (
+        non_positive_price_rows if is_tdx_sector_index or allow_adjusted_non_positive_prices else 0
+    )
+    relaxed_ohlc_rows = inconsistent_ohlc_rows if is_tdx_sector_index else 0
     null_volume_amount_rows = int(window[["volume", "amount"]].isna().any(axis=1).sum())
     zero_volume_amount_rows = int(window[["volume", "amount"]].eq(0).any(axis=1).sum())
     negative_volume_amount_rows = int((window[["volume", "amount"]] < 0).any(axis=1).sum())
@@ -302,8 +311,8 @@ def _audit_symbol_file(
             invalid_symbol_rows,
             duplicate_rows,
             null_ohlc_rows,
-            non_positive_price_rows,
-            inconsistent_ohlc_rows,
+            non_positive_price_rows - relaxed_non_positive_price_rows,
+            inconsistent_ohlc_rows - relaxed_ohlc_rows,
             null_volume_amount_rows,
             negative_volume_amount_rows,
         )
@@ -317,6 +326,15 @@ def _audit_symbol_file(
     elif zero_volume_amount_rows > 0:
         status = "ok"
         message = "覆盖按可交易 K 计算；存在零流动性 K，已从回测数据包剔除。"
+    elif is_tdx_sector_index and relaxed_non_positive_price_rows > 0:
+        status = "ok"
+        message = "非常规板块指数使用通达信统计口径，已标记缓存并跳过价格语义门禁；其他质量检查通过。"
+    elif relaxed_ohlc_rows > 0:
+        status = "ok"
+        message = "非常规板块指数使用通达信统计口径，已标记缓存并跳过 OHLC 高低点语义校验；其他质量检查通过。"
+    elif allow_adjusted_non_positive_prices and relaxed_non_positive_price_rows > 0:
+        status = "ok"
+        message = "前复权价格允许历史调整后价格小于等于 0，已记录但不阻断；其他质量检查通过。"
     else:
         status = "ok"
         message = "覆盖和质量检查通过。"
@@ -447,16 +465,30 @@ def _drop_zero_liquidity_bars(bars: pd.DataFrame) -> pd.DataFrame:
     return bars.loc[tradable].reset_index(drop=True)
 
 
-def _inconsistent_ohlc_mask(frame: pd.DataFrame) -> pd.Series:
+def _inconsistent_ohlc_mask(frame: pd.DataFrame, *, require_positive: bool = True) -> pd.Series:
     if frame.empty:
         return pd.Series(dtype=bool, index=frame.index)
     ohlc = frame[["open", "high", "low", "close"]]
-    valid = ohlc.notna().all(axis=1) & (ohlc > 0).all(axis=1)
+    valid = ohlc.notna().all(axis=1)
+    if require_positive:
+        valid &= (ohlc > 0).all(axis=1)
     max_body = ohlc[["open", "close"]].max(axis=1)
     min_body = ohlc[["open", "close"]].min(axis=1)
     high = ohlc["high"]
     low = ohlc["low"]
     return valid & ((high < max_body) | (low > min_body) | (high < low))
+
+
+def _adjust_allows_non_positive_prices(adjust: object) -> bool:
+    return str(adjust).strip().lower() == "qfq"
+
+
+def _is_tdx_sector_index(symbol: object) -> bool:
+    normalized = normalize_symbol(symbol)
+    if not normalized:
+        return False
+    code, exchange = normalized.split(".", 1)
+    return exchange == "SH" and code.startswith(TDX_SECTOR_INDEX_PREFIX)
 
 
 def _intraday_session_coverage(

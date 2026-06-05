@@ -31,6 +31,7 @@
       v-else-if="name === 'clipboard'"
       d="M8 4h8v4H8zM6 6H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-1M8 13h8M8 17h5"
     />
+    <path v-else-if="name === 'save'" d="M5 4h12l2 2v14H5zM8 4v6h8V4M8 20v-6h8v6" />
     <path v-else-if="name === 'folder'" d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
     <path
       v-else-if="name === 'settings'"
