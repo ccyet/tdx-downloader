@@ -1,5 +1,5 @@
 <template>
-  <article class="kline-chart">
+  <article class="kline-chart resizable-card" data-resizable-card>
     <header class="kline-chart-head">
       <div>
         <span>{{ rankLabel }}</span>
@@ -249,6 +249,7 @@ async function loadPlotly() {
 
 function segmentShapes() {
   return normalizedSegments.value.map((segment) => {
+    const isTargetWindow = segment.direction === '对标窗口'
     return {
       type: 'rect',
       xref: 'x',
@@ -258,13 +259,14 @@ function segmentShapes() {
       y0: 0,
       y1: 1,
       fillcolor: segmentFillColor(segment.direction),
-      line: { width: 0 },
+      line: { color: isTargetWindow ? 'rgba(37, 99, 235, 0.36)' : 'rgba(0,0,0,0)', width: isTargetWindow ? 1 : 0 },
       layer: 'below'
     }
   })
 }
 
 function segmentFillColor(direction: string) {
+  if (direction === '对标窗口') return 'rgba(37, 99, 235, 0.14)'
   if (['当前窗口', '相似区间', 'window', 'match'].includes(direction)) return 'rgba(9, 199, 190, 0.12)'
   return ['上涨', '反弹', 'rise', 'up'].includes(direction) ? 'rgba(214, 61, 46, 0.08)' : 'rgba(0, 138, 85, 0.08)'
 }

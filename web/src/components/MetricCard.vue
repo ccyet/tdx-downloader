@@ -1,5 +1,5 @@
 <template>
-  <article :class="['metric-card', tone]">
+  <article :class="['metric-card', 'resizable-card', tone]" data-resizable-card>
     <div class="metric-icon"><Icon :name="icon" /></div>
     <div>
       <span>{{ title }}</span>

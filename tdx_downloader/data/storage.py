@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.dataset as ds
 
 from tdx_downloader.data.schema import (
     CANONICAL_COLUMNS,
@@ -16,6 +17,8 @@ from tdx_downloader.data.schema import (
     resolve_timeframe_root,
     unique_symbols,
 )
+
+DATASET_READ_SYMBOL_THRESHOLD = 200
 
 
 def resolve_daily_root(data_root: str | Path) -> Path:
@@ -56,8 +59,21 @@ def load_daily_bars(
 ) -> pd.DataFrame:
     root = resolve_daily_root(data_root) / adjust
     start_ts, end_ts = parse_time_window(start, end)
+    normalized_symbols = unique_symbols(tuple(symbols))
+    if len(normalized_symbols) >= DATASET_READ_SYMBOL_THRESHOLD:
+        try:
+            frame = _read_bars_dataset_window(
+                root,
+                symbols=normalized_symbols,
+                start_ts=start_ts,
+                end_ts=end_ts,
+            )
+            if not frame.empty:
+                return frame
+        except Exception:  # noqa: BLE001
+            pass
     frames: list[pd.DataFrame] = []
-    for symbol in unique_symbols(tuple(symbols)):
+    for symbol in normalized_symbols:
         path = root / f"{symbol}.parquet"
         if not path.exists():
             continue
@@ -134,6 +150,35 @@ def _read_bars_parquet_window(
         frame = pd.read_parquet(path, columns=list(CANONICAL_COLUMNS))
     normalized = normalize_bars(frame, symbol)
     return normalized.loc[normalized["date"].between(start_ts, end_ts)].reset_index(drop=True)
+
+
+def _read_bars_dataset_window(
+    root: Path,
+    *,
+    symbols: tuple[str, ...] | list[str],
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> pd.DataFrame:
+    if not root.exists():
+        return empty_bars()
+    dataset = ds.dataset(root, format="parquet")
+    if sorted(set(CANONICAL_COLUMNS).difference(dataset.schema.names)):
+        return empty_bars()
+    table = dataset.to_table(
+        columns=list(CANONICAL_COLUMNS),
+        filter=(ds.field("date") >= start_ts) & (ds.field("date") <= end_ts),
+    )
+    frame = table.to_pandas()
+    if frame.empty:
+        return empty_bars()
+    normalized = normalize_bars(frame)
+    requested = set(symbols)
+    result = normalized.loc[
+        normalized["stock_code"].isin(requested) & normalized["date"].between(start_ts, end_ts)
+    ].copy()
+    if result.empty:
+        return empty_bars()
+    return result.sort_values(["stock_code", "date"]).reset_index(drop=True)
 
 
 def _date_window_filters(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> list[tuple[str, str, pd.Timestamp]]:

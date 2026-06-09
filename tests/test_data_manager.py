@@ -193,6 +193,74 @@ def test_download_plan_fetches_daily_cache_with_recent_end_boundary_gap(tmp_path
     assert "2026-06-05" in plan.loc[0, "message"]
 
 
+def test_download_plan_counts_missing_daily_rows_when_window_has_no_local_data(tmp_path: Path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-06-03"]),
+            "stock_code": ["399006.SZ"],
+            "open": [4040.0],
+            "high": [4070.0],
+            "low": [4010.0],
+            "close": [4060.0],
+            "volume": [1300000.0],
+            "amount": [520000000.0],
+        }
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    service = DataManagementService(data_root, adjust="qfq")
+    plan = service.download_plan(
+        DataDownloadConfig(
+            symbols=("399006.SZ",),
+            timeframes=("1d",),
+            start="2026-06-05",
+            end="2026-06-08",
+        )
+    )
+
+    assert plan.loc[0, "action"] == "fetch"
+    assert plan.loc[0, "reason"] == "no_window_data"
+    assert plan.loc[0, "expected_rows"] == 2
+    assert plan.loc[0, "missing_rows"] == 2
+    assert plan.loc[0, "first_missing_at"] == pd.Timestamp("2026-06-05")
+    assert plan.loc[0, "last_missing_at"] == pd.Timestamp("2026-06-08")
+
+
+def test_download_plan_counts_daily_trading_day_delta_when_local_data_is_partial(tmp_path: Path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-06-05"]),
+            "stock_code": ["399006.SZ"],
+            "open": [4040.0],
+            "high": [4070.0],
+            "low": [4010.0],
+            "close": [4060.0],
+            "volume": [1300000.0],
+            "amount": [520000000.0],
+        }
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+
+    service = DataManagementService(data_root, adjust="qfq")
+    plan = service.download_plan(
+        DataDownloadConfig(
+            symbols=("399006.SZ",),
+            timeframes=("1d",),
+            start="2026-06-05",
+            end="2026-06-08",
+        )
+    )
+
+    assert plan.loc[0, "action"] == "fetch"
+    assert plan.loc[0, "reason"] == "coverage_gap"
+    assert plan.loc[0, "expected_rows"] == 2
+    assert plan.loc[0, "missing_rows"] == 1
+    assert plan.loc[0, "first_missing_at"] == pd.Timestamp("2026-06-08")
+    assert plan.loc[0, "last_missing_at"] == pd.Timestamp("2026-06-08")
+
+
 def test_smart_download_reports_daily_session_anchor_progress(tmp_path: Path) -> None:
     data_root = tmp_path / "market"
     bars = pd.DataFrame(

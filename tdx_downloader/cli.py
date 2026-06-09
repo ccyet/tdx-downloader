@@ -13,7 +13,7 @@ from tdx_downloader.data.manager import (
 )
 from tdx_downloader.data.repository import MarketDataRepository
 from tdx_downloader.data.symbols import load_symbol_metadata
-from tdx_downloader.data.tdx import diagnose_tdx_source
+from tdx_downloader.data.tdx import DEFAULT_ETF_TRACKING_INDEX_SYMBOLS, diagnose_tdx_source, fetch_tdx_etf_tracking_info
 from tdx_downloader.data.tdx_parallels import (
     ParallelsTdxConfig,
     default_parallels_tdx_config,
@@ -91,8 +91,15 @@ def main(argv: list[str] | None = None) -> None:
     metadata_parser.add_argument("--output", choices=["table", "json"], default="table")
     _add_runtime_args(metadata_parser)
 
+    etf_tracking_parser = subparsers.add_parser("etf-tracking", help="list ETFs tracking given TDX index symbols")
+    etf_tracking_parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
+    etf_tracking_parser.add_argument("--tdx-path", default="")
+    etf_tracking_parser.add_argument("--index-symbols", default=",".join(DEFAULT_ETF_TRACKING_INDEX_SYMBOLS))
+    etf_tracking_parser.add_argument("--output", choices=["table", "json"], default="table")
+    _add_runtime_args(etf_tracking_parser)
+
     args = parser.parse_args(argv)
-    if args.command in {"tdx-doctor", "fetch", "prepare-data", "symbol-groups", "symbol-metadata"} and _resolve_runtime(args.runtime) == "parallels":
+    if args.command in {"tdx-doctor", "fetch", "prepare-data", "symbol-groups", "symbol-metadata", "etf-tracking"} and _resolve_runtime(args.runtime) == "parallels":
         _run_in_parallels(args)
         return
 
@@ -105,6 +112,16 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "symbol-metadata":
         _print_frame(load_symbol_metadata(args.data_root, tdx_path=args.tdx_path), args.output)
+        return
+
+    if args.command == "etf-tracking":
+        _print_frame(
+            fetch_tdx_etf_tracking_info(
+                index_symbols=_split_csv(args.index_symbols),
+                tqcenter_path=args.tdx_path,
+            ),
+            args.output,
+        )
         return
 
     symbols = _split_csv(args.symbols)
@@ -196,7 +213,18 @@ def _run_in_parallels(args: argparse.Namespace) -> None:
 
 def _forward_args(args: argparse.Namespace) -> list[str]:
     forwarded = [args.command, "--runtime", "local"]
-    for name in ("symbols", "timeframes", "timeframe", "start", "end", "adjust", "data_root", "tdx_path", "output"):
+    for name in (
+        "symbols",
+        "timeframes",
+        "timeframe",
+        "start",
+        "end",
+        "adjust",
+        "data_root",
+        "tdx_path",
+        "index_symbols",
+        "output",
+    ):
         if not hasattr(args, name):
             continue
         value = str(getattr(args, name))

@@ -43,6 +43,24 @@ TDX_PERIOD_MAP = {"1d": "1d", "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m"
 DERIVABLE_FROM_5M_TIMEFRAMES = {"15m", "30m", "60m"}
 ADJUST_MAP = {"": "none", "qfq": "front", "hfq": "back"}
 TDX_DIAG_COLUMNS = ["timeframe", "tdx_period", "status", "rows", "symbols", "start", "end", "message"]
+ETF_TRACKING_COLUMNS = [
+    "tracking_symbol",
+    "stock_code",
+    "stock_name",
+    "now_price",
+    "pre_close",
+    "iopv",
+    "shares",
+    "market_value",
+]
+DEFAULT_ETF_TRACKING_INDEX_SYMBOLS = (
+    "000016.SH",
+    "000300.SH",
+    "000905.SH",
+    "000852.SH",
+    "399006.SZ",
+    "000688.SH",
+)
 REQUIRED_FIELDS = ("Open", "High", "Low", "Close", "Volume", "Amount")
 FIELD_ALIASES = {
     "Open": ("Open", "open"),
@@ -277,11 +295,74 @@ def diagnose_tdx_source(
     return pd.DataFrame(rows, columns=TDX_DIAG_COLUMNS)
 
 
+def fetch_tdx_etf_tracking_info(
+    *,
+    index_symbols: tuple[str, ...] | list[str] = DEFAULT_ETF_TRACKING_INDEX_SYMBOLS,
+    tqcenter_path: str = "",
+    tq_client: Any | None = None,
+) -> pd.DataFrame:
+    """读取 TDX 指数跟踪 ETF 表；接口入参是指数代码，不是 ETF 代码。"""
+    normalized_index_symbols = unique_symbols(tuple(index_symbols))
+    if not normalized_index_symbols:
+        return pd.DataFrame(columns=ETF_TRACKING_COLUMNS)
+    tq = tq_client or _load_tq(tqcenter_path)
+    _ensure_initialized(tq)
+
+    rows: list[dict[str, object]] = []
+    for index_symbol in normalized_index_symbols:
+        items = _tdx_etf_tracking_items(tq.get_trackzs_etf_info(index_symbol))
+        for item in items:
+            stock_code = normalize_symbol(item.get("Code"))
+            if not stock_code:
+                continue
+            rows.append(
+                {
+                    "tracking_symbol": index_symbol,
+                    "stock_code": stock_code,
+                    "stock_name": str(item.get("Name") or "").strip(),
+                    "now_price": _float_or_none(item.get("NowPrice")),
+                    "pre_close": _float_or_none(item.get("PreClose")),
+                    "iopv": _float_or_none(item.get("IOPV")),
+                    "shares": _float_or_none(item.get("Zgb")),
+                    "market_value": _float_or_none(item.get("Sz")),
+                }
+            )
+    if not rows:
+        return pd.DataFrame(columns=ETF_TRACKING_COLUMNS)
+    frame = pd.DataFrame(rows, columns=ETF_TRACKING_COLUMNS)
+    return frame.drop_duplicates(subset=["tracking_symbol", "stock_code"], keep="first").reset_index(drop=True)
+
+
 def _diagnosis_request_window(timeframe: str, start: str, end: str) -> tuple[str, str]:
     """日 K 诊断按整天取样，避免分钟起点把当天 00:00 日线排除。"""
     if timeframe != "1d":
         return _expanded_intraday_window(start, end)
     return str(pd.Timestamp(start).normalize().date()), str(pd.Timestamp(end).normalize().date())
+
+
+def _tdx_etf_tracking_items(raw_data: object) -> list[Mapping[str, object]]:
+    if raw_data is None:
+        return []
+    if isinstance(raw_data, list | tuple):
+        return [item for item in raw_data if isinstance(item, Mapping)]
+    if isinstance(raw_data, Mapping):
+        value = raw_data.get("Value")
+        if isinstance(value, list | tuple):
+            return [item for item in value if isinstance(item, Mapping)]
+        return []
+    raise ValueError(f"TDX ETF 跟踪接口返回类型异常：{type(raw_data).__name__}")
+
+
+def _float_or_none(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not pd.notna(parsed):
+        return None
+    return parsed
 
 
 def _no_data_diagnosis_message(timeframe: str) -> str:

@@ -134,6 +134,47 @@ def test_run_parallels_tdx_command_starts_vm_before_exec(monkeypatch) -> None:  
     assert calls[3][:4] == ["prlctl", "exec", "Windows 11", "--current-user"]
 
 
+def test_run_parallels_tdx_command_waits_when_start_reports_resuming(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_: object) -> object:
+        calls.append(command)
+        if command[:2] == ["prlctl", "status"] and len(calls) == 1:
+            return _Process(command, stdout=b"VM 'Windows 11' is suspended\n")
+        if command[:2] == ["prlctl", "start"]:
+            return _Process(
+                command,
+                returncode=1,
+                stderr=(
+                    b'Failed to start the VM: Unable to complete the operation. '
+                    b'This operation cannot be completed because "Windows 11" is in the "resuming" state. '
+                    b"Starting the VM...\n"
+                ),
+            )
+        if command[:2] == ["prlctl", "status"]:
+            return _Process(command, stdout=b"VM 'Windows 11' is running\n")
+        if command[:2] == ["prlctl", "exec"]:
+            return _Process(command, stdout=b"ok\n")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(tdx_parallels.subprocess, "run", fake_run)
+    monkeypatch.setattr(tdx_parallels.time, "sleep", lambda _: None)
+    config = ParallelsTdxConfig(
+        vm_name="Windows 11",
+        windows_python=r"C:\Users\Public\venvs\tdx-downloader\Scripts\python.exe",
+        windows_repo=r"\\psf\ccOUT 1\tdx-downloader",
+    )
+
+    result = run_parallels_tdx_command(config=config, cli_args=["symbol-groups", "--runtime", "local"])
+
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
+    assert calls[0] == ["prlctl", "status", "Windows 11"]
+    assert calls[1] == ["prlctl", "start", "Windows 11"]
+    assert calls[2] == ["prlctl", "status", "Windows 11"]
+    assert calls[3][:4] == ["prlctl", "exec", "Windows 11", "--current-user"]
+
+
 def test_home_path_still_maps_to_parallels_home_share() -> None:
     mapped = mac_path_to_parallels_shared_path("/Users/a1234/Desktop/project", home=Path("/Users/a1234"))
 

@@ -123,17 +123,38 @@ def _ensure_parallels_vm_running(vm_name: str) -> subprocess.CompletedProcess[st
         return status
     if _parallels_status_is_running(status.stdout):
         return status
+    if _parallels_status_is_resuming(status.stdout):
+        return _wait_for_parallels_vm_running(vm_name, status)
 
     start = subprocess.run(["prlctl", "start", vm_name], capture_output=True, check=False)
+    start_stdout = _decode_windows_output(start.stdout)
+    start_stderr = _decode_windows_output(start.stderr)
     if start.returncode != 0:
+        if _parallels_start_is_resuming(start_stdout, start_stderr):
+            return _wait_for_parallels_vm_running(
+                vm_name,
+                subprocess.CompletedProcess(
+                    args=start.args,
+                    returncode=start.returncode,
+                    stdout=start_stdout,
+                    stderr=start_stderr,
+                ),
+            )
         return subprocess.CompletedProcess(
             args=start.args,
             returncode=start.returncode,
-            stdout=_decode_windows_output(start.stdout),
+            stdout=start_stdout,
             stderr="启动 Parallels VM 失败；请确认虚拟机名称和 Parallels Desktop 状态。\n"
-            + _decode_windows_output(start.stderr),
+            + start_stderr,
         )
 
+    return _wait_for_parallels_vm_running(vm_name, status)
+
+
+def _wait_for_parallels_vm_running(
+    vm_name: str,
+    last_status: subprocess.CompletedProcess[str],
+) -> subprocess.CompletedProcess[str]:
     deadline = time.monotonic() + PARALLELS_VM_START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         status = _parallels_status(vm_name)
@@ -141,12 +162,13 @@ def _ensure_parallels_vm_running(vm_name: str) -> subprocess.CompletedProcess[st
             return status
         if _parallels_status_is_running(status.stdout):
             return status
+        last_status = status
         time.sleep(2)
 
     return subprocess.CompletedProcess(
         args=["prlctl", "status", vm_name],
         returncode=1,
-        stdout=status.stdout,
+        stdout=last_status.stdout,
         stderr=f"Parallels VM `{vm_name}` 启动后仍未进入 running 状态。",
     )
 
@@ -163,3 +185,12 @@ def _parallels_status(vm_name: str) -> subprocess.CompletedProcess[str]:
 
 def _parallels_status_is_running(output: str) -> bool:
     return "running" in output.lower()
+
+
+def _parallels_status_is_resuming(output: str) -> bool:
+    return "resuming" in output.lower()
+
+
+def _parallels_start_is_resuming(stdout: str, stderr: str) -> bool:
+    text = f"{stdout}\n{stderr}".lower()
+    return "resuming" in text and "starting the vm" in text

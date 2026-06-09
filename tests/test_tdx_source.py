@@ -145,6 +145,46 @@ def test_fetch_tdx_bars_derives_15m_from_1m_when_5m_empty() -> None:
     ]
 
 
+def test_fetch_tdx_etf_tracking_info_normalizes_track_index_payload() -> None:
+    class FakeTq:
+        def __init__(self) -> None:
+            self.initialize_calls: list[str] = []
+            self.calls: list[str] = []
+
+        def initialize(self, caller_path: str) -> None:
+            self.initialize_calls.append(caller_path)
+
+        def get_trackzs_etf_info(self, zs_code: str) -> list[dict[str, object]]:
+            self.calls.append(zs_code)
+            return [
+                {
+                    "Code": "510300.SH",
+                    "Name": "沪深300ETF华泰柏瑞",
+                    "NowPrice": "3.88",
+                    "PreClose": "3.8",
+                    "IOPV": "3.87",
+                    "Zgb": "592384.7",
+                    "Sz": "2298.6",
+                },
+                {"Code": "", "Name": "无效"},
+            ]
+
+    frame = tdx.fetch_tdx_etf_tracking_info(index_symbols=("000300.SH", "000300.SH"), tq_client=FakeTq())
+
+    assert frame.to_dict("records") == [
+        {
+            "tracking_symbol": "000300.SH",
+            "stock_code": "510300.SH",
+            "stock_name": "沪深300ETF华泰柏瑞",
+            "now_price": 3.88,
+            "pre_close": 3.8,
+            "iopv": 3.87,
+            "shares": 592384.7,
+            "market_value": 2298.6,
+        }
+    ]
+
+
 def test_start_tdx_terminal_launches_when_not_running(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     launched: list[tuple[list[str], str]] = []
 

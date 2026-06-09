@@ -9,8 +9,10 @@ from tdx_downloader.data.manager import DataDownloadConfig, DataDownloadResult
 from tdx_downloader.data.parallels_runtime import (
     download_with_parallels_cli,
     download_with_runtime,
+    etf_tracking_with_runtime,
     parse_cli_table,
     parallels_doctor_command,
+    parallels_etf_tracking_command,
     parallels_prepare_command,
     shortcut_symbol_groups_with_runtime,
     symbol_metadata_with_runtime,
@@ -328,6 +330,46 @@ def test_symbol_metadata_runtime_uses_windows_when_local_metadata_missing(monkey
     assert metadata.loc[0, "stock_name"] == "国海证券"
     assert commands[0][2:6] == ["tdx_downloader.cli", "symbol-metadata", "--runtime", "parallels"]
     assert commands[0][-2:] == ["--output", "json"]
+
+
+def test_etf_tracking_runtime_uses_windows_command_on_macos(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    commands: list[list[str]] = []
+
+    def windows_records(command: list[str], **_: object) -> list[dict[str, object]]:
+        commands.append(command)
+        return [
+            {
+                "tracking_symbol": "000300.SH",
+                "stock_code": "510300.SH",
+                "stock_name": "沪深300ETF华泰柏瑞",
+                "now_price": 3.88,
+            }
+        ]
+
+    monkeypatch.setattr(parallels_runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(parallels_runtime, "run_parallels_cli_records", windows_records)
+
+    frame = etf_tracking_with_runtime(
+        Path("/Volumes/ccOUT 1/tdx-data"),
+        Path("/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"),
+        index_symbols=("000300.SH",),
+    )
+
+    assert frame.loc[0, "stock_code"] == "510300.SH"
+    assert commands[0][2:6] == ["tdx_downloader.cli", "etf-tracking", "--runtime", "parallels"]
+    assert commands[0][-2:] == ["--output", "json"]
+
+
+def test_parallels_etf_tracking_command_forwards_index_symbols() -> None:
+    command = parallels_etf_tracking_command(
+        Path("/Volumes/ccOUT 1/tdx-data"),
+        Path("/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"),
+        index_symbols=("000300.SH", "399006.SZ"),
+    )
+
+    assert command[2:6] == ["tdx_downloader.cli", "etf-tracking", "--runtime", "parallels"]
+    assert command[command.index("--index-symbols") + 1] == "000300.SH,399006.SZ"
+    assert command[-2:] == ["--output", "json"]
 
 
 def test_symbol_groups_parallels_timeout_is_explicit(monkeypatch) -> None:  # type: ignore[no-untyped-def]

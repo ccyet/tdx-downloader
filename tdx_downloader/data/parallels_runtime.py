@@ -19,6 +19,11 @@ from tdx_downloader.data.manager import (
 )
 from tdx_downloader.data.schema import normalize_symbol
 from tdx_downloader.data.symbols import SYMBOL_METADATA_COLUMNS, load_symbol_metadata
+from tdx_downloader.data.tdx import (
+    DEFAULT_ETF_TRACKING_INDEX_SYMBOLS,
+    ETF_TRACKING_COLUMNS,
+    fetch_tdx_etf_tracking_info,
+)
 
 DYNAMIC_SYMBOL_GROUP_NAMES = frozenset({"ETF列表", "板块指数", "全A股票"})
 DYNAMIC_SYMBOL_GROUP_TARGETS = {
@@ -26,8 +31,9 @@ DYNAMIC_SYMBOL_GROUP_TARGETS = {
     "index": frozenset({"板块指数"}),
     "stock": frozenset({"全A股票"}),
 }
-PARALLELS_SYMBOL_GROUP_TIMEOUT_SECONDS = 12
+PARALLELS_SYMBOL_GROUP_TIMEOUT_SECONDS = 45
 PARALLELS_SYMBOL_METADATA_TIMEOUT_SECONDS = 30
+PARALLELS_ETF_TRACKING_TIMEOUT_SECONDS = 60
 QUALITY_GATE_ERROR_MARKER = "本地行情数据未通过质量门禁"
 
 
@@ -92,6 +98,21 @@ def symbol_metadata_with_runtime(data_root: str | Path, tdx_path: str | Path) ->
         timeout=PARALLELS_SYMBOL_METADATA_TIMEOUT_SECONDS,
     )
     return _normalize_symbol_metadata_records(records)
+
+
+def etf_tracking_with_runtime(
+    data_root: str | Path,
+    tdx_path: str | Path,
+    *,
+    index_symbols: tuple[str, ...] | list[str] = DEFAULT_ETF_TRACKING_INDEX_SYMBOLS,
+) -> pd.DataFrame:
+    if not should_use_parallels_runtime():
+        return fetch_tdx_etf_tracking_info(index_symbols=index_symbols, tqcenter_path=str(tdx_path))
+    records = run_parallels_cli_records(
+        parallels_etf_tracking_command(data_root, tdx_path, index_symbols=index_symbols),
+        timeout=PARALLELS_ETF_TRACKING_TIMEOUT_SECONDS,
+    )
+    return _normalize_etf_tracking_records(records)
 
 
 def plan_requires_tdx_fetch(service: DataManagementService, config: DataDownloadConfig) -> bool:
@@ -361,6 +382,30 @@ def parallels_symbol_metadata_command(data_root: str | Path, tdx_path: str | Pat
     ]
 
 
+def parallels_etf_tracking_command(
+    data_root: str | Path,
+    tdx_path: str | Path,
+    *,
+    index_symbols: tuple[str, ...] | list[str],
+) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "tdx_downloader.cli",
+        "etf-tracking",
+        "--runtime",
+        "parallels",
+        "--data-root",
+        str(data_root),
+        "--tdx-path",
+        str(tdx_path),
+        "--index-symbols",
+        ",".join(index_symbols),
+        "--output",
+        "json",
+    ]
+
+
 def parallels_prepare_command(service: DataManagementService, config: DataDownloadConfig) -> list[str]:
     command = parallels_base_command(service, config, "prepare-data")
     command.extend(["--timeframes", ",".join(config.timeframes)])
@@ -416,6 +461,25 @@ def force_cli_frame(frame: pd.DataFrame, *, timeframe: str, adjust: str) -> pd.D
     result["adjust"] = adjust
     result["action"] = "fetched"
     return result
+
+
+def _normalize_etf_tracking_records(records: list[dict[str, Any]]) -> pd.DataFrame:
+    if not records:
+        return pd.DataFrame(columns=ETF_TRACKING_COLUMNS)
+    frame = pd.DataFrame(records)
+    for column in ETF_TRACKING_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    frame["tracking_symbol"] = frame["tracking_symbol"].map(normalize_symbol)
+    frame["stock_code"] = frame["stock_code"].map(normalize_symbol)
+    frame["stock_name"] = frame["stock_name"].fillna("").astype(str).str.strip()
+    for column in ("now_price", "pre_close", "iopv", "shares", "market_value"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return (
+        frame.loc[frame["tracking_symbol"].ne("") & frame["stock_code"].ne(""), ETF_TRACKING_COLUMNS]
+        .drop_duplicates(subset=["tracking_symbol", "stock_code"], keep="first")
+        .reset_index(drop=True)
+    )
 
 
 def _symbol_batches(config: DataDownloadConfig) -> list[DataDownloadConfig]:
