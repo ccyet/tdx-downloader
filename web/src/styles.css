@@ -1282,6 +1282,28 @@ main {
   line-height: 1.7;
 }
 
+.review-markdown-block.list p {
+  padding-left: 2px;
+}
+
+.review-markdown-block.quote {
+  border-left: 3px solid var(--accent-border);
+  padding-left: 10px;
+}
+
+.review-markdown-code {
+  overflow-x: auto;
+  margin: 0;
+  border: 1px solid #dbe7ee;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e5eef8;
+  padding: 11px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+}
+
 .review-markdown-block.table {
   overflow-x: auto;
 }

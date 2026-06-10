@@ -200,6 +200,50 @@ def test_api_price_bars_can_select_cached_symbols_by_asset_type(tmp_path) -> Non
     assert [record["stock_code"] for record in data["records"]] == ["000001.SZ"]
 
 
+def test_api_price_bars_skips_full_catalog_files_for_large_offsets(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.concat(
+        [
+            _bars("000001.SZ", [10.0, 11.0, 12.0], start="2026-01-01"),
+            _bars("000002.SZ", [20.0, 21.0, 22.0], start="2026-01-01"),
+        ],
+        ignore_index=True,
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+    inventory = inventory_local_data(data_root=data_root, adjust="qfq", timeframes=("1d",))
+    build_catalog(
+        data_root=data_root,
+        inventory=inventory,
+        symbol_metadata=pd.DataFrame(
+            [
+                {"stock_code": "000001.SZ", "stock_name": "平安银行", "source": "test", "path": ""},
+                {"stock_code": "000002.SZ", "stock_name": "万科A", "source": "test", "path": ""},
+            ]
+        ),
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/prices/bars",
+        params={
+            "data_root": str(data_root),
+            "adjust": "qfq",
+            "timeframe": "1d",
+            "asset_types": "stock",
+            "start": "2025-01-01",
+            "end": "2027-01-01",
+            "limit": 1,
+            "offset": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["scanned_symbol_count"] == 1
+    assert data["records"][0]["stock_code"] == "000002.SZ"
+    assert data["records"][0]["close"] == 20.0
+
+
 def test_api_price_symbols_returns_paginated_cached_symbol_list(tmp_path) -> None:
     data_root = tmp_path / "market"
     bars = pd.concat(
@@ -1758,4 +1802,5 @@ def test_api_ai_stock_agent_opens_bounded_local_stock_data_to_model(tmp_path, mo
     assert captured["timeout"] == 9
     assert body["model"] == "compatible-model"
     assert "000001.SZ" in body["messages"][1]["content"]
+    assert "chart_items" not in body["messages"][1]["content"]
     assert "sk-secret" not in response.text

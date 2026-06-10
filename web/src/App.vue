@@ -1776,6 +1776,9 @@
                           </table>
                         </div>
                       </template>
+                      <template v-else-if="block.type === 'code'">
+                        <pre class="review-markdown-code"><code>{{ block.lines.join('\n') }}</code></pre>
+                      </template>
                       <template v-else>
                         <h4 v-if="block.title">{{ block.title }}</h4>
                         <p v-for="(line, lineIndex) in block.lines" :key="lineIndex">{{ line }}</p>
@@ -2038,6 +2041,9 @@
                         </tbody>
                       </table>
                     </div>
+                  </template>
+                  <template v-else-if="block.type === 'code'">
+                    <pre class="review-markdown-code"><code>{{ block.lines.join('\n') }}</code></pre>
                   </template>
                   <template v-else>
                     <h4 v-if="block.title">{{ block.title }}</h4>
@@ -2451,7 +2457,7 @@ interface ResearchSnapshot {
 }
 
 interface ReviewMarkdownBlock {
-  type: 'table' | 'section' | 'paragraph'
+  type: 'table' | 'section' | 'paragraph' | 'list' | 'quote' | 'code'
   title: string
   lines: string[]
   headers: string[]
@@ -6889,26 +6895,85 @@ function medianValue(values: number[]) {
 }
 
 function markdownBlocks(text: string): ReviewMarkdownBlock[] {
-  return text
-    .split(/\n{2,}/)
-    .map((chunk) => chunk.trim())
-    .filter(Boolean)
-    .map((chunk) => {
-      const lines = chunk.split('\n').map((line) => line.trim()).filter(Boolean)
-      const tableLines = lines.filter((line) => line.startsWith('|'))
-      if (tableLines.length) {
-        const rows = tableLines.map(tableCells)
-        const [headers = [], ...bodyRows] = rows.filter((cells) => !isMarkdownDividerRow(cells))
-        return {
-          type: 'table',
-          title: '',
-          lines: [],
-          headers,
-          rows: bodyRows
+  const blocks: ReviewMarkdownBlock[] = []
+  let pending: string[] = []
+  let codeLines: string[] = []
+  let inCode = false
+  const flushPending = () => {
+    const block = markdownTextBlock(pending)
+    if (block) blocks.push(block)
+    pending = []
+  }
+  String(text || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .forEach((line) => {
+      if (line.trim().startsWith('```')) {
+        if (inCode) {
+          blocks.push({ type: 'code', title: '', lines: codeLines, headers: [], rows: [] })
+          codeLines = []
+          inCode = false
+        } else {
+          flushPending()
+          inCode = true
         }
+        return
       }
-      return textBlock(lines)
+      if (inCode) {
+        codeLines.push(line)
+        return
+      }
+      if (!line.trim()) {
+        flushPending()
+        return
+      }
+      pending.push(line)
     })
+  if (inCode && codeLines.length) {
+    blocks.push({ type: 'code', title: '', lines: codeLines, headers: [], rows: [] })
+  }
+  flushPending()
+  return blocks
+}
+
+function markdownTextBlock(rawLines: string[]): ReviewMarkdownBlock | null {
+  const lines = rawLines.map((line) => line.trim()).filter(Boolean)
+  if (!lines.length) return null
+  const tableLines = lines.filter((line) => line.startsWith('|'))
+  if (tableLines.length) {
+    const rows = tableLines.map(tableCells)
+    const [headers = [], ...bodyRows] = rows.filter((cells) => !isMarkdownDividerRow(cells))
+    return { type: 'table', title: '', lines: [], headers, rows: bodyRows }
+  }
+  if (lines.every((line) => /^>\s?/.test(line))) {
+    return {
+      type: 'quote',
+      title: '',
+      lines: lines.map((line) => cleanMarkdownLine(line.replace(/^>\s?/, ''))),
+      headers: [],
+      rows: []
+    }
+  }
+  if (lines.every((line) => /^([-*]|\d+[.)])\s+/.test(line))) {
+    return {
+      type: 'list',
+      title: '',
+      lines: lines.map(cleanMarkdownLine),
+      headers: [],
+      rows: []
+    }
+  }
+  const heading = lines[0].match(/^#{1,6}\s+(.+)$/)
+  if (heading) {
+    return {
+      type: 'section',
+      title: cleanMarkdownLine(heading[1]),
+      lines: lines.slice(1).map(cleanMarkdownLine).filter(Boolean),
+      headers: [],
+      rows: []
+    }
+  }
+  return textBlock(lines)
 }
 
 function textBlock(lines: string[]): ReviewMarkdownBlock {

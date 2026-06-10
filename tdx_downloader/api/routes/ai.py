@@ -857,7 +857,7 @@ def _stock_agent_messages(payload: AIStockAgentPayload, context: dict[str, Any])
     user_content = {
         "skill_prompt": skill,
         "user_prompt": prompt,
-        "stock_data": context,
+        "stock_data": {key: value for key, value in context.items() if key != "chart_items"},
     }
     return [
         {"role": "system", "content": system},

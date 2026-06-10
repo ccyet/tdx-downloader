@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tdx_downloader.cli import DEFAULT_DATA_ROOT, _forward_args
+from tdx_downloader.cli import DEFAULT_DATA_ROOT, _forward_args, _metadata_symbols_by_asset_type
 from tdx_downloader.data import tdx_parallels
 from tdx_downloader.data.tdx_parallels import (
     ParallelsTdxConfig,
@@ -84,6 +84,33 @@ def test_forward_args_maps_symbol_metadata_paths_for_windows_cli() -> None:
     assert forwarded[forwarded.index("--data-root") + 1] == r"\\psf\ccOUT 1\tdx-data"
     assert forwarded[forwarded.index("--tdx-path") + 1] == r"C:\new_tdx64\PYPlugins"
     assert forwarded[-2:] == ["--output", "json"]
+
+
+def test_forward_args_preserves_asset_type_symbol_resolution_for_windows_cli() -> None:
+    args = _Args()
+    args.symbols = ""
+    args.asset_types = "stock,etf"
+
+    forwarded = _forward_args(args)
+
+    assert forwarded[forwarded.index("--asset-types") + 1] == "stock,etf"
+    assert forwarded[forwarded.index("--symbols") + 1] == ""
+
+
+def test_cli_asset_type_symbols_use_local_metadata(tmp_path: Path) -> None:
+    metadata = tmp_path / "metadata"
+    metadata.mkdir()
+    (metadata / "symbols.csv").write_text(
+        "stock_code,stock_name\n"
+        "000001.SZ,平安银行\n"
+        "510300.SH,沪深300ETF\n"
+        "000300.SH,沪深300\n",
+        encoding="utf-8",
+    )
+
+    symbols = _metadata_symbols_by_asset_type(data_root=str(tmp_path), tdx_path="", asset_types=("stock", "etf"))
+
+    assert symbols == ("000001.SZ", "510300.SH")
 
 
 def test_parallels_command_runs_windows_cli_inside_repo() -> None:

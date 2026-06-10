@@ -43,10 +43,13 @@ def test_frontend_exposes_ai_workbench_and_chart_settings() -> None:
     assert "aiWorkbenchChartItems" in source
     assert "输出K线图数" in source
     assert "max_charts: numberOrDefault(aiWorkbenchForm.max_charts, 3)" in source
+    assert "review-markdown-code" in source
+    assert "markdownTextBlock" in source
     assert "统一图表设置" in source
     assert "chartSettings" in source
     assert "chartThemeClass" in source
     assert "chart-density-compact" in styles
     assert ".ai-command-shell" in styles
     assert ".ai-workbench-output" in styles
+    assert ".review-markdown-code" in styles
     assert ".skill-file-action input" in styles

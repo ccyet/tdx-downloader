@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 
+from tdx_downloader.data.catalog import infer_asset_type
 from tdx_downloader.data.manager import (
     DataDownloadConfig,
     DataManagementService,
@@ -12,6 +13,7 @@ from tdx_downloader.data.manager import (
     shortcut_symbol_groups,
 )
 from tdx_downloader.data.repository import MarketDataRepository
+from tdx_downloader.data.schema import normalize_symbol
 from tdx_downloader.data.symbols import load_symbol_metadata
 from tdx_downloader.data.tdx import DEFAULT_ETF_TRACKING_INDEX_SYMBOLS, diagnose_tdx_source, fetch_tdx_etf_tracking_info
 from tdx_downloader.data.tdx_parallels import (
@@ -39,7 +41,12 @@ def main(argv: list[str] | None = None) -> None:
     _add_runtime_args(doctor_parser)
 
     fetch_parser = subparsers.add_parser("fetch", help="force fetch one timeframe from TDX")
-    fetch_parser.add_argument("--symbols", required=True)
+    fetch_parser.add_argument("--symbols", default="")
+    fetch_parser.add_argument(
+        "--asset-types",
+        default="",
+        help="resolve symbols from local metadata/catalog, e.g. stock,etf,index",
+    )
     fetch_parser.add_argument("--timeframe", required=True, choices=["1d", "1m", "5m", "15m", "30m", "60m"])
     fetch_parser.add_argument("--start", required=True)
     fetch_parser.add_argument("--end", required=True)
@@ -51,7 +58,12 @@ def main(argv: list[str] | None = None) -> None:
     _add_runtime_args(fetch_parser)
 
     prepare_parser = subparsers.add_parser("prepare-data", help="audit local cache and fetch only missing/bad bars")
-    prepare_parser.add_argument("--symbols", required=True)
+    prepare_parser.add_argument("--symbols", default="")
+    prepare_parser.add_argument(
+        "--asset-types",
+        default="",
+        help="resolve symbols from local metadata/catalog, e.g. stock,etf,index",
+    )
     prepare_parser.add_argument("--timeframes", required=True)
     prepare_parser.add_argument("--start", required=True)
     prepare_parser.add_argument("--end", required=True)
@@ -65,12 +77,18 @@ def main(argv: list[str] | None = None) -> None:
     _add_runtime_args(prepare_parser)
 
     plan_parser = subparsers.add_parser("plan-data", help="audit local cache and print the fetch plan")
-    plan_parser.add_argument("--symbols", required=True)
+    plan_parser.add_argument("--symbols", default="")
+    plan_parser.add_argument(
+        "--asset-types",
+        default="",
+        help="resolve symbols from local metadata/catalog, e.g. stock,etf,index",
+    )
     plan_parser.add_argument("--timeframes", required=True)
     plan_parser.add_argument("--start", required=True)
     plan_parser.add_argument("--end", required=True)
     plan_parser.add_argument("--adjust", default="qfq")
     plan_parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
+    plan_parser.add_argument("--tdx-path", default="")
     plan_parser.add_argument("--min-coverage-ratio", type=float, default=None)
 
     inventory_parser = subparsers.add_parser("inventory-data", help="list local parquet cache inventory")
@@ -99,7 +117,8 @@ def main(argv: list[str] | None = None) -> None:
     _add_runtime_args(etf_tracking_parser)
 
     args = parser.parse_args(argv)
-    if args.command in {"tdx-doctor", "fetch", "prepare-data", "symbol-groups", "symbol-metadata", "etf-tracking"} and _resolve_runtime(args.runtime) == "parallels":
+    parallels_commands = {"tdx-doctor", "fetch", "prepare-data", "symbol-groups", "symbol-metadata", "etf-tracking"}
+    if args.command in parallels_commands and _resolve_runtime(args.runtime) == "parallels":
         _run_in_parallels(args)
         return
 
@@ -124,8 +143,8 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
-    symbols = _split_csv(args.symbols)
     if args.command == "tdx-doctor":
+        symbols = _split_csv(args.symbols)
         result = diagnose_tdx_source(
             symbols=symbols,
             timeframes=_split_csv(args.timeframes),
@@ -139,11 +158,13 @@ def main(argv: list[str] | None = None) -> None:
 
     repo = MarketDataRepository(Path(args.data_root), adjust=args.adjust)
     if args.command == "inventory-data":
+        symbols = _split_csv(args.symbols)
         result = repo.inventory(timeframes=_split_csv(args.timeframes), symbols=symbols or None)
         print(result.to_string(index=False))
         return
 
     if args.command == "fetch":
+        symbols = _resolve_download_symbols(args, timeframes=(args.timeframe,))
         result = repo.update_from_tdx(
             symbols=symbols,
             timeframe=args.timeframe,
@@ -156,9 +177,11 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     service = DataManagementService(Path(args.data_root), adjust=args.adjust)
+    timeframes = _split_csv(args.timeframes)
+    symbols = _resolve_download_symbols(args, timeframes=timeframes)
     config = DataDownloadConfig(
         symbols=normalize_symbol_tuple(symbols),
-        timeframes=_split_csv(args.timeframes),
+        timeframes=timeframes,
         start=args.start,
         end=args.end,
         tqcenter_path=getattr(args, "tdx_path", ""),
@@ -223,6 +246,7 @@ def _forward_args(args: argparse.Namespace) -> list[str]:
         "data_root",
         "tdx_path",
         "index_symbols",
+        "asset_types",
         "output",
     ):
         if not hasattr(args, name):
@@ -238,6 +262,55 @@ def _forward_args(args: argparse.Namespace) -> list[str]:
     if getattr(args, "allow_incomplete_after_update", False):
         forwarded.append("--allow-incomplete-after-update")
     return forwarded
+
+
+def _resolve_download_symbols(args: argparse.Namespace, *, timeframes: tuple[str, ...]) -> tuple[str, ...]:
+    explicit = _split_csv(getattr(args, "symbols", ""))
+    if explicit:
+        return explicit
+    asset_types = _split_csv(getattr(args, "asset_types", ""))
+    if not asset_types:
+        raise SystemExit("请提供 --symbols，或使用 --asset-types 从本地代码表/缓存自动选择标的。")
+    symbols = _metadata_symbols_by_asset_type(
+        data_root=getattr(args, "data_root", DEFAULT_DATA_ROOT),
+        tdx_path=getattr(args, "tdx_path", ""),
+        asset_types=asset_types,
+    )
+    if symbols:
+        return symbols
+    service = DataManagementService(
+        getattr(args, "data_root", DEFAULT_DATA_ROOT),
+        adjust=getattr(args, "adjust", "qfq"),
+    )
+    symbols = service.cached_symbols(
+        asset_types=asset_types,
+        timeframes=timeframes,
+        tdx_path=getattr(args, "tdx_path", ""),
+    )
+    if symbols:
+        return symbols
+    raise SystemExit(f"未从本地代码表或缓存中找到资产类型：{','.join(asset_types)}")
+
+
+def _metadata_symbols_by_asset_type(
+    *,
+    data_root: str,
+    tdx_path: str,
+    asset_types: tuple[str, ...],
+) -> tuple[str, ...]:
+    metadata = load_symbol_metadata(data_root, tdx_path=tdx_path)
+    if metadata.empty:
+        return ()
+    allowed = {str(item).strip().lower() for item in asset_types if str(item).strip()}
+    symbols: list[str] = []
+    for row in metadata.itertuples(index=False):
+        symbol = normalize_symbol(getattr(row, "stock_code", ""))
+        if not symbol:
+            continue
+        name = str(getattr(row, "stock_name", "") or "")
+        if infer_asset_type(symbol, name).lower() in allowed:
+            symbols.append(symbol)
+    return tuple(dict.fromkeys(symbols))
 
 
 def _split_csv(value: str) -> tuple[str, ...]:
