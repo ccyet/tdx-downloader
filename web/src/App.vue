@@ -1,5 +1,5 @@
 <template>
-  <div class="app-shell">
+  <div :class="['app-shell', chartThemeClass, chartDensityClass]">
     <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
       <div class="brand-row">
         <div class="brand-mark">TDX</div>
@@ -118,6 +118,32 @@
           <span>{{ notice.body }}</span>
           <button @click="notice = null">关闭</button>
         </div>
+
+        <section class="ai-command-shell" aria-label="大模型命令框">
+          <div class="ai-command-head">
+            <div>
+              <strong>大模型命令框</strong>
+              <span>{{ aiCommandScopeLabel }}</span>
+            </div>
+            <em>{{ aiConfigReady ? `模型 ${aiSettings.model}` : '未配置模型时使用本地规则规划' }}</em>
+          </div>
+          <form class="ai-command-form" @submit.prevent="runAiCommand">
+            <textarea
+              v-model="aiCommandForm.text"
+              rows="2"
+              placeholder="例如：帮我选择所有创业板股票；把风险参数调保守；基准60日涨幅设为12%"
+            ></textarea>
+            <button class="btn primary" type="submit" :disabled="runningAiCommand || !aiCommandForm.text.trim()">
+              <Icon name="sparkles" />
+              {{ runningAiCommand ? '解析中' : '解析并应用' }}
+            </button>
+          </form>
+          <div v-if="aiCommandResult" class="ai-command-result">
+            <strong>{{ aiCommandResult.summary }}</strong>
+            <span v-for="item in aiCommandResult.patches || []" :key="`${item.target}-${item.label}`">{{ item.summary || item.label }}</span>
+            <em v-for="item in aiCommandResult.warnings || []" :key="item">{{ item }}</em>
+          </div>
+        </section>
 
         <section v-if="activeView === 'dashboard'" class="view-stack">
           <div class="toolbar-row">
@@ -878,6 +904,723 @@
             </div>
           </section>
 
+          <section v-else-if="activeResearchTab === 'regime'" class="view-stack market-regime-view">
+            <section class="content-grid two market-regime-grid">
+              <Panel title="市场风险偏好" subtitle="Market Regime Research">
+                <form class="task-form" @submit.prevent="runMarketRegimeResearch">
+                  <label>
+                    <span>基准指数</span>
+                    <input v-model="regimeForm.benchmark_symbol" type="text" />
+                  </label>
+                  <label>
+                    <span>前瞻窗口</span>
+                    <input v-model="regimeForm.forward_windows" type="text" />
+                  </label>
+                  <div class="inline-fields span-full">
+                    <label>
+                      <span>开始</span>
+                      <input v-model="regimeForm.start" type="date" />
+                    </label>
+                    <label>
+                      <span>结束</span>
+                      <input v-model="regimeForm.end" type="date" />
+                    </label>
+                  </div>
+                  <div class="date-shortcuts span-full" aria-label="市场风险偏好日期快捷选项">
+                    <span>快捷</span>
+                    <button
+                      v-for="shortcut in DATE_RANGE_SHORTCUTS"
+                      :key="shortcut.key"
+                      type="button"
+                      :class="['date-shortcut', { active: isDateShortcutActive(regimeForm, shortcut.key) }]"
+                      @click="applyDateShortcut(regimeForm, shortcut.key)"
+                    >
+                      {{ shortcut.label }}
+                    </button>
+                  </div>
+                  <div class="regime-method-note span-full">
+                    <strong>参数口径</strong>
+                    <span>先判断基准是否处于“上涨后回撤”，再看个股回调是否充分、是否转强，最后用市场宽度、高流动性破位和现金偏好确认风险阶段。</span>
+                  </div>
+                  <div class="regime-preset-panel span-full">
+                    <div class="regime-preset-head">
+                      <div>
+                        <strong>参数预设</strong>
+                        <span>百分比直接填 8、-6、60 这种界面数值；保守更早提示风险，弹性更少误报。</span>
+                      </div>
+                      <div class="regime-preset-actions" aria-label="市场风险偏好参数预设">
+                        <button
+                          v-for="preset in REGIME_PARAMETER_PRESETS"
+                          :key="preset.key"
+                          type="button"
+                          :class="['regime-preset-button', { active: regimeActivePresetKey === preset.key }]"
+                          @click="applyRegimeParameterPreset(preset.key)"
+                        >
+                          <span>{{ preset.label }}</span>
+                          <em>{{ preset.detail }}</em>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="regime-guide-grid">
+                      <span v-for="item in regimeParameterGuideCards" :key="item.label">
+                        <b>{{ item.label }}</b>
+                        <em>{{ item.detail }}</em>
+                      </span>
+                    </div>
+                  </div>
+                  <label>
+                    <span>基准60日涨幅</span>
+                    <div class="percent-input">
+                      <input v-model.number="regimeForm.benchmark_rally_60_threshold" type="number" step="0.5" />
+                      <b>%</b>
+                    </div>
+                    <em class="field-hint">达到该涨幅后，才进入“上涨后回撤”观察口径。</em>
+                  </label>
+                  <label>
+                    <span>基准20日回撤</span>
+                    <div class="percent-input">
+                      <input v-model.number="regimeForm.benchmark_pullback_20_threshold" type="number" max="0" step="0.5" />
+                      <b>%</b>
+                    </div>
+                    <em class="field-hint">基准从20日高点回撤到该幅度，判为调整。</em>
+                  </label>
+                  <label>
+                    <span>20日回撤阈值</span>
+                    <div class="percent-input">
+                      <input v-model.number="regimeForm.pullback_20_threshold" type="number" max="0" step="0.5" />
+                      <b>%</b>
+                    </div>
+                    <em class="field-hint">个股短线回调是否充分的判定线。</em>
+                  </label>
+                  <label>
+                    <span>60日回撤阈值</span>
+                    <div class="percent-input">
+                      <input v-model.number="regimeForm.pullback_60_threshold" type="number" max="0" step="0.5" />
+                      <b>%</b>
+                    </div>
+                    <em class="field-hint">个股中期回调是否充分的判定线。</em>
+                  </label>
+                  <details class="regime-advanced-options span-full">
+                    <summary>
+                      <strong>高级参数</strong>
+                      <span>分层、压力信号与阶段阈值，百分比参数直接填百分数</span>
+                    </summary>
+                    <div class="regime-param-grid">
+                      <label>
+                        <span>高流动性分位</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.liquidity_high_percentile" type="number" min="0" max="100" step="5" />
+                          <b>%</b>
+                        </div>
+                        <em class="field-hint">成交额分位高于该值，归入高流动性层。</em>
+                      </label>
+                      <label>
+                        <span>中盘起始分位</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.liquidity_mid_percentile" type="number" min="0" max="100" step="5" />
+                          <b>%</b>
+                        </div>
+                      </label>
+                      <label>
+                        <span>低流动性分位</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.liquidity_low_percentile" type="number" min="0" max="100" step="5" />
+                          <b>%</b>
+                        </div>
+                      </label>
+                      <label>
+                        <span>高波动分位</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.volatility_high_percentile" type="number" min="0" max="100" step="5" />
+                          <b>%</b>
+                        </div>
+                        <em class="field-hint">HV20 分位高于该值，归入高波资产。</em>
+                      </label>
+                      <label>
+                        <span>低波动分位</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.volatility_low_percentile" type="number" min="0" max="100" step="5" />
+                          <b>%</b>
+                        </div>
+                      </label>
+                      <label>
+                        <span>高位回撤阈值</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.high_position_drawdown_threshold" type="number" max="0" step="0.5" />
+                          <b>%</b>
+                        </div>
+                        <em class="field-hint">距离250日高点回撤小于该值，仍视为高位。</em>
+                      </label>
+                      <label>
+                        <span>高位涨幅分位</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.high_position_return_percentile" type="number" min="0" max="100" step="5" />
+                          <b>%</b>
+                        </div>
+                      </label>
+                      <label>
+                        <span>领涨5日阈值</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.leader_return_5d_threshold" type="number" step="0.5" />
+                          <b>%</b>
+                        </div>
+                      </label>
+                      <label>
+                        <span>压力破位阈值</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.stress_ma20_break_threshold" type="number" min="0" max="100" step="5" />
+                          <b>%</b>
+                        </div>
+                        <em class="field-hint">层内跌破 MA20 的资产占比达到该值，压力上升。</em>
+                      </label>
+                      <label>
+                        <span>压力收益阈值</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.stress_return_5d_threshold" type="number" step="0.5" />
+                          <b>%</b>
+                        </div>
+                      </label>
+                      <label>
+                        <span>现金压力分</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.cash_stress_score_threshold" type="number" min="0" max="100" step="1" />
+                          <b>%</b>
+                        </div>
+                      </label>
+                      <label>
+                        <span>现金偏好阈值</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.cash_preference_proxy_threshold" type="number" min="0" max="100" step="5" />
+                          <b>%</b>
+                        </div>
+                        <em class="field-hint">现金偏好代理达到该值，判为明显防守。</em>
+                      </label>
+                      <label>
+                        <span>扩张宽度</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.risk_expansion_breadth_threshold" type="number" min="0" max="100" step="5" />
+                          <b>%</b>
+                        </div>
+                      </label>
+                      <label>
+                        <span>收缩宽度</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.risk_contraction_breadth_threshold" type="number" min="0" max="100" step="5" />
+                          <b>%</b>
+                        </div>
+                      </label>
+                      <label>
+                        <span>释放后段宽度</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.risk_release_breadth_threshold" type="number" min="0" max="100" step="5" />
+                          <b>%</b>
+                        </div>
+                        <em class="field-hint">市场宽度低于该值且高流动性破位，进入释放后段。</em>
+                      </label>
+                      <label>
+                        <span>高流动性抛售</span>
+                        <div class="percent-input">
+                          <input v-model.number="regimeForm.high_liquidity_selloff_threshold" type="number" min="0" max="100" step="5" />
+                          <b>%</b>
+                        </div>
+                      </label>
+                      <label>
+                        <span>集中度TopN</span>
+                        <input v-model.number="regimeForm.concentration_top_n" type="number" min="1" max="500" step="1" />
+                      </label>
+                      <label>
+                        <span>日报交易日数</span>
+                        <input v-model.number="regimeForm.daily_report_days" type="number" min="1" max="120" step="1" />
+                      </label>
+                      <label>
+                        <span>回流候选数</span>
+                        <input v-model.number="regimeForm.flow_candidate_limit" type="number" min="1" max="200" step="1" />
+                      </label>
+                      <label>
+                        <span>时间线交易日数</span>
+                        <input v-model.number="regimeForm.risk_timeline_days" type="number" min="5" max="180" step="1" />
+                      </label>
+                    </div>
+                  </details>
+                  <div class="field-cluster span-full">
+                    <div class="field-cluster-head">
+                      <strong>研究宇宙</strong>
+                      <span>优先使用通达信板块，可叠加 ETF 或全A；手动标的作为补充。</span>
+                    </div>
+                    <div class="timeframe-options regime-universe-options">
+                      <label
+                        v-for="option in regimeUniverseOptions"
+                        :key="option.name"
+                        :class="['timeframe-option', { selected: regimeForm.universe_groups.includes(option.name), muted: option.disabled }]"
+                      >
+                        <input v-model="regimeForm.universe_groups" type="checkbox" :value="option.name" :disabled="option.disabled" />
+                        <span>{{ option.label }} · {{ formatInt(option.count) }}</span>
+                      </label>
+                    </div>
+                    <div class="regime-universe-summary">
+                      <span>当前候选约 {{ formatInt(selectedRegimeUniverseCount) }} 只</span>
+                      <button class="mini-action" type="button" @click="regimeForm.symbols = ''">清空手动标的</button>
+                    </div>
+                  </div>
+                  <label class="span-full">
+                    <span>手动补充标的</span>
+                    <textarea v-model="regimeForm.symbols" rows="5" placeholder="可补充行业、ETF、板块或个股代码；留空则只使用所选研究宇宙"></textarea>
+                  </label>
+                  <div class="form-actions span-full">
+                    <button class="btn primary" type="submit" :disabled="runningResearch === 'regime'">
+                      <Icon name="activity" />
+                      运行研究
+                    </button>
+                    <button class="btn secondary" type="button" :disabled="!regimeResult" @click="saveActiveResearchSnapshot">
+                      <Icon name="save" />
+                      保存快照
+                    </button>
+                    <button class="btn secondary" type="button" :disabled="!regimeResult" @click="downloadMarketRegimeJson">
+                      <Icon name="download" />
+                      导出JSON
+                    </button>
+                  </div>
+                </form>
+              </Panel>
+
+              <Panel class="market-regime-score-panel" title="Risk Appetite Index" subtitle="市场状态">
+                <div class="regime-score-card" data-resizable-card>
+                  <span>{{ regimeResult?.risk_appetite?.phase || '等待研究' }}</span>
+                  <strong>{{ formatDecimalValue(regimeResult?.risk_appetite?.score, 1) }}</strong>
+                  <em>{{ regimeResult ? '风险偏好指数' : '运行后显示综合状态' }}</em>
+                </div>
+                <div class="regime-state-grid">
+                  <div v-for="item in regimeStateCards" :key="item.label">
+                    <span>{{ item.label }}</span>
+                    <strong>{{ item.value }}</strong>
+                    <em>{{ item.detail }}</em>
+                  </div>
+                </div>
+                <div class="regime-summary-grid" aria-label="市场风险偏好摘要">
+                  <article v-for="item in regimeSummaryCards" :key="item.label" class="regime-summary-card">
+                    <span>{{ item.label }}</span>
+                    <strong>{{ item.value }}</strong>
+                    <em>{{ item.detail }}</em>
+                  </article>
+                </div>
+              </Panel>
+            </section>
+
+            <Panel class="market-regime-answer-panel" title="核心结论" subtitle="阶段、流向、补跌、因子优势">
+              <div v-if="regimeAnswerCards.length" class="regime-answer-card-grid">
+                <article v-for="item in regimeAnswerCards" :key="item.question" :class="['regime-answer-card', item.tone]">
+                  <span>{{ item.question }}</span>
+                  <strong>{{ item.answer }}</strong>
+                  <em>{{ item.detail }}</em>
+                </article>
+              </div>
+              <EmptyState v-else title="等待研究" body="运行后显示核心问题答案。" />
+            </Panel>
+
+            <div class="research-tabs regime-section-tabs" aria-label="市场风险偏好功能页签">
+              <button
+                v-for="tab in regimeSectionTabs"
+                :key="tab.key"
+                type="button"
+                :class="['research-tab', { active: activeRegimeSectionTab === tab.key }]"
+                @click="activeRegimeSectionTab = tab.key"
+              >
+                <Icon :name="tab.icon" />
+                {{ tab.label }}
+              </button>
+            </div>
+
+            <section v-if="activeRegimeSectionTab === 'overview'" class="content-grid two market-regime-result-grid regime-visual-grid">
+              <Panel title="RAI 趋势" subtitle="0-100 风险偏好综合分">
+                <div v-if="regimeRaiChartPoints.length" class="regime-rai-chart" aria-label="风险偏好指数趋势">
+                  <div class="regime-rai-meaning">
+                    <div class="regime-rai-definition">
+                      <span>RAI 0-100</span>
+                      <strong>{{ activeRegimeRaiPoint ? formatDecimalValue(activeRegimeRaiPoint.score, 1) : '-' }}</strong>
+                      <em>{{ activeRegimeRaiPoint?.phase || '未运行' }} · 越低代表现金偏好与风险释放越强</em>
+                    </div>
+                    <div class="regime-rai-scale">
+                      <span v-for="item in regimeRaiScaleCards" :key="item.label" :class="item.tone">
+                        <b>{{ item.label }}</b>
+                        <strong>{{ item.value }}</strong>
+                        <em>{{ item.detail }}</em>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="regime-chart-head">
+                    <span v-for="item in regimeRaiLatestBadges" :key="item.label">
+                      {{ item.label }} <strong>{{ item.value }}</strong>
+                    </span>
+                  </div>
+                  <div v-if="regimeRaiWindowAvailable" class="regime-rai-timeline">
+                    <span>{{ regimeRaiWindowLabel }}</span>
+                    <input
+                      type="range"
+                      min="0"
+                      :max="regimeRaiWindowMaxStart"
+                      :value="regimeRaiWindowStartValue"
+                      aria-label="拖动选择 RAI 时间窗口"
+                      @input="onRegimeRaiWindowInput"
+                    />
+                    <em>拖动时间轴</em>
+                  </div>
+                  <svg class="regime-rai-svg" viewBox="0 0 640 190" role="img" aria-label="RAI趋势图">
+                    <rect class="regime-rai-zone positive" x="24" y="24" width="592" height="50" />
+                    <rect class="regime-rai-zone neutral" x="24" y="74" width="592" height="44" />
+                    <rect class="regime-rai-zone negative" x="24" y="118" width="592" height="50" />
+                    <line class="regime-threshold high" x1="24" x2="616" y1="74" y2="74" />
+                    <line class="regime-threshold low" x1="24" x2="616" y1="118" y2="118" />
+                    <text x="28" y="68">65</text>
+                    <text x="28" y="112">35</text>
+                    <text class="regime-zone-label" x="574" y="50">扩张</text>
+                    <text class="regime-zone-label" x="574" y="98">修复</text>
+                    <text class="regime-zone-label" x="574" y="146">收缩</text>
+                    <line
+                      v-if="activeRegimeRaiPoint"
+                      class="regime-rai-active-line"
+                      :x1="activeRegimeRaiPoint.x"
+                      :x2="activeRegimeRaiPoint.x"
+                      y1="24"
+                      y2="168"
+                    />
+                    <polyline class="regime-rai-line" :points="regimeRaiLinePoints" />
+                    <circle
+                      v-for="point in regimeRaiChartPoints"
+                      :key="point.key"
+                      :class="['regime-rai-dot', point.tone, { active: activeRegimeRaiPoint?.key === point.key }]"
+                      :cx="point.x"
+                      :cy="point.y"
+                      :r="activeRegimeRaiPoint?.key === point.key ? 3.1 : 1.8"
+                      role="button"
+                      tabindex="0"
+                      @click="setActiveRegimeRaiPoint(point)"
+                      @focus="setActiveRegimeRaiPoint(point)"
+                      @pointerenter="setActiveRegimeRaiPoint(point)"
+                      @keyup.enter="setActiveRegimeRaiPoint(point)"
+                      @keyup.space.prevent="setActiveRegimeRaiPoint(point)"
+                    >
+                      <title>{{ point.title }}</title>
+                    </circle>
+                  </svg>
+                  <div class="regime-chart-axis">
+                    <span>{{ regimeRaiAxisLabels[0] || '-' }}</span>
+                    <span>{{ regimeRaiAxisLabels[1] || '-' }}</span>
+                    <span>{{ regimeRaiAxisLabels[2] || '-' }}</span>
+                  </div>
+                  <div v-if="activeRegimeRaiPoint" class="regime-rai-active-card" :class="activeRegimeRaiPoint.tone">
+                    <div class="regime-rai-active-summary">
+                      <span>{{ formatDateOnly(activeRegimeRaiPoint.date) }}</span>
+                      <strong>{{ activeRegimeRaiPoint.phase || '-' }}</strong>
+                      <em>RAI {{ formatDecimalValue(activeRegimeRaiPoint.score, 1) }}</em>
+                    </div>
+                    <div class="regime-rai-driver-list" aria-label="RAI驱动指标">
+                      <article v-for="item in regimeRaiDrivers" :key="item.label" class="regime-rai-driver">
+                        <span>{{ item.label }}</span>
+                        <strong>{{ item.value }}</strong>
+                        <em>{{ item.detail }}</em>
+                      </article>
+                    </div>
+                  </div>
+                </div>
+                <EmptyState v-else title="等待研究" body="运行后显示风险偏好指数趋势。" />
+              </Panel>
+
+              <Panel title="风险释放路径图" subtitle="谁先承压，压力是否向后扩散">
+                <div v-if="regimeRiskHeatmapRows.length" class="regime-risk-heatmap" aria-label="风险释放路径压力矩阵">
+                  <div class="regime-heatmap-guide">
+                    <div>
+                      <strong>{{ regimeRiskReleaseNarrative }}</strong>
+                      <span>读法：从左到右看时间推进；从上到下看压力是否按高波资产、高位资产、高流动性资产、现金偏好代理扩散。</span>
+                    </div>
+                    <div class="regime-heatmap-legend" aria-label="压力强度图例">
+                      <span><i class="low"></i>观察</span>
+                      <span><i class="mid"></i>升温</span>
+                      <span><i class="high"></i>高压</span>
+                      <span><i class="trigger"></i>触发边框</span>
+                    </div>
+                  </div>
+                  <div class="regime-heatmap-status">
+                    <span v-for="item in regimeRiskReleaseSummary" :key="item.label">
+                      {{ item.label }} <strong>{{ item.value }}</strong>
+                      <em>{{ item.detail }}</em>
+                    </span>
+                  </div>
+                  <div class="regime-heatmap-frame">
+                    <div class="regime-heatmap-axis" :style="regimeHeatmapAxisStyle">
+                      <span class="regime-heatmap-corner">层级</span>
+                      <template v-for="row in regimeRiskHeatmapRows" :key="`axis-${row.layer}`">
+                        <strong class="regime-heatmap-layer">
+                          <span>{{ row.layer }}</span>
+                          <em>{{ row.description }}</em>
+                        </strong>
+                      </template>
+                    </div>
+                    <div class="regime-heatmap-scroll">
+                      <div class="regime-heatmap-grid" :style="regimeHeatmapGridStyle">
+                        <span
+                          v-for="item in regimeRiskTimelineDateHeaders"
+                          :key="`date-${item.date}`"
+                          :class="['regime-heatmap-date', { muted: !item.show }]"
+                          :title="item.date"
+                        >
+                          {{ item.show ? shortDateLabel(item.date) : '' }}
+                        </span>
+                        <template v-for="row in regimeRiskHeatmapRows" :key="row.layer">
+                          <span
+                            v-for="cell in row.cells"
+                            :key="cell.key"
+                            class="regime-heatmap-cell"
+                            :class="{ active: cell.stress_signal }"
+                            :style="riskHeatmapCellStyle(cell)"
+                            :title="cell.title"
+                          >
+                            <strong>{{ heatmapScoreLabel(cell.stress_score) }}</strong>
+                            <em>{{ cell.label }}</em>
+                          </span>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <EmptyState v-else title="等待研究" body="运行后显示风险释放层级时间线。" />
+              </Panel>
+            </section>
+
+            <section v-else-if="activeRegimeSectionTab === 'daily'" class="view-stack market-regime-tab-panel">
+              <Panel class="market-regime-daily-panel" title="每日市场状态报告" subtitle="风险阶段与资金迁移">
+                <div v-if="regimeResult" class="regime-daily-stack">
+                  <div class="regime-daily-grid">
+                    <article v-for="item in regimeDailyReportCards" :key="item.label" class="regime-daily-card">
+                      <span>{{ item.label }}</span>
+                      <strong>{{ item.value }}</strong>
+                      <em>{{ item.detail }}</em>
+                    </article>
+                  </div>
+                  <div class="regime-answer-grid">
+                    <div>
+                      <span>资金流出</span>
+                      <strong>{{ regimeResult.daily_report?.answers?.funds_leaving || '-' }}</strong>
+                    </div>
+                    <div>
+                      <span>资金流入</span>
+                      <strong>{{ regimeResult.daily_report?.answers?.funds_entering || '-' }}</strong>
+                    </div>
+                    <div>
+                      <span>高流动性补跌</span>
+                      <strong>{{ regimeResult.daily_report?.answers?.high_liquidity_selloff ? '已触发' : '未触发' }}</strong>
+                    </div>
+                    <div>
+                      <span>更接近</span>
+                      <strong>{{ regimeResult.daily_report?.answers?.closer_to || '-' }}</strong>
+                    </div>
+                  </div>
+                  <div v-if="displayRegimeDailyEvidenceCards.length" class="regime-evidence-grid" aria-label="日报证据">
+                    <article
+                      v-for="item in displayRegimeDailyEvidenceCards"
+                      :key="item.metric"
+                      :class="['regime-evidence-card', item.tone]"
+                    >
+                      <span>{{ item.metric }}</span>
+                      <strong>{{ item.value }}</strong>
+                      <em>{{ item.detail }}</em>
+                    </article>
+                  </div>
+                  <EmptyState v-else title="暂无日报证据" body="运行结果未返回日报证据指标。" />
+                  <div v-if="regimeDailyCaveats.length" class="regime-caveats">
+                    <span v-for="item in regimeDailyCaveats" :key="item">{{ item }}</span>
+                  </div>
+                </div>
+                <EmptyState v-else title="等待研究" body="运行后生成每日市场状态报告。" />
+              </Panel>
+
+              <Panel title="最近日报序列" subtitle="阶段、流向与压力变化">
+                <PaginatedDataTable
+                  :rows="displayRegimeDailyHistoryRows"
+                  :columns="regimeDailyHistoryColumns"
+                  empty="运行研究后显示最近交易日的市场状态序列。"
+                  aria-label="最近日报序列"
+                />
+              </Panel>
+            </section>
+
+            <section v-else-if="activeRegimeSectionTab === 'flow'" class="content-grid two market-regime-result-grid">
+              <Panel title="RAI 组成拆解" subtitle="高位、中盘、高流动性与市场宽度">
+                <PaginatedDataTable
+                  :rows="displayRegimeComponentRows"
+                  :columns="regimeComponentColumns"
+                  empty="运行研究后显示风险偏好指数构成。"
+                  aria-label="RAI组成拆解"
+                />
+              </Panel>
+              <Panel title="波动率 × 流动性" subtitle="资金迁移">
+                <PaginatedDataTable
+                  :rows="displayRegimeMigrationRows"
+                  :columns="regimeMigrationColumns"
+                  empty="运行研究后显示高波动、高位、高流动性资产迁移状态。"
+                  aria-label="波动率流动性"
+                />
+              </Panel>
+              <Panel title="风险释放顺序" subtitle="高波 → 高位 → 高流动性 → 现金">
+                <PaginatedDataTable
+                  :rows="displayRegimeSequenceRows"
+                  :columns="regimeSequenceColumns"
+                  empty="运行研究后显示风险释放阶段的触发顺序。"
+                  aria-label="风险释放顺序"
+                />
+              </Panel>
+              <Panel title="高流动性补跌" subtitle="未来 5/10/20 日">
+                <PaginatedDataTable
+                  :rows="displayRegimeHighLiquidityBreakRows"
+                  :columns="regimeHighLiquidityBreakColumns"
+                  empty="运行研究后显示高流动性资产跌破趋势后的前瞻表现。"
+                  aria-label="高流动性补跌"
+                />
+              </Panel>
+              <Panel title="市场缩圈" subtitle="上涨资产、成交额集中度、领涨数量">
+                <div v-if="displayRegimeMarketScopeRows.length" class="table-toolbar regime-market-scope-toolbar">
+                  <p class="table-caption">
+                    显示 {{ regimeMarketScopePageFirst }}-{{ regimeMarketScopePageEnd }} / {{ displayRegimeMarketScopeRows.length }} 条
+                  </p>
+                  <div class="table-controls">
+                    <div class="page-size-group" aria-label="市场缩圈每页条数">
+                      <span>每页</span>
+                      <button
+                        v-for="size in regimeMarketScopePageSizeOptions"
+                        :key="size"
+                        type="button"
+                        :class="['page-size-button', { active: regimeMarketScopePagination.pageSize === size }]"
+                        @click="setRegimeMarketScopePageSize(size)"
+                      >
+                        {{ size }}
+                      </button>
+                    </div>
+                    <div class="pagination-controls">
+                      <button type="button" :disabled="regimeMarketScopePagination.page <= 1" @click="goRegimeMarketScopePage(1)">首页</button>
+                      <button
+                        type="button"
+                        :disabled="regimeMarketScopePagination.page <= 1"
+                        @click="goRegimeMarketScopePage(regimeMarketScopePagination.page - 1)"
+                      >
+                        上一页
+                      </button>
+                      <span>{{ regimeMarketScopePagination.page }} / {{ regimeMarketScopeTotalPages }}</span>
+                      <button
+                        type="button"
+                        :disabled="regimeMarketScopePagination.page >= regimeMarketScopeTotalPages"
+                        @click="goRegimeMarketScopePage(regimeMarketScopePagination.page + 1)"
+                      >
+                        下一页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="regimeMarketScopePagination.page >= regimeMarketScopeTotalPages"
+                        @click="goRegimeMarketScopePage(regimeMarketScopeTotalPages)"
+                      >
+                        末页
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <DataTable :rows="pagedRegimeMarketScopeRows" :columns="regimeMarketScopeColumns" empty="运行研究后显示最近市场扩散与缩圈过程。" />
+              </Panel>
+            </section>
+
+            <section v-else-if="activeRegimeSectionTab === 'asset'" class="view-stack market-regime-tab-panel">
+              <Panel title="资金回流候选" subtitle="回调、转强、相对强度与流动性排序">
+                <div v-if="displayRegimeFlowCandidateRows.length" class="table-toolbar regime-flow-toolbar">
+                  <p class="table-caption">
+                    显示 {{ regimeFlowCandidatePageFirst }}-{{ regimeFlowCandidatePageEnd }} / {{ displayRegimeFlowCandidateRows.length }} 条
+                  </p>
+                  <div class="table-controls">
+                    <div class="page-size-group" aria-label="资金回流候选每页条数">
+                      <span>每页</span>
+                      <button
+                        v-for="size in regimeFlowCandidatePageSizeOptions"
+                        :key="size"
+                        type="button"
+                        :class="['page-size-button', { active: regimeFlowCandidatePagination.pageSize === size }]"
+                        @click="setRegimeFlowCandidatePageSize(size)"
+                      >
+                        {{ size }}
+                      </button>
+                    </div>
+                    <div class="pagination-controls">
+                      <button type="button" :disabled="regimeFlowCandidatePagination.page <= 1" @click="goRegimeFlowCandidatePage(1)">首页</button>
+                      <button type="button" :disabled="regimeFlowCandidatePagination.page <= 1" @click="goRegimeFlowCandidatePage(regimeFlowCandidatePagination.page - 1)">上一页</button>
+                      <span>{{ regimeFlowCandidatePagination.page }} / {{ regimeFlowCandidateTotalPages }}</span>
+                      <button
+                        type="button"
+                        :disabled="regimeFlowCandidatePagination.page >= regimeFlowCandidateTotalPages"
+                        @click="goRegimeFlowCandidatePage(regimeFlowCandidatePagination.page + 1)"
+                      >
+                        下一页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="regimeFlowCandidatePagination.page >= regimeFlowCandidateTotalPages"
+                        @click="goRegimeFlowCandidatePage(regimeFlowCandidateTotalPages)"
+                      >
+                        末页
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <DataTable :rows="pagedRegimeFlowCandidateRows" :columns="regimeFlowCandidateColumns" empty="运行研究后显示资产级资金回流候选。" />
+              </Panel>
+              <Panel title="资金迁移资产明细" subtitle="趋势、波动率、流动性">
+                <PaginatedDataTable
+                  :rows="displayRegimeAssetRows"
+                  :columns="regimeAssetColumns"
+                  empty="运行研究后显示资产级状态。"
+                  aria-label="资金迁移资产明细"
+                />
+              </Panel>
+            </section>
+
+            <section v-else-if="activeRegimeSectionTab === 'factor'" class="content-grid two market-regime-result-grid">
+              <Panel title="基准调整阶段" subtitle="上涨后回撤样本口径">
+                <PaginatedDataTable
+                  :rows="displayRegimeBenchmarkRows"
+                  :columns="regimeBenchmarkColumns"
+                  empty="运行研究后显示基准阶段。"
+                  aria-label="基准调整阶段"
+                />
+              </Panel>
+              <Panel title="调整阶段因子优势" subtitle="A组相对全市场基准">
+                <PaginatedDataTable
+                  :rows="displayRegimeAdjustmentFactorAdvantageRows"
+                  :columns="regimeFactorAdvantageColumns"
+                  empty="当前区间没有满足基准上涨后调整的样本。"
+                  aria-label="调整阶段因子优势"
+                />
+              </Panel>
+              <Panel title="调整阶段回测明细" subtitle="基准上涨后回撤">
+                <PaginatedDataTable
+                  :rows="displayRegimeAdjustmentFactorRows"
+                  :columns="regimeFactorColumns"
+                  empty="当前区间没有满足基准上涨后调整的分组样本。"
+                  aria-label="调整阶段回测明细"
+                />
+              </Panel>
+              <Panel title="全样本因子优势" subtitle="A组相对全市场基准">
+                <PaginatedDataTable
+                  :rows="displayRegimeFactorAdvantageRows"
+                  :columns="regimeFactorAdvantageColumns"
+                  empty="运行研究后显示A组相对基准的统计优势。"
+                  aria-label="全样本因子优势"
+                />
+              </Panel>
+              <Panel title="回调充分 + 转强" subtitle="因子回测报告">
+                <PaginatedDataTable
+                  :rows="displayRegimeFactorRows"
+                  :columns="regimeFactorColumns"
+                  empty="运行研究后显示分组收益、胜率和超额收益。"
+                  aria-label="回调充分转强"
+                />
+              </Panel>
+            </section>
+          </section>
+
           <section v-else class="content-grid two research-review-grid">
             <Panel title="多股复盘" subtitle="排序锐评">
               <form class="task-form" @submit.prevent="runReviewSearch">
@@ -1171,6 +1914,117 @@
           </Panel>
         </section>
 
+        <section v-else-if="activeView === 'ai'" class="view-stack ai-workbench-view">
+          <section class="content-grid two">
+            <Panel title="AI 模块" subtitle="Stock Data Interface">
+              <form class="task-form ai-workbench-form" @submit.prevent="runAiWorkbench">
+                <label class="span-full">
+                  <div class="field-head">
+                    <span>导入 Skill / 系统提示词</span>
+                    <div class="field-actions">
+                      <label class="mini-action skill-file-action">
+                        <Icon name="folder" />
+                        导入文本
+                        <input type="file" accept=".md,.txt,text/markdown,text/plain" @change="importAiSkillPrompt" />
+                      </label>
+                      <button class="mini-action" type="button" @click="aiWorkbenchForm.skill_prompt = ''">清空</button>
+                    </div>
+                  </div>
+                  <textarea v-model="aiWorkbenchForm.skill_prompt" rows="6" placeholder="粘贴你的 skill、研究框架或输出约束。"></textarea>
+                </label>
+                <label class="span-full">
+                  <span>用户任务</span>
+                  <textarea v-model="aiWorkbenchForm.prompt" rows="4" placeholder="例如：用我的框架判断这批股票的强弱、风险点和下一步观察项。"></textarea>
+                </label>
+                <label class="span-full">
+                  <span>股票代码</span>
+                  <textarea v-model="aiWorkbenchForm.symbols" rows="4" placeholder="000001.SZ&#10;300750.SZ"></textarea>
+                </label>
+                <div class="inline-fields span-full">
+                  <label>
+                    <span>开始</span>
+                    <input v-model="aiWorkbenchForm.start" type="date" />
+                  </label>
+                  <label>
+                    <span>结束</span>
+                    <input v-model="aiWorkbenchForm.end" type="date" />
+                  </label>
+                  <label>
+                    <span>周期</span>
+                    <select v-model="aiWorkbenchForm.timeframe">
+                      <option v-for="timeframe in config?.timeframes || ['1d']" :key="timeframe" :value="timeframe">{{ timeframe }}</option>
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  <span>最大数据行</span>
+                  <input v-model.number="aiWorkbenchForm.max_rows" type="number" min="20" max="1000" step="20" />
+                </label>
+                <label>
+                  <span>最大标的数</span>
+                  <input v-model.number="aiWorkbenchForm.max_symbols" type="number" min="1" max="50" />
+                </label>
+                <div class="form-actions span-full">
+                  <button class="btn primary" type="submit" :disabled="runningAiWorkbench || !aiConfigReady">
+                    <Icon name="sparkles" />
+                    {{ runningAiWorkbench ? '运行中' : '调用 AI' }}
+                  </button>
+                  <button class="btn secondary" type="button" @click="aiWorkbenchForm.symbols = reviewForm.symbols || symbolsText">
+                    载入当前标的
+                  </button>
+                </div>
+                <div class="ai-settings-note span-full">
+                  只会把当前选择的本地行情 JSON 发给模型；不开放任意代码执行或外部交易操作。
+                </div>
+              </form>
+            </Panel>
+
+            <Panel title="统一图表设置" subtitle="全局显示偏好">
+              <form class="task-form chart-settings-form" @submit.prevent="saveSettings">
+                <label>
+                  <span>色彩风格</span>
+                  <select v-model="chartSettings.theme">
+                    <option value="clean">清爽</option>
+                    <option value="contrast">高对比</option>
+                  </select>
+                </label>
+                <label>
+                  <span>图表密度</span>
+                  <select v-model="chartSettings.density">
+                    <option value="comfortable">舒展</option>
+                    <option value="compact">紧凑</option>
+                  </select>
+                </label>
+                <label class="check-row span-full">
+                  <input v-model="chartSettings.show_context" type="checkbox" />
+                  <span>显示图表上下文说明</span>
+                </label>
+                <div class="chart-setting-preview span-full">
+                  <span>当前风格</span>
+                  <strong>{{ chartSettings.theme === 'contrast' ? '高对比' : '清爽' }} · {{ chartSettings.density === 'compact' ? '紧凑' : '舒展' }}</strong>
+                  <em>设置会同步影响页面图表与结果卡片间距。</em>
+                </div>
+                <div class="form-actions span-full">
+                  <button class="btn primary" type="submit">保存图表设置</button>
+                </div>
+              </form>
+            </Panel>
+          </section>
+
+          <Panel title="AI 输出" subtitle="模型结果与数据上下文">
+            <div v-if="aiWorkbenchResult" class="ai-workbench-output">
+              <article>
+                <span>模型输出</span>
+                <pre>{{ aiWorkbenchResult.content }}</pre>
+                <em>{{ aiWorkbenchResult.disclaimer }}</em>
+              </article>
+              <DataTable :rows="aiWorkbenchLatestRows" :columns="aiWorkbenchLatestColumns" empty="暂无最新指标。" />
+              <DataTable :rows="aiWorkbenchRecordRows" :columns="aiWorkbenchRecordColumns" empty="暂无行情上下文。" />
+            </div>
+            <EmptyState v-else title="等待 AI 任务" body="配置股票数据和提示词后调用模型。" />
+          </Panel>
+        </section>
+
         <section v-else-if="activeView === 'settings'" class="content-grid two">
           <Panel title="系统设置" subtitle="本地配置">
             <form class="task-form" @submit.prevent="saveSettings">
@@ -1221,7 +2075,7 @@
             </form>
           </Panel>
 
-          <Panel title="AI 锐评设置" subtitle="输出参数">
+          <Panel title="AI 设置" subtitle="命令框 / 锐评 / AI 模块">
             <form class="task-form ai-settings-form" @submit.prevent="saveSettings">
               <label class="span-full">
                 <span>接口 URL</span>
@@ -1252,7 +2106,7 @@
                 <span>启用自定义提示词</span>
               </label>
               <div class="ai-settings-note span-full">
-                多股复盘生成 AI 覆盖时会读取这里保存的参数；证据 JSON 由当前复盘结果自动附加。
+                大模型命令框、AI 模块和多股复盘 AI 覆盖都会读取这里保存的参数；具体证据由各模块自动附加。
               </div>
               <div class="form-actions span-full">
                 <button class="btn primary" type="submit">保存 AI 设置</button>
@@ -1366,6 +2220,7 @@ import EmptyState from './components/EmptyState.vue'
 import Icon from './components/Icon.vue'
 import KlineChart from './components/KlineChart.vue'
 import MetricCard from './components/MetricCard.vue'
+import PaginatedDataTable from './components/PaginatedDataTable.vue'
 import Panel from './components/Panel.vue'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api'
@@ -1413,6 +2268,7 @@ interface TaskQualityIssue {
 }
 
 type DateShortcutKey = '20d' | '50d' | 'ytd' | '1y'
+type RegimeParameterPresetKey = 'balanced' | 'defensive' | 'elastic'
 
 interface DateRangeFields {
   start: string
@@ -1420,7 +2276,8 @@ interface DateRangeFields {
 }
 
 type DirectoryField = 'data_root' | 'tdx_path'
-type ResearchTabKey = 'history' | 'cross' | 'review' | 'etf'
+type ResearchTabKey = 'history' | 'cross' | 'review' | 'etf' | 'regime'
+type RegimeSectionTabKey = 'overview' | 'daily' | 'flow' | 'factor' | 'asset'
 type SymbolRefreshTarget = 'index' | 'etf'
 type ReviewSymbolPickerType = 'etf' | 'sector'
 type AssetShortcutType = 'etf' | 'stock' | 'index'
@@ -1471,6 +2328,7 @@ const navItems = [
   { key: 'download', label: '下载任务', title: '下载任务', description: '配置代码、周期、时间窗并在后台执行。', icon: 'download' },
   { key: 'cache', label: '缓存资产', title: '缓存资产', description: '查看 SQLite catalog 与本地 parquet 缓存。', icon: 'database' },
   { key: 'research', label: '研究工具', title: '研究工具', description: '基于本地 TDX 缓存做相似度搜索和多股复盘。', icon: 'layers' },
+  { key: 'ai', label: 'AI 工作台', title: 'AI 工作台', description: '把本地股票数据交给用户提示词和大模型。', icon: 'sparkles' },
   { key: 'tasks', label: '执行记录', title: '执行记录', description: '查看后台任务状态、错误和写入结果。', icon: 'clipboard' },
   { key: 'settings', label: '系统设置', title: '系统设置', description: '配置默认路径、复权方式和运行参数。', icon: 'settings' }
 ]
@@ -1479,7 +2337,16 @@ const researchTabs: Array<{ key: ResearchTabKey; label: string; icon: string }> 
   { key: 'history', label: '历史相似', icon: 'activity' },
   { key: 'cross', label: '横截面相似', icon: 'layers' },
   { key: 'review', label: '多股复盘', icon: 'clipboard' },
-  { key: 'etf', label: '场内ETF跟踪', icon: 'archive' }
+  { key: 'etf', label: '场内ETF跟踪', icon: 'archive' },
+  { key: 'regime', label: '市场风险偏好', icon: 'activity' }
+]
+
+const regimeSectionTabs: Array<{ key: RegimeSectionTabKey; label: string; icon: string }> = [
+  { key: 'overview', label: '总览图形', icon: 'activity' },
+  { key: 'daily', label: '日报', icon: 'clipboard' },
+  { key: 'flow', label: '风险释放', icon: 'layers' },
+  { key: 'factor', label: '因子回测', icon: 'database' },
+  { key: 'asset', label: '资产明细', icon: 'archive' }
 ]
 
 const SETTINGS_STORAGE_KEY = 'tdx-downloader-web-settings'
@@ -1492,6 +2359,125 @@ const MAX_RESEARCH_SNAPSHOTS = 60
 const CACHE_PAGE_SIZE_OPTIONS = [25, 50, 100]
 const PLAN_PAGE_SIZE_OPTIONS = [25, 50, 100]
 const ETF_TRACKER_PAGE_SIZE_OPTIONS = [25, 50, 100]
+const REGIME_FLOW_CANDIDATE_PAGE_SIZE_OPTIONS = [10, 20, 30]
+const REGIME_MARKET_SCOPE_PAGE_SIZE_OPTIONS = [10, 15, 30]
+const REGIME_RAI_WINDOW_SIZE = 60
+const REGIME_PERCENT_FIELD_KEYS = [
+  'benchmark_rally_60_threshold',
+  'benchmark_pullback_20_threshold',
+  'pullback_20_threshold',
+  'pullback_60_threshold',
+  'liquidity_high_percentile',
+  'liquidity_mid_percentile',
+  'liquidity_low_percentile',
+  'volatility_high_percentile',
+  'volatility_low_percentile',
+  'high_position_drawdown_threshold',
+  'high_position_return_percentile',
+  'leader_return_5d_threshold',
+  'stress_ma20_break_threshold',
+  'stress_return_5d_threshold',
+  'cash_stress_score_threshold',
+  'cash_preference_proxy_threshold',
+  'risk_expansion_breadth_threshold',
+  'risk_contraction_breadth_threshold',
+  'risk_release_breadth_threshold',
+  'high_liquidity_selloff_threshold'
+] as const
+const REGIME_PARAMETER_PRESETS: Array<{
+  key: RegimeParameterPresetKey
+  label: string
+  detail: string
+  values: Record<(typeof REGIME_PERCENT_FIELD_KEYS)[number], number>
+}> = [
+  {
+    key: 'balanced',
+    label: '标准',
+    detail: '默认研究口径',
+    values: {
+      benchmark_rally_60_threshold: 8,
+      benchmark_pullback_20_threshold: -3,
+      pullback_20_threshold: -6,
+      pullback_60_threshold: -10,
+      liquidity_high_percentile: 80,
+      liquidity_mid_percentile: 35,
+      liquidity_low_percentile: 20,
+      volatility_high_percentile: 80,
+      volatility_low_percentile: 20,
+      high_position_drawdown_threshold: -10,
+      high_position_return_percentile: 80,
+      leader_return_5d_threshold: 3,
+      stress_ma20_break_threshold: 60,
+      stress_return_5d_threshold: 0,
+      cash_stress_score_threshold: 62,
+      cash_preference_proxy_threshold: 60,
+      risk_expansion_breadth_threshold: 60,
+      risk_contraction_breadth_threshold: 40,
+      risk_release_breadth_threshold: 45,
+      high_liquidity_selloff_threshold: 60
+    }
+  },
+  {
+    key: 'defensive',
+    label: '保守',
+    detail: '更早识别退潮',
+    values: {
+      benchmark_rally_60_threshold: 6,
+      benchmark_pullback_20_threshold: -2.5,
+      pullback_20_threshold: -5,
+      pullback_60_threshold: -8,
+      liquidity_high_percentile: 75,
+      liquidity_mid_percentile: 35,
+      liquidity_low_percentile: 20,
+      volatility_high_percentile: 75,
+      volatility_low_percentile: 20,
+      high_position_drawdown_threshold: -8,
+      high_position_return_percentile: 75,
+      leader_return_5d_threshold: 2,
+      stress_ma20_break_threshold: 55,
+      stress_return_5d_threshold: -1,
+      cash_stress_score_threshold: 58,
+      cash_preference_proxy_threshold: 55,
+      risk_expansion_breadth_threshold: 65,
+      risk_contraction_breadth_threshold: 45,
+      risk_release_breadth_threshold: 50,
+      high_liquidity_selloff_threshold: 55
+    }
+  },
+  {
+    key: 'elastic',
+    label: '弹性',
+    detail: '减少短噪声误报',
+    values: {
+      benchmark_rally_60_threshold: 10,
+      benchmark_pullback_20_threshold: -4,
+      pullback_20_threshold: -8,
+      pullback_60_threshold: -12,
+      liquidity_high_percentile: 85,
+      liquidity_mid_percentile: 40,
+      liquidity_low_percentile: 20,
+      volatility_high_percentile: 85,
+      volatility_low_percentile: 20,
+      high_position_drawdown_threshold: -12,
+      high_position_return_percentile: 85,
+      leader_return_5d_threshold: 4,
+      stress_ma20_break_threshold: 65,
+      stress_return_5d_threshold: 1,
+      cash_stress_score_threshold: 66,
+      cash_preference_proxy_threshold: 65,
+      risk_expansion_breadth_threshold: 55,
+      risk_contraction_breadth_threshold: 35,
+      risk_release_breadth_threshold: 40,
+      high_liquidity_selloff_threshold: 65
+    }
+  }
+]
+const RISK_RELEASE_LAYER_DESCRIPTIONS: Record<string, string> = {
+  '高波资产': '弹性资产先承压',
+  '高位资产': '拥挤交易退潮',
+  '高流动性资产': '权重补跌确认',
+  '现金偏好代理': '防守情绪抬升'
+}
 const DEFAULT_ALL_ASSETS_LOOKBACK_DAYS = 20
 const REVIEW_SYMBOL_PICKER_VISIBLE_LIMIT = 240
 const REVIEW_SYMBOL_PICKER_TABS: Array<{ key: ReviewSymbolPickerType; label: string }> = [
@@ -1581,6 +2567,7 @@ const TASK_EVENT_WINDOW_SIZE = 6
 const TASK_EVENT_PAGE_SIZE_OPTIONS = [10, 25, 50]
 const TASK_RESULT_PAGE_SIZE_OPTIONS = [25, 50, 100]
 const TASK_QUALITY_PAGE_SIZE_OPTIONS = [25, 50, 100]
+const RISK_RELEASE_LAYER_ORDER = ['高波资产', '高位资产', '高流动性资产', '现金偏好代理']
 const STATUS_LABELS: Record<string, string> = {
   cached: '可用',
   missing_file: '缺文件',
@@ -1634,13 +2621,19 @@ const loadingEtfReturns = ref(false)
 const loadingTradingCalendar = ref(false)
 const runningResearch = ref<ResearchTabKey | ''>('')
 const runningAiReview = ref(false)
+const runningAiCommand = ref(false)
+const runningAiWorkbench = ref(false)
 const activeResearchTab = ref<ResearchTabKey>('history')
+const activeRegimeSectionTab = ref<RegimeSectionTabKey>('overview')
 const pickingDirectory = ref<DirectoryField | ''>('')
 const planRows = ref<Array<Record<string, any>>>([])
 const planSummary = ref<Record<string, any>>({})
 const historyResult = ref<Record<string, any> | null>(null)
 const crossResult = ref<Record<string, any> | null>(null)
 const reviewResult = ref<Record<string, any> | null>(null)
+const regimeResult = ref<Record<string, any> | null>(null)
+const activeRegimeRaiKey = ref('')
+const regimeRaiWindowStart = ref(-1)
 const reviewResultSignature = ref('')
 const etfTrackerResultSignature = ref('')
 const etfTrackingRows = ref<Array<Record<string, any>>>([])
@@ -1649,6 +2642,8 @@ const etfTrackingCacheState = reactive<EtfClientCacheState>({ source: 'empty', s
 const etfReturnsCacheState = reactive<EtfClientCacheState>({ source: 'empty', saved_at: 0, record_count: 0 })
 const tradingCalendarDays = ref<string[]>([])
 const aiReviewOutput = ref<Record<string, any> | null>(null)
+const aiCommandResult = ref<Record<string, any> | null>(null)
+const aiWorkbenchResult = ref<Record<string, any> | null>(null)
 const researchSnapshots = ref<ResearchSnapshot[]>([])
 const notice = ref<NoticePayload | null>(null)
 const cacheFilters = reactive({
@@ -1681,6 +2676,14 @@ const etfTrackerPagination = reactive({
   page: 1,
   pageSize: ETF_TRACKER_PAGE_SIZE_OPTIONS[0]
 })
+const regimeFlowCandidatePagination = reactive({
+  page: 1,
+  pageSize: REGIME_FLOW_CANDIDATE_PAGE_SIZE_OPTIONS[0]
+})
+const regimeMarketScopePagination = reactive({
+  page: 1,
+  pageSize: REGIME_MARKET_SCOPE_PAGE_SIZE_OPTIONS[1]
+})
 
 const settings = reactive({
   data_root: '/Volumes/ccOUT 1/tdx-data',
@@ -1706,6 +2709,24 @@ const aiPromptSaved = ref(false)
 const aiPromptDraft = reactive({
   system: '',
   user: defaultAiUserPrompt()
+})
+const aiCommandForm = reactive({
+  text: ''
+})
+const aiWorkbenchForm = reactive({
+  symbols: '000001.SZ\n300750.SZ',
+  start: tradingLookbackStartText(60),
+  end: todayText(),
+  timeframe: '1d',
+  skill_prompt: '',
+  prompt: '请基于这些本地行情数据，输出强弱判断、风险点和下一步观察项。',
+  max_symbols: 20,
+  max_rows: 240
+})
+const chartSettings = reactive({
+  theme: 'clean',
+  density: 'comfortable',
+  show_context: true
 })
 
 const historyForm = reactive({
@@ -1757,6 +2778,52 @@ const etfTrackerForm = reactive({
   top_n: 30,
   min_swing_return: 0.04,
   min_segment_bars: 3
+})
+
+const regimeForm = reactive({
+  benchmark_symbol: '000300.SH',
+  symbols: '',
+  universe_groups: ['板块指数'],
+  start: tradingLookbackStartText(120),
+  end: todayText(),
+  forward_windows: '3,5,10',
+  benchmark_rally_60_threshold: 8,
+  benchmark_pullback_20_threshold: -3,
+  pullback_20_threshold: -6,
+  pullback_60_threshold: -10,
+  liquidity_high_percentile: 80,
+  liquidity_mid_percentile: 35,
+  liquidity_low_percentile: 20,
+  volatility_high_percentile: 80,
+  volatility_low_percentile: 20,
+  high_position_drawdown_threshold: -10,
+  high_position_return_percentile: 80,
+  leader_return_5d_threshold: 3,
+  stress_ma20_break_threshold: 60,
+  stress_return_5d_threshold: 0,
+  cash_stress_score_threshold: 62,
+  cash_preference_proxy_threshold: 60,
+  risk_expansion_breadth_threshold: 60,
+  risk_contraction_breadth_threshold: 40,
+  risk_release_breadth_threshold: 45,
+  high_liquidity_selloff_threshold: 60,
+  concentration_top_n: 20,
+  daily_report_days: 20,
+  flow_candidate_limit: 30,
+  risk_timeline_days: 60
+})
+
+const regimeParameterGuideCards = [
+  { label: '1. 基准环境', detail: '基准先有 60 日上涨，再出现 20 日回撤，才进入调整样本。' },
+  { label: '2. 个股回调', detail: '20 日和 60 日回撤用于判断回调是否充分。' },
+  { label: '3. 压力层级', detail: '高波、高位、高流动性依次承压，代表风险释放扩散。' },
+  { label: '4. 阶段确认', detail: '宽度、现金偏好和高流动性破位共同决定 RAI 阶段。' }
+]
+const regimeActivePresetKey = computed(() => {
+  const matched = REGIME_PARAMETER_PRESETS.find((preset) =>
+    REGIME_PERCENT_FIELD_KEYS.every((field) => Math.abs(Number((regimeForm as Record<string, any>)[field]) - preset.values[field]) < 0.0001)
+  )
+  return matched?.key || ''
 })
 
 const activeMeta = computed(() => navItems.find((item) => item.key === activeView.value) || navItems[0])
@@ -1987,6 +3054,515 @@ const etfCacheStatusCards = computed(() => [
     tone: etfCacheTone(etfReturnsCacheState, loadingEtfReturns.value)
   }
 ])
+const regimeSummaryCards = computed(() => {
+  const summary = regimeResult.value?.summary || {}
+  const appetite = regimeResult.value?.risk_appetite || {}
+  const sequence = regimeResult.value?.risk_release_sequence || {}
+  return [
+    { label: 'Risk Appetite Index', value: formatDecimalValue(appetite.score, 1), detail: String(appetite.phase || '未运行') },
+    { label: '研究资产', value: formatInt(summary.asset_count), detail: `${summary.benchmark_symbol || regimeForm.benchmark_symbol} · ${summary.timeframe || researchTimeframe.value}` },
+    { label: '市场宽度', value: formatPercentValue(appetite.breadth_ma20), detail: '站上 MA20 比例' },
+    { label: '高流动性破位', value: formatPercentValue(appetite.high_liquidity_break_ratio), detail: '高流动性资产跌破 MA20' },
+    { label: '现金偏好代理', value: formatPercentValue(appetite.cash_preference_proxy), detail: `集中度 ${formatPercentValue(appetite.amount_concentration)}` },
+    { label: '释放顺序', value: formatPercentValue(sequence.sequence_score), detail: String(sequence.current_stage || '未触发') }
+  ]
+})
+const regimeStateCards = computed(() => {
+  const state = regimeResult.value?.state_report || {}
+  return [
+    { label: '趋势状态', value: formatPercentValue(state.trend?.breadth_ma20), detail: `MA60 ${formatPercentValue(state.trend?.breadth_ma60)}` },
+    { label: '波动率状态', value: formatPercentValue(state.volatility?.median_hv20), detail: `ATR/Close ${formatPercentValue(state.volatility?.median_atr20_close)}` },
+    { label: '流动性状态', value: formatAmountValue(state.liquidity?.median_amount20), detail: `Top20占比 ${formatPercentValue(state.liquidity?.top20_amount_share)}` }
+  ]
+})
+const regimeUniverseOptions = computed(() =>
+  ['板块指数', 'ETF列表', '全A股票'].map((name) => {
+    const group = config.value?.symbol_groups.find((item) => item.name === name)
+    return {
+      name,
+      label: name === '板块指数' ? '通达信板块' : name.replace('列表', ''),
+      count: group?.symbols.length || 0,
+      disabled: !group?.symbols.length
+    }
+  })
+)
+const activeRegimeUniverseGroups = computed(() =>
+  regimeForm.universe_groups.filter((name) => {
+    const group = config.value?.symbol_groups.find((item) => item.name === name)
+    return Boolean(group?.symbols.length)
+  })
+)
+const selectedRegimeUniverseCount = computed(() =>
+  regimeForm.universe_groups.reduce((total, name) => {
+    const group = config.value?.symbol_groups.find((item) => item.name === name)
+    return total + (group?.symbols.length || 0)
+  }, parseSymbols(regimeForm.symbols).length)
+)
+const regimeDailyReportCards = computed(() => {
+  const report = regimeResult.value?.daily_report || {}
+  const flow = report.flow || {}
+  return [
+    { label: '报告日期', value: formatDateOnly(report.as_of) || '-', detail: report.title || '未生成' },
+    { label: '风险阶段', value: report.phase || '-', detail: `RAI ${formatDecimalValue(report.score, 1)}` },
+    { label: '趋势', value: report.trend_status || '-', detail: `模式 ${flow.market_mode || '-'}` },
+    { label: '波动率', value: report.volatility_status || '-', detail: `流动性 ${report.liquidity_status || '-'}` }
+  ]
+})
+const regimeAnswerCards = computed(() =>
+  (regimeResult.value?.answer_cards || []).map((row: Record<string, any>) => ({
+    question: row.question || '-',
+    answer: row.answer || '-',
+    detail: row.detail || '-',
+    tone: row.tone || 'neutral'
+  }))
+)
+const regimeRaiTrendRows = computed(() => {
+  const rows = regimeResult.value?.risk_appetite_series || regimeResult.value?.daily_report_history || []
+  return rows.map((row: Record<string, any>) => ({
+    date: row.date || row.as_of,
+    score: numberValue(row.score),
+    phase: String(row.phase || ''),
+    breadth_ma20: row.breadth_ma20,
+    high_liquidity_break_ratio: row.high_liquidity_break_ratio,
+    cash_preference_proxy: row.cash_preference_proxy,
+    short_momentum: row.short_momentum,
+    amount_concentration: row.amount_concentration
+  })).filter((row: Record<string, any>) => row.date)
+})
+const regimeRaiWindowSize = computed(() => Math.min(REGIME_RAI_WINDOW_SIZE, regimeRaiTrendRows.value.length))
+const regimeRaiWindowMaxStart = computed(() => Math.max(0, regimeRaiTrendRows.value.length - regimeRaiWindowSize.value))
+const regimeRaiWindowStartValue = computed(() => {
+  if (regimeRaiWindowStart.value < 0) return regimeRaiWindowMaxStart.value
+  return Math.min(Math.max(0, regimeRaiWindowStart.value), regimeRaiWindowMaxStart.value)
+})
+const visibleRegimeRaiTrendRows = computed(() => {
+  const start = regimeRaiWindowStartValue.value
+  return regimeRaiTrendRows.value.slice(start, start + regimeRaiWindowSize.value)
+})
+const regimeRaiWindowAvailable = computed(() => regimeRaiTrendRows.value.length > regimeRaiWindowSize.value)
+const regimeRaiWindowLabel = computed(() => {
+  const rows = visibleRegimeRaiTrendRows.value
+  if (!rows.length) return '-'
+  return `${formatDateOnly(rows[0].date)} 至 ${formatDateOnly(rows[rows.length - 1].date)}`
+})
+const regimeRaiChartPoints = computed(() => {
+  const rows = visibleRegimeRaiTrendRows.value
+  const width = 592
+  const height = 144
+  const left = 24
+  const top = 24
+  return rows.map((row: Record<string, any>, index: number) => {
+    const x = left + (rows.length <= 1 ? width / 2 : (index / (rows.length - 1)) * width)
+    const score = Math.max(0, Math.min(100, numberValue(row.score)))
+    const y = top + ((100 - score) / 100) * height
+    return {
+      key: `${formatDateOnly(row.date)}-${index}`,
+      x,
+      y,
+      score,
+      phase: row.phase,
+      date: row.date,
+      breadth_ma20: row.breadth_ma20,
+      high_liquidity_break_ratio: row.high_liquidity_break_ratio,
+      cash_preference_proxy: row.cash_preference_proxy,
+      short_momentum: row.short_momentum,
+      amount_concentration: row.amount_concentration,
+      tone: regimePhaseTone(row.phase),
+      title: `${formatDateOnly(row.date)} · RAI ${formatDecimalValue(score, 1)} · ${row.phase || '-'}`
+    }
+  })
+})
+const regimeRaiLinePoints = computed(() => regimeRaiChartPoints.value.map((point: Record<string, any>) => `${point.x},${point.y}`).join(' '))
+const activeRegimeRaiPoint = computed(() => {
+  const points = regimeRaiChartPoints.value
+  if (!points.length) return null
+  return points.find((point: Record<string, any>) => point.key === activeRegimeRaiKey.value) || points[points.length - 1]
+})
+const regimeRaiDrivers = computed(() => {
+  const point = activeRegimeRaiPoint.value || {}
+  return [
+    { label: 'MA20宽度', value: formatPercentValue(point.breadth_ma20), detail: '站上MA20资产占比，低于35%偏弱' },
+    { label: '5日动量', value: formatPercentValue(point.short_momentum), detail: '资产池近5日表现，负值代表回撤' },
+    { label: '高流动性破位', value: formatPercentValue(point.high_liquidity_break_ratio), detail: '高成交资产跌破MA20占比' },
+    { label: '现金偏好', value: formatPercentValue(point.cash_preference_proxy), detail: '防守/现金代理强度，高位偏避险' },
+    { label: '成交集中度', value: formatPercentValue(point.amount_concentration), detail: '成交额向少数资产集中程度' }
+  ]
+})
+const regimeRaiScaleCards = [
+  { label: '65-100', value: '风险偏好扩张', detail: '宽度扩散、资金回流', tone: 'positive' },
+  { label: '35-65', value: '震荡修复', detail: '风险与修复并存', tone: 'neutral' },
+  { label: '0-35', value: '收缩/释放', detail: '现金偏好、权重破位', tone: 'negative' }
+]
+const regimeRaiAxisLabels = computed(() => {
+  const rows = visibleRegimeRaiTrendRows.value
+  if (!rows.length) return []
+  const middle = rows[Math.floor((rows.length - 1) / 2)]
+  return [formatDateOnly(rows[0].date), formatDateOnly(middle.date), formatDateOnly(rows[rows.length - 1].date)]
+})
+const regimeRaiLatestBadges = computed(() => {
+  const latest = regimeRaiTrendRows.value[regimeRaiTrendRows.value.length - 1] || {}
+  return [
+    { label: '最新', value: formatDecimalValue(latest.score, 1) },
+    { label: 'MA20宽度', value: formatPercentValue(latest.breadth_ma20) },
+    { label: '现金偏好', value: formatPercentValue(latest.cash_preference_proxy) }
+  ]
+})
+function setActiveRegimeRaiPoint(point: Record<string, any>) {
+  activeRegimeRaiKey.value = String(point.key || '')
+}
+
+function onRegimeRaiWindowInput(event: Event) {
+  const input = event.target as HTMLInputElement | null
+  regimeRaiWindowStart.value = Number(input?.value || 0)
+}
+
+function displaySymbolName(symbol: unknown) {
+  const normalized = normalizeSymbol(String(symbol || ''))
+  if (!normalized) return '-'
+  const etfMeta = etfTrackingMetaBySymbol.value.get(normalized)
+  return symbolNameMap.value.get(normalized) || cacheSymbolMeta.value.get(normalized)?.name || etfMeta?.stock_name || '-'
+}
+
+const regimeRiskTimelineRows = computed(() =>
+  (regimeResult.value?.risk_release_timeline || []).map((row: Record<string, any>) => ({
+    date: formatDateOnly(row.date),
+    layer: String(row.layer || ''),
+    layer_order: numberValue(row.layer_order),
+    asset_count: numberValue(row.asset_count),
+    return_5d: row.return_5d,
+    ma20_break_ratio: row.ma20_break_ratio,
+    amount_share: row.amount_share,
+    stress_score: numberValue(row.stress_score),
+    stress_signal: Boolean(row.stress_signal),
+    stress_level: String(row.stress_level || '')
+  })).filter((row: Record<string, any>) => row.date && row.layer)
+)
+const regimeRiskTimelineDates = computed(() =>
+  uniqueStringsInOrder(regimeRiskTimelineRows.value.map((row: Record<string, any>) => row.date)).sort().reverse()
+)
+const latestRegimeRiskTimelineDate = computed(() => regimeRiskTimelineDates.value[0] || '')
+const latestRegimeRiskTriggerLayers = computed(() =>
+  regimeRiskTimelineRows.value
+    .filter((row: Record<string, any>) => row.date === latestRegimeRiskTimelineDate.value && row.stress_signal)
+    .map((row: Record<string, any>) => row.layer)
+)
+const regimeRiskTimelineDateHeaders = computed(() => {
+  const dates = regimeRiskTimelineDates.value
+  const lastIndex = dates.length - 1
+  return dates.map((date, index) => ({
+    date,
+    show: dates.length <= 14 || index === 0 || index === lastIndex || index % 5 === 0
+  }))
+})
+const regimeRiskReleaseSummary = computed(() => {
+  const sequence = regimeResult.value?.risk_release_sequence || {}
+  const triggeredLayers = latestRegimeRiskTriggerLayers.value
+  return [
+    {
+      label: '最新日期',
+      value: shortDateLabel(latestRegimeRiskTimelineDate.value),
+      detail: '时间线最左侧'
+    },
+    {
+      label: '触发层级',
+      value: triggeredLayers.length ? `${triggeredLayers.length}层` : '0层',
+      detail: triggeredLayers.length ? triggeredLayers.join('、') : '未触发释放信号'
+    },
+    {
+      label: '顺序吻合',
+      value: formatPercentValue(sequence.sequence_score),
+      detail: '越高越接近标准释放路径'
+    },
+    {
+      label: '当前阶段',
+      value: String(sequence.current_stage || '未触发'),
+      detail: '最新压力所在层级'
+    }
+  ]
+})
+const regimeRiskReleaseNarrative = computed(() => {
+  const latestDate = latestRegimeRiskTimelineDate.value
+  const layers = latestRegimeRiskTriggerLayers.value
+  if (!latestDate) return '运行后显示风险释放路径。'
+  if (!layers.length) return `${shortDateLabel(latestDate)} 未触发释放层级，主要观察压力是否继续升温。`
+  return `${shortDateLabel(latestDate)} 已触发：${layers.join('、')}。`
+})
+const regimeRiskHeatmapRows = computed(() => {
+  const rowsByKey = new Map(regimeRiskTimelineRows.value.map((row: Record<string, any>) => [`${row.layer}-${row.date}`, row]))
+  const layers = uniqueStringsInOrder([
+    ...RISK_RELEASE_LAYER_ORDER,
+    ...regimeRiskTimelineRows.value.map((row: Record<string, any>) => row.layer)
+  ]).filter((layer) => regimeRiskTimelineRows.value.some((row: Record<string, any>) => row.layer === layer))
+  return layers.map((layer) => ({
+    layer,
+    description: RISK_RELEASE_LAYER_DESCRIPTIONS[layer] || '压力层级',
+    cells: regimeRiskTimelineDates.value.map((date) => {
+      const row: Record<string, any> = rowsByKey.get(`${layer}-${date}`) || {}
+      const stressScore = numberValue(row.stress_score)
+      return {
+        key: `${layer}-${date}`,
+        date,
+        layer,
+        stress_score: stressScore,
+        stress_signal: Boolean(row.stress_signal),
+        stress_level: String(row.stress_level || ''),
+        label: riskHeatmapStatusLabel(Boolean(row.stress_signal), stressScore),
+        title: `${date} · ${layer} · 压力 ${formatPercentValue(stressScore)} · 跌破MA20 ${formatPercentValue(row.ma20_break_ratio)} · 近5日 ${formatPercentValue(row.return_5d)} · 成交额占比 ${formatPercentValue(row.amount_share)}`
+      }
+    })
+  }))
+})
+const regimeHeatmapRowTemplate = computed(() => `18px repeat(${Math.max(1, regimeRiskHeatmapRows.value.length)}, 38px)`)
+const regimeHeatmapAxisStyle = computed(() => ({
+  gridTemplateRows: regimeHeatmapRowTemplate.value
+}))
+const regimeHeatmapGridStyle = computed(() => ({
+  gridTemplateColumns: `repeat(${Math.max(1, regimeRiskTimelineDates.value.length)}, 56px)`,
+  gridTemplateRows: regimeHeatmapRowTemplate.value
+}))
+const displayRegimeDailyEvidenceCards = computed(() =>
+  (regimeResult.value?.daily_report?.evidence || []).map((row: Record<string, any>) => {
+    const metric = String(row.metric || '-')
+    return {
+      metric,
+      value: metric.includes('数量') ? formatInt(row.value) : formatPercentValue(row.value),
+      detail: dailyEvidenceDetail(metric),
+      tone: dailyEvidenceTone(metric)
+    }
+  })
+)
+const displayRegimeDailyHistoryRows = computed(() =>
+  (regimeResult.value?.daily_report_history || []).map((row: Record<string, any>) => ({
+    '日期': formatDateOnly(row.as_of),
+    'RAI': formatDecimalValue(row.score, 1),
+    '阶段': row.phase,
+    '趋势': row.trend_status,
+    '波动率': row.volatility_status,
+    '流动性': row.liquidity_status,
+    '流出': row.funds_leaving,
+    '流入': row.funds_entering,
+    '高流动性抛售': row.high_liquidity_selloff ? '是' : '否',
+    '更接近': row.closer_to,
+    '释放阶段': row.current_release_stage,
+    'MA20宽度': formatPercentValue(row.breadth_ma20),
+    '高流动性破位': formatPercentValue(row.high_liquidity_break_ratio),
+    '现金偏好': formatPercentValue(row.cash_preference_proxy),
+    '成交额集中度': formatPercentValue(row.amount_concentration)
+  }))
+)
+const displayRegimeComponentRows = computed(() =>
+  (regimeResult.value?.risk_appetite_components || []).map((row: Record<string, any>) => ({
+    '组成': row.component,
+    '信号': row.signal,
+    '资产数': formatInt(row.asset_count),
+    '分项分': formatDecimalValue(row.score, 1),
+    '贡献': formatDecimalValue(row.contribution, 1),
+    '近5日收益': formatPercentValue(row.return_5d),
+    '跌破MA20': formatPercentValue(row.ma20_break_ratio),
+    '成交额占比': formatPercentValue(row.amount_share),
+    '阈值': row.threshold === null || row.threshold === undefined ? '-' : formatPercentValue(row.threshold)
+  }))
+)
+const displayRegimeFlowCandidateRows = computed(() =>
+  (regimeResult.value?.flow_candidates || []).map((row: Record<string, any>) => ({
+    '排名': formatInt(row.rank),
+    '代码': row.stock_code,
+    '名称': displaySymbolName(row.stock_code),
+    '评分': formatDecimalValue(row.score, 1),
+    '分组': String(row.group || '').replace('回调充分+转强', '回调充分 + 转强').replace('回调充分+未转强', '回调充分 + 未转强'),
+    '资产池': row.asset_pool,
+    '理由': row.reason,
+    '近5日': formatPercentValue(row.ret_5),
+    '近20日': formatPercentValue(row.ret_20),
+    '20日回撤': formatPercentValue(row.drawdown_20),
+    '60日回撤': formatPercentValue(row.drawdown_60),
+    'RS20': formatPercentValue(row.rs20),
+    'RS排名': formatPercentValue(row.rs_rank),
+    '成交额分位': formatPercentValue(row.amount_percentile),
+    '成交收缩': formatPercentValue(row.amount_contraction),
+    'MA20': row.above_ma20 ? '上方' : '下方',
+    '转强': row.turn_strong ? '是' : '否',
+    '回调充分': row.pullback_sufficient ? '是' : '否',
+    '高位': row.high_position_signal ? '是' : '否',
+    '高流动性': row.high_liquidity_signal ? '是' : '否'
+  }))
+)
+const regimeFlowCandidateTotalPages = computed(() =>
+  Math.max(1, Math.ceil(displayRegimeFlowCandidateRows.value.length / regimeFlowCandidatePagination.pageSize))
+)
+const regimeFlowCandidatePageStartIndex = computed(() =>
+  displayRegimeFlowCandidateRows.value.length
+    ? (regimeFlowCandidatePagination.page - 1) * regimeFlowCandidatePagination.pageSize
+    : 0
+)
+const regimeFlowCandidatePageEnd = computed(() =>
+  Math.min(regimeFlowCandidatePageStartIndex.value + regimeFlowCandidatePagination.pageSize, displayRegimeFlowCandidateRows.value.length)
+)
+const regimeFlowCandidatePageFirst = computed(() =>
+  displayRegimeFlowCandidateRows.value.length ? regimeFlowCandidatePageStartIndex.value + 1 : 0
+)
+const pagedRegimeFlowCandidateRows = computed(() =>
+  displayRegimeFlowCandidateRows.value.slice(regimeFlowCandidatePageStartIndex.value, regimeFlowCandidatePageEnd.value)
+)
+const regimeFlowCandidatePageSizeOptions = REGIME_FLOW_CANDIDATE_PAGE_SIZE_OPTIONS
+const regimeDailyCaveats = computed(() =>
+  (regimeResult.value?.daily_report?.caveats || []).map((item: unknown) => String(item || '').trim()).filter(Boolean)
+)
+const displayRegimeBenchmarkRows = computed(() => {
+  const row = regimeResult.value?.benchmark_regime
+  if (!row) return []
+  return [
+    {
+      '基准': row.benchmark_symbol || regimeForm.benchmark_symbol,
+      '日期': formatDateOnly(row.as_of),
+      '阶段': row.stage || '-',
+      '当前调整': row.is_adjustment_stage ? '是' : '否',
+      '60日涨幅': formatPercentValue(row.ret_60),
+      '20日回撤': formatPercentValue(row.drawdown_20),
+      '样本数': formatInt(row.sample_count),
+      '调整样本': formatInt(row.adjustment_sample_count),
+      '调整占比': formatPercentValue(row.adjustment_ratio),
+      '涨幅阈值': formatPercentValue(row.rally_60_threshold),
+      '回撤阈值': formatPercentValue(row.pullback_20_threshold)
+    }
+  ]
+})
+const displayRegimeAdjustmentFactorAdvantageRows = computed(() =>
+  (regimeResult.value?.adjustment_factor_advantage?.by_window || []).map((row: Record<string, any>) => ({
+    '窗口': row.window,
+    'A组样本': formatInt(row.a_sample_count),
+    '基准样本': formatInt(row.market_sample_count),
+    'A组平均收益': formatPercentValue(row.a_mean_return),
+    '基准平均收益': formatPercentValue(row.market_mean_return),
+    '相对基准': formatPercentValue(row.excess_vs_market),
+    'A组胜率': formatPercentValue(row.a_win_rate),
+    '相对指数': formatPercentValue(row.benchmark_excess_return),
+    '是否占优': row.advantage ? '是' : '否'
+  }))
+)
+const displayRegimeAdjustmentFactorRows = computed(() =>
+  (regimeResult.value?.adjustment_factor_backtest || []).map((row: Record<string, any>) => ({
+    '分组': String(row.group || '').replace('回调充分+转强', '回调充分 + 转强').replace('回调充分+未转强', '回调充分 + 未转强'),
+    '窗口': row.window,
+    '样本数': formatInt(row.sample_count),
+    '平均收益': formatPercentValue(row.mean_return),
+    '胜率': formatPercentValue(row.win_rate),
+    '超额收益': formatPercentValue(row.excess_return)
+  }))
+)
+const displayRegimeFactorAdvantageRows = computed(() =>
+  (regimeResult.value?.factor_advantage?.by_window || []).map((row: Record<string, any>) => ({
+    '窗口': row.window,
+    'A组样本': formatInt(row.a_sample_count),
+    '基准样本': formatInt(row.market_sample_count),
+    'A组平均收益': formatPercentValue(row.a_mean_return),
+    '基准平均收益': formatPercentValue(row.market_mean_return),
+    '相对基准': formatPercentValue(row.excess_vs_market),
+    'A组胜率': formatPercentValue(row.a_win_rate),
+    '相对指数': formatPercentValue(row.benchmark_excess_return),
+    '是否占优': row.advantage ? '是' : '否'
+  }))
+)
+const displayRegimeFactorRows = computed(() =>
+  (regimeResult.value?.factor_backtest || []).map((row: Record<string, any>) => ({
+    '分组': String(row.group || '').replace('回调充分+转强', '回调充分 + 转强').replace('回调充分+未转强', '回调充分 + 未转强'),
+    '窗口': row.window,
+    '样本数': formatInt(row.sample_count),
+    '平均收益': formatPercentValue(row.mean_return),
+    '胜率': formatPercentValue(row.win_rate),
+    '超额收益': formatPercentValue(row.excess_return)
+  }))
+)
+const displayRegimeMigrationRows = computed(() =>
+  (regimeResult.value?.migration_layers || []).map((row: Record<string, any>) => ({
+    '层级': row.layer,
+    '资产数': formatInt(row.asset_count),
+    '近5日收益': formatPercentValue(row.return_5d),
+    '跌破MA20': formatPercentValue(row.ma20_break_ratio),
+    '成交额占比': formatPercentValue(row.amount_share)
+  }))
+)
+const displayRegimeSequenceRows = computed(() =>
+  (regimeResult.value?.risk_release_sequence?.layers || []).map((row: Record<string, any>) => ({
+    '阶段': row.layer,
+    '首次触发': formatDateOnly(row.first_stress_date) || '-',
+    '领先/滞后天数': row.lead_lag_days ?? '-',
+    '当前触发': row.current_stress ? '是' : '否',
+    '资产数': formatInt(row.asset_count),
+    '近5日收益': formatPercentValue(row.return_5d),
+    '跌破MA20': formatPercentValue(row.ma20_break_ratio),
+    '压力分': formatPercentValue(row.stress_score)
+  }))
+)
+const displayRegimeHighLiquidityBreakRows = computed(() =>
+  (regimeResult.value?.high_liquidity_break_study || []).map((row: Record<string, any>) => ({
+    '窗口': row.window,
+    '事件数': formatInt(row.event_count),
+    '事件资产收益': formatPercentValue(row.event_asset_mean_return),
+    '全市场收益': formatPercentValue(row.market_mean_return),
+    '基准收益': formatPercentValue(row.benchmark_mean_return),
+    '基准胜率': formatPercentValue(row.benchmark_win_rate),
+    '事件宽度': formatPercentValue(row.breadth_ma20_at_event)
+  }))
+)
+const displayRegimeMarketScopeRows = computed(() =>
+  (regimeResult.value?.market_scope?.series || []).map((row: Record<string, any>) => ({
+    '日期': formatDateOnly(row.date),
+    '资产数': formatInt(row.asset_count),
+    '上涨资产': formatInt(row.rising_count),
+    '上涨占比': formatPercentValue(row.rising_ratio),
+    '领涨资产': formatInt(row.leader_count),
+    '领涨占比': formatPercentValue(row.leader_ratio),
+    'MA20宽度': formatPercentValue(row.breadth_ma20),
+    '成交额集中度': formatPercentValue(row.top20_amount_share),
+    '近5日中位收益': formatPercentValue(row.median_return_5d)
+  }))
+)
+const regimeMarketScopeTotalPages = computed(() =>
+  Math.max(1, Math.ceil(displayRegimeMarketScopeRows.value.length / regimeMarketScopePagination.pageSize))
+)
+const regimeMarketScopePageStartIndex = computed(() =>
+  displayRegimeMarketScopeRows.value.length ? (regimeMarketScopePagination.page - 1) * regimeMarketScopePagination.pageSize : 0
+)
+const regimeMarketScopePageEnd = computed(() =>
+  Math.min(regimeMarketScopePageStartIndex.value + regimeMarketScopePagination.pageSize, displayRegimeMarketScopeRows.value.length)
+)
+const regimeMarketScopePageFirst = computed(() =>
+  displayRegimeMarketScopeRows.value.length ? regimeMarketScopePageStartIndex.value + 1 : 0
+)
+const pagedRegimeMarketScopeRows = computed(() =>
+  displayRegimeMarketScopeRows.value.slice(regimeMarketScopePageStartIndex.value, regimeMarketScopePageEnd.value)
+)
+const regimeMarketScopePageSizeOptions = REGIME_MARKET_SCOPE_PAGE_SIZE_OPTIONS
+const displayRegimeAssetRows = computed(() =>
+  (regimeResult.value?.asset_rows || []).map((row: Record<string, any>) => ({
+    '代码': row.stock_code,
+    '分组': String(row.group || '').replace('回调充分+转强', '回调充分 + 转强').replace('回调充分+未转强', '回调充分 + 未转强'),
+    '资产池': row.asset_pool,
+    '日期': formatDateOnly(row.date),
+    '20日回撤': formatPercentValue(row.drawdown_20),
+    '60日回撤': formatPercentValue(row.drawdown_60),
+    'RS20': formatPercentValue(row.rs20),
+    'RS排名': formatPercentValue(row.rs_rank),
+    '近5日': formatPercentValue(row.ret_5),
+    '近20日': formatPercentValue(row.ret_20),
+    '近120日': formatPercentValue(row.ret_120),
+    'HV20': formatPercentValue(row.hv20),
+    'HV60': formatPercentValue(row.hv60),
+    'ATR20/Close': formatPercentValue(row.atr20_close),
+    '20日成交额': formatAmountValue(row.amount20),
+    '60日成交额': formatAmountValue(row.amount60),
+    '成交额排名': formatDecimalValue(row.amount_rank, 0),
+    '成交额分位': formatPercentValue(row.amount_percentile),
+    '波动桶': row.volatility_bucket,
+    '流动性桶': row.liquidity_bucket,
+    '位置桶': row.position_bucket,
+    '高位信号': row.high_position_signal ? '是' : '否',
+    '高流动性': row.high_liquidity_signal ? '是' : '否',
+    'MA20': row.above_ma20 ? '上方' : '下方',
+    'MA60': row.above_ma60 ? '上方' : '下方'
+  }))
+)
 const cacheTotalPages = computed(() => Math.max(1, Math.ceil(filteredCacheRows.value.length / cachePagination.pageSize)))
 const cachePageStartIndex = computed(() =>
   filteredCacheRows.value.length ? (cachePagination.page - 1) * cachePagination.pageSize : 0
@@ -2182,8 +3758,35 @@ const reviewChartSummary = computed(() => {
 const aiConfigReady = computed(() =>
   Boolean(aiSettings.base_url.trim() && aiSettings.api_key.trim() && aiSettings.model.trim())
 )
+const aiCommandScopeLabel = computed(() => {
+  if (activeView.value !== 'research') return `作用于：${activeMeta.value.title}`
+  return `作用于：研究工具 / ${activeResearchMeta.value.label}`
+})
+const chartThemeClass = computed(() => `chart-theme-${chartSettings.theme === 'contrast' ? 'contrast' : 'clean'}`)
+const chartDensityClass = computed(() => `chart-density-${chartSettings.density === 'compact' ? 'compact' : 'comfortable'}`)
 const aiDefaultSystemPrompt = computed(() =>
   String((reviewResult.value?.ai?.messages || []).find((message: Record<string, string>) => message.role === 'system')?.content || '')
+)
+const aiWorkbenchLatestRows = computed(() =>
+  (aiWorkbenchResult.value?.data_context?.latest || []).map((row: Record<string, any>) => ({
+    '代码': row.symbol,
+    '名称': row.name || displaySymbolName(row.symbol),
+    '日期': formatDateOnly(row.date),
+    '收盘': formatDecimalValue(row.close, 2),
+    '区间收益': formatPercentValue(row.return),
+    '行数': formatInt(row.rows)
+  }))
+)
+const aiWorkbenchRecordRows = computed(() =>
+  (aiWorkbenchResult.value?.data_context?.records || []).slice(0, 80).map((row: Record<string, any>) => ({
+    '日期': formatDateOnly(row.date),
+    '代码': row.stock_code,
+    '开': formatDecimalValue(row.open, 2),
+    '高': formatDecimalValue(row.high, 2),
+    '低': formatDecimalValue(row.low, 2),
+    '收': formatDecimalValue(row.close, 2),
+    '成交额': formatAmountValue(row.amount)
+  }))
 )
 const reviewText = computed(() => String(reviewResult.value?.text?.review || ''))
 const videoScriptText = computed(() => String(reviewResult.value?.text?.video_script || ''))
@@ -2470,6 +4073,12 @@ watch(cacheTotalPages, () => {
 watch(etfTrackerTotalPages, () => {
   goEtfTrackerPage(etfTrackerPagination.page)
 })
+watch(regimeFlowCandidateTotalPages, () => {
+  goRegimeFlowCandidatePage(regimeFlowCandidatePagination.page)
+})
+watch(regimeMarketScopeTotalPages, () => {
+  goRegimeMarketScopePage(regimeMarketScopePagination.page)
+})
 watch(planTotalPages, () => {
   goPlanPage(planPagination.page)
 })
@@ -2492,9 +4101,11 @@ watch(activeView, (view) => {
     void loadOverview(false, { includeRecords: true })
   }
   if (view === 'research' && activeResearchTab.value === 'etf') ensureEtfTrackingLoaded()
+  normalizeResizableCardWidths()
 })
 watch(activeResearchTab, (tab) => {
   if (tab === 'etf') ensureEtfTrackingLoaded()
+  normalizeResizableCardWidths()
 })
 
 const planColumns = [
@@ -2636,12 +4247,176 @@ const etfTrackerReviewColumns = [
   { key: '趋势表达', label: '趋势表达' },
   { key: '跟踪指数', label: '跟踪指数' }
 ]
+const regimeFactorAdvantageColumns = [
+  { key: '窗口', label: '窗口' },
+  { key: 'A组样本', label: 'A组样本' },
+  { key: '基准样本', label: '基准样本' },
+  { key: 'A组平均收益', label: 'A组平均收益' },
+  { key: '基准平均收益', label: '基准平均收益' },
+  { key: '相对基准', label: '相对基准' },
+  { key: 'A组胜率', label: 'A组胜率' },
+  { key: '相对指数', label: '相对指数' },
+  { key: '是否占优', label: '是否占优' }
+]
+const regimeBenchmarkColumns = [
+  { key: '基准', label: '基准' },
+  { key: '日期', label: '日期' },
+  { key: '阶段', label: '阶段' },
+  { key: '当前调整', label: '当前调整' },
+  { key: '60日涨幅', label: '60日涨幅' },
+  { key: '20日回撤', label: '20日回撤' },
+  { key: '样本数', label: '样本数' },
+  { key: '调整样本', label: '调整样本' },
+  { key: '调整占比', label: '调整占比' },
+  { key: '涨幅阈值', label: '涨幅阈值' },
+  { key: '回撤阈值', label: '回撤阈值' }
+]
+const regimeFactorColumns = [
+  { key: '分组', label: '分组' },
+  { key: '窗口', label: '窗口' },
+  { key: '样本数', label: '样本数' },
+  { key: '平均收益', label: '平均收益' },
+  { key: '胜率', label: '胜率' },
+  { key: '超额收益', label: '超额收益' }
+]
+const regimeMigrationColumns = [
+  { key: '层级', label: '层级' },
+  { key: '资产数', label: '资产数' },
+  { key: '近5日收益', label: '近5日收益' },
+  { key: '跌破MA20', label: '跌破MA20' },
+  { key: '成交额占比', label: '成交额占比' }
+]
+const regimeSequenceColumns = [
+  { key: '阶段', label: '阶段' },
+  { key: '首次触发', label: '首次触发' },
+  { key: '领先/滞后天数', label: '领先/滞后' },
+  { key: '当前触发', label: '当前触发' },
+  { key: '资产数', label: '资产数' },
+  { key: '近5日收益', label: '近5日收益' },
+  { key: '跌破MA20', label: '跌破MA20' },
+  { key: '压力分', label: '压力分' }
+]
+const regimeHighLiquidityBreakColumns = [
+  { key: '窗口', label: '窗口' },
+  { key: '事件数', label: '事件数' },
+  { key: '事件资产收益', label: '事件资产收益' },
+  { key: '全市场收益', label: '全市场收益' },
+  { key: '基准收益', label: '基准收益' },
+  { key: '基准胜率', label: '基准胜率' },
+  { key: '事件宽度', label: '事件宽度' }
+]
+const regimeDailyHistoryColumns = [
+  { key: '日期', label: '日期' },
+  { key: 'RAI', label: 'RAI' },
+  { key: '阶段', label: '阶段' },
+  { key: '趋势', label: '趋势' },
+  { key: '波动率', label: '波动率' },
+  { key: '流动性', label: '流动性' },
+  { key: '流出', label: '流出' },
+  { key: '流入', label: '流入' },
+  { key: '高流动性抛售', label: '高流动性抛售' },
+  { key: '更接近', label: '更接近' },
+  { key: '释放阶段', label: '释放阶段' },
+  { key: 'MA20宽度', label: 'MA20宽度' },
+  { key: '高流动性破位', label: '高流动性破位' },
+  { key: '现金偏好', label: '现金偏好' },
+  { key: '成交额集中度', label: '成交额集中度' }
+]
+const regimeComponentColumns = [
+  { key: '组成', label: '组成' },
+  { key: '信号', label: '信号' },
+  { key: '资产数', label: '资产数' },
+  { key: '分项分', label: '分项分' },
+  { key: '贡献', label: '贡献' },
+  { key: '近5日收益', label: '近5日收益' },
+  { key: '跌破MA20', label: '跌破MA20' },
+  { key: '成交额占比', label: '成交额占比' },
+  { key: '阈值', label: '阈值' }
+]
+const regimeFlowCandidateColumns = [
+  { key: '排名', label: '排名' },
+  { key: '代码', label: '代码' },
+  { key: '名称', label: '名称' },
+  { key: '评分', label: '评分' },
+  { key: '分组', label: '分组' },
+  { key: '资产池', label: '资产池' },
+  { key: '理由', label: '理由' },
+  { key: '近5日', label: '近5日' },
+  { key: '近20日', label: '近20日' },
+  { key: '20日回撤', label: '20日回撤' },
+  { key: '60日回撤', label: '60日回撤' },
+  { key: 'RS20', label: 'RS20' },
+  { key: 'RS排名', label: 'RS排名' },
+  { key: '成交额分位', label: '成交额分位' },
+  { key: '成交收缩', label: '成交收缩' },
+  { key: 'MA20', label: 'MA20' },
+  { key: '转强', label: '转强' },
+  { key: '回调充分', label: '回调充分' },
+  { key: '高位', label: '高位' },
+  { key: '高流动性', label: '高流动性' }
+]
+const regimeMarketScopeColumns = [
+  { key: '日期', label: '日期' },
+  { key: '资产数', label: '资产数' },
+  { key: '上涨资产', label: '上涨资产' },
+  { key: '上涨占比', label: '上涨占比' },
+  { key: '领涨资产', label: '领涨资产' },
+  { key: '领涨占比', label: '领涨占比' },
+  { key: 'MA20宽度', label: 'MA20宽度' },
+  { key: '成交额集中度', label: '成交额集中度' },
+  { key: '近5日中位收益', label: '近5日中位收益' }
+]
+const regimeAssetColumns = [
+  { key: '代码', label: '代码' },
+  { key: '分组', label: '分组' },
+  { key: '资产池', label: '资产池' },
+  { key: '日期', label: '日期' },
+  { key: '20日回撤', label: '20日回撤' },
+  { key: '60日回撤', label: '60日回撤' },
+  { key: 'RS20', label: 'RS20' },
+  { key: 'RS排名', label: 'RS排名' },
+  { key: '近5日', label: '近5日' },
+  { key: '近20日', label: '近20日' },
+  { key: '近120日', label: '近120日' },
+  { key: 'HV20', label: 'HV20' },
+  { key: 'HV60', label: 'HV60' },
+  { key: 'ATR20/Close', label: 'ATR20/Close' },
+  { key: '20日成交额', label: '20日成交额' },
+  { key: '60日成交额', label: '60日成交额' },
+  { key: '成交额排名', label: '成交额排名' },
+  { key: '成交额分位', label: '成交额分位' },
+  { key: '波动桶', label: '波动桶' },
+  { key: '流动性桶', label: '流动性桶' },
+  { key: '位置桶', label: '位置桶' },
+  { key: '高位信号', label: '高位信号' },
+  { key: '高流动性', label: '高流动性' },
+  { key: 'MA20', label: 'MA20' },
+  { key: 'MA60', label: 'MA60' }
+]
+const aiWorkbenchLatestColumns = [
+  { key: '代码', label: '代码' },
+  { key: '名称', label: '名称' },
+  { key: '日期', label: '日期' },
+  { key: '收盘', label: '收盘' },
+  { key: '区间收益', label: '区间收益' },
+  { key: '行数', label: '行数' }
+]
+const aiWorkbenchRecordColumns = [
+  { key: '日期', label: '日期' },
+  { key: '代码', label: '代码' },
+  { key: '开', label: '开' },
+  { key: '高', label: '高' },
+  { key: '低', label: '低' },
+  { key: '收', label: '收' },
+  { key: '成交额', label: '成交额' }
+]
 
 onMounted(async () => {
   restoreResearchSnapshots()
   await loadConfig()
   void loadTradingCalendar()
   await Promise.all([loadOverview(false, { includeRecords: false }), loadTasks()])
+  normalizeResizableCardWidths()
   window.setInterval(() => {
     void loadTasks({ silent: true })
   }, 2500)
@@ -3146,6 +4921,287 @@ async function runEtfTrackerReview() {
   }
 }
 
+async function runMarketRegimeResearch() {
+  runningResearch.value = 'regime'
+  try {
+    regimeResult.value = await apiPost('/research/market-regime', {
+      ...researchPayloadBase(),
+      timeframe: '1d',
+      tdx_path: settings.tdx_path,
+      benchmark_symbol: regimeForm.benchmark_symbol,
+      symbols: parseSymbols(regimeForm.symbols),
+      universe_groups: activeRegimeUniverseGroups.value,
+      start: regimeForm.start,
+      end: regimeForm.end,
+      forward_windows: parseNumberList(regimeForm.forward_windows),
+      benchmark_rally_60_threshold: percentOrDefault(regimeForm.benchmark_rally_60_threshold, 8),
+      benchmark_pullback_20_threshold: percentOrDefault(regimeForm.benchmark_pullback_20_threshold, -3),
+      pullback_20_threshold: percentOrDefault(regimeForm.pullback_20_threshold, -6),
+      pullback_60_threshold: percentOrDefault(regimeForm.pullback_60_threshold, -10),
+      liquidity_high_percentile: percentOrDefault(regimeForm.liquidity_high_percentile, 80),
+      liquidity_mid_percentile: percentOrDefault(regimeForm.liquidity_mid_percentile, 35),
+      liquidity_low_percentile: percentOrDefault(regimeForm.liquidity_low_percentile, 20),
+      volatility_high_percentile: percentOrDefault(regimeForm.volatility_high_percentile, 80),
+      volatility_low_percentile: percentOrDefault(regimeForm.volatility_low_percentile, 20),
+      high_position_drawdown_threshold: percentOrDefault(regimeForm.high_position_drawdown_threshold, -10),
+      high_position_return_percentile: percentOrDefault(regimeForm.high_position_return_percentile, 80),
+      leader_return_5d_threshold: percentOrDefault(regimeForm.leader_return_5d_threshold, 3),
+      stress_ma20_break_threshold: percentOrDefault(regimeForm.stress_ma20_break_threshold, 60),
+      stress_return_5d_threshold: percentOrDefault(regimeForm.stress_return_5d_threshold, 0),
+      cash_stress_score_threshold: percentOrDefault(regimeForm.cash_stress_score_threshold, 62),
+      cash_preference_proxy_threshold: percentOrDefault(regimeForm.cash_preference_proxy_threshold, 60),
+      risk_expansion_breadth_threshold: percentOrDefault(regimeForm.risk_expansion_breadth_threshold, 60),
+      risk_contraction_breadth_threshold: percentOrDefault(regimeForm.risk_contraction_breadth_threshold, 40),
+      risk_release_breadth_threshold: percentOrDefault(regimeForm.risk_release_breadth_threshold, 45),
+      high_liquidity_selloff_threshold: percentOrDefault(regimeForm.high_liquidity_selloff_threshold, 60),
+      concentration_top_n: numberOrDefault(regimeForm.concentration_top_n, 20),
+      daily_report_days: numberOrDefault(regimeForm.daily_report_days, 20),
+      flow_candidate_limit: numberOrDefault(regimeForm.flow_candidate_limit, 30),
+      risk_timeline_days: numberOrDefault(regimeForm.risk_timeline_days, 60)
+    })
+    regimeFlowCandidatePagination.page = 1
+    regimeMarketScopePagination.page = 1
+    activeRegimeSectionTab.value = 'overview'
+    activeRegimeRaiKey.value = ''
+    regimeRaiWindowStart.value = -1
+    const phase = regimeResult.value?.risk_appetite?.phase || '已生成'
+    showNotice('success', '市场风险偏好研究完成', `${phase} · ${formatInt(regimeResult.value?.summary?.asset_count)} 个资产。`)
+  } catch (error) {
+    showError('市场风险偏好研究失败', error)
+  } finally {
+    runningResearch.value = ''
+  }
+}
+
+async function runAiCommand() {
+  if (!aiCommandForm.text.trim()) return
+  runningAiCommand.value = true
+  try {
+    const result = await apiPost('/ai/command', {
+      ...researchPayloadBase(),
+      tdx_path: settings.tdx_path,
+      text: aiCommandForm.text,
+      current_view: activeView.value,
+      research_tab: activeResearchTab.value,
+      base_url: aiSettings.base_url.trim(),
+      api_key: aiSettings.api_key.trim(),
+      model: aiSettings.model.trim(),
+      temperature: Number(aiSettings.temperature ?? 0)
+    })
+    aiCommandResult.value = result
+    applyAiCommandResult(result)
+    showNotice('success', 'AI 命令已应用', result.summary || '已根据命令更新参数。')
+  } catch (error) {
+    showError('AI 命令失败', error)
+  } finally {
+    runningAiCommand.value = false
+  }
+}
+
+function applyAiCommandResult(result: Record<string, any>) {
+  ;(result.patches || []).forEach((patch: Record<string, any>) => applyAiCommandPatch(patch))
+}
+
+function applyAiCommandPatch(patch: Record<string, any>) {
+  const target = String(patch.target || '')
+  const value = patch.value
+  if (target === 'activeView') {
+    const nextView = String(value || '')
+    if (navItems.some((item) => item.key === nextView)) activeView.value = nextView
+    return
+  }
+  if (target === 'symbolsText') {
+    symbolsText.value = String(value || '')
+    activeView.value = 'download'
+    selectedGroup.value = 'custom'
+    return
+  }
+  if (target === 'cacheFilters.keyword') {
+    cacheFilters.keyword = String(value || '').split(/\s+/)[0] || ''
+    activeView.value = 'cache'
+    return
+  }
+  if (target === 'crossForm.universe_symbols') {
+    crossForm.universe_symbols = String(value || '')
+    activeView.value = 'research'
+    activeResearchTab.value = 'cross'
+    return
+  }
+  if (target === 'reviewForm.symbols') {
+    reviewForm.symbols = String(value || '')
+    activeView.value = 'research'
+    activeResearchTab.value = 'review'
+    return
+  }
+  if (target === 'regimeForm.symbols') {
+    regimeForm.symbols = String(value || '')
+    activeView.value = 'research'
+    activeResearchTab.value = 'regime'
+    return
+  }
+  if (target === 'selectedTimeframes') {
+    selectedTimeframes.value = normalizeDownloadTimeframes(Array.isArray(value) ? value : [String(value || '1d')])
+    activeView.value = 'download'
+    clearPlanPreview()
+    return
+  }
+  if (target === 'researchTimeframe') {
+    researchTimeframe.value = String(value || '1d')
+    activeView.value = 'research'
+    return
+  }
+  if (target.endsWith('.date_shortcut')) {
+    applyAiDateShortcut(target, String(value || ''))
+    return
+  }
+  const applied = applyAiFormFieldPatch(target, value)
+  if (applied && target.startsWith('regimeForm.')) {
+    activeView.value = 'research'
+    activeResearchTab.value = 'regime'
+  }
+}
+
+function applyAiFormFieldPatch(target: string, value: unknown) {
+  const forms: Record<string, Record<string, any>> = {
+    settings: settings as Record<string, any>,
+    cacheFilters: cacheFilters as Record<string, any>,
+    historyForm: historyForm as Record<string, any>,
+    crossForm: crossForm as Record<string, any>,
+    reviewForm: reviewForm as Record<string, any>,
+    etfTrackerForm: etfTrackerForm as Record<string, any>,
+    regimeForm: regimeForm as Record<string, any>,
+    aiWorkbenchForm: aiWorkbenchForm as Record<string, any>
+  }
+  const [formName, field] = target.split('.', 2)
+  const form = forms[formName]
+  if (!form || !field || !(field in form)) return false
+  form[field] = value
+  if (formName === 'cacheFilters') activeView.value = 'cache'
+  if (formName === 'settings') {
+    activeView.value = ['mode', 'batch_size', 'start', 'end'].includes(field) ? 'download' : 'settings'
+  }
+  if (formName === 'historyForm') {
+    activeView.value = 'research'
+    activeResearchTab.value = 'history'
+  }
+  if (formName === 'crossForm') {
+    activeView.value = 'research'
+    activeResearchTab.value = 'cross'
+  }
+  if (formName === 'reviewForm') {
+    activeView.value = 'research'
+    activeResearchTab.value = 'review'
+  }
+  if (formName === 'etfTrackerForm') {
+    activeView.value = 'research'
+    activeResearchTab.value = 'etf'
+  }
+  if (formName === 'aiWorkbenchForm') activeView.value = 'ai'
+  return true
+}
+
+function applyAiDateShortcut(target: string, key: string) {
+  if (!['20d', '50d', 'ytd', '1y'].includes(key)) return
+  const shortcut = key as DateShortcutKey
+  if (target === 'settings.date_shortcut') {
+    applyDateShortcut(settings, shortcut)
+    activeView.value = 'download'
+    return
+  }
+  if (target === 'historyForm.date_shortcut') {
+    applyHistoryDateShortcut(shortcut)
+    activeView.value = 'research'
+    activeResearchTab.value = 'history'
+    return
+  }
+  if (target === 'crossForm.date_shortcut') {
+    applyDateShortcut(crossForm, shortcut)
+    activeView.value = 'research'
+    activeResearchTab.value = 'cross'
+    return
+  }
+  if (target === 'reviewForm.date_shortcut') {
+    applyDateShortcut(reviewForm, shortcut)
+    activeView.value = 'research'
+    activeResearchTab.value = 'review'
+    return
+  }
+  if (target === 'etfForm.date_shortcut') {
+    applyDateShortcut(etfTrackerForm, shortcut)
+    activeView.value = 'research'
+    activeResearchTab.value = 'etf'
+    return
+  }
+  if (target === 'regimeForm.date_shortcut') {
+    applyDateShortcut(regimeForm, shortcut)
+    activeView.value = 'research'
+    activeResearchTab.value = 'regime'
+    return
+  }
+  if (target === 'aiWorkbenchForm.date_shortcut') {
+    applyDateShortcut(aiWorkbenchForm, shortcut)
+    activeView.value = 'ai'
+  }
+}
+
+async function runAiWorkbench() {
+  if (!aiConfigReady.value) {
+    showNotice('error', 'AI 接口未配置', '请先在系统设置里填写接口 URL、API Key 和模型。')
+    return
+  }
+  runningAiWorkbench.value = true
+  try {
+    aiWorkbenchResult.value = await apiPost('/ai/stock-agent', {
+      ...researchPayloadBase(),
+      timeframe: aiWorkbenchForm.timeframe,
+      base_url: aiSettings.base_url.trim(),
+      api_key: aiSettings.api_key.trim(),
+      model: aiSettings.model.trim(),
+      prompt: aiWorkbenchForm.prompt,
+      skill_prompt: aiWorkbenchForm.skill_prompt,
+      symbols: parseSymbols(aiWorkbenchForm.symbols),
+      start: aiWorkbenchForm.start,
+      end: aiWorkbenchForm.end,
+      temperature: Number(aiSettings.temperature ?? 0.2),
+      max_symbols: numberOrDefault(aiWorkbenchForm.max_symbols, 20),
+      max_rows: numberOrDefault(aiWorkbenchForm.max_rows, 240)
+    })
+    showNotice('success', 'AI 模块已生成', '模型已读取受限本地行情上下文并返回结果。')
+  } catch (error) {
+    showError('AI 模块运行失败', error)
+  } finally {
+    runningAiWorkbench.value = false
+  }
+}
+
+async function importAiSkillPrompt(event: Event) {
+  const input = event.target as HTMLInputElement | null
+  const file = input?.files?.[0]
+  if (!file) return
+  try {
+    const text = await file.text()
+    if (text.length > 200000) {
+      showNotice('error', 'Skill 文件过大', '请导入 200,000 字符以内的 Markdown 或纯文本。')
+      return
+    }
+    aiWorkbenchForm.skill_prompt = text
+    showNotice('success', 'Skill 已导入', `${file.name} 已载入 AI 模块提示词。`)
+  } catch (error) {
+    showError('Skill 导入失败', error)
+  } finally {
+    if (input) input.value = ''
+  }
+}
+
+function downloadMarketRegimeJson() {
+  if (!regimeResult.value) {
+    showNotice('info', '没有可导出结果', '先运行市场风险偏好研究。')
+    return
+  }
+  const date = formatDateOnly(regimeResult.value.summary?.as_of) || regimeForm.end || todayText()
+  downloadJson(`market-regime-${date}.json`, regimeResult.value)
+}
+
 function loadEtfTrackerSymbolsToReview() {
   const selected = etfTrackerReviewSymbols.value
   if (!selected.length) {
@@ -3261,6 +5317,10 @@ function loadResearchSnapshot(snapshot: ResearchSnapshot) {
   if (snapshot.tab === 'cross') Object.assign(crossForm, form)
   if (snapshot.tab === 'review') Object.assign(reviewForm, form)
   if (snapshot.tab === 'etf') Object.assign(etfTrackerForm, form)
+  if (snapshot.tab === 'regime') {
+    Object.assign(regimeForm, form)
+    normalizeRegimePercentFields()
+  }
   setResearchResult(snapshot.tab, cloneJson(snapshot.result))
   if (snapshot.tab === 'review') reviewResultSignature.value = reviewSearchSignature()
   if (snapshot.tab === 'etf') {
@@ -3726,7 +5786,8 @@ function researchSnapshotPayload(tab: ResearchTabKey) {
     history: { ...historyForm },
     cross: { ...crossForm },
     review: { ...reviewForm },
-    etf: { ...etfTrackerForm }
+    etf: { ...etfTrackerForm },
+    regime: { ...regimeForm }
   }[tab]
   return {
     base: researchPayloadBase(),
@@ -3738,6 +5799,7 @@ function researchSnapshotTitle(tab: ResearchTabKey) {
   if (tab === 'history') return `历史相似 · ${historyForm.symbol || '-'} · ${historyForm.window_start || '-'} 至 ${historyForm.as_of || '-'}`
   if (tab === 'cross') return `横截面相似 · ${crossForm.target_symbol || '-'} · ${crossForm.start || '-'} 至 ${crossForm.end || '-'}`
   if (tab === 'etf') return `场内ETF跟踪 · ${etfTrackerFilterSummary()} · ${etfTrackerForm.start || '-'} 至 ${etfTrackerForm.end || '-'}`
+  if (tab === 'regime') return `市场风险偏好 · ${regimeForm.benchmark_symbol || '-'} · ${regimeForm.start || '-'} 至 ${regimeForm.end || '-'}`
   const count = parseSymbols(reviewForm.symbols).length
   return `多股复盘 · ${formatInt(count)} 标的 · ${reviewForm.start || '-'} 至 ${reviewForm.end || '-'}`
 }
@@ -3747,18 +5809,24 @@ function researchSnapshotSummary(tab: ResearchTabKey, result: Record<string, any
   if (tab === 'history') return `${formatInt(payloadSummary.match_count)} 个历史窗口 · ${payloadSummary.timeframe || researchTimeframe.value}`
   if (tab === 'cross') return `${formatInt(payloadSummary.match_count)} 个候选匹配 · ${payloadSummary.timeframe || researchTimeframe.value}`
   if (tab === 'etf') return `${formatInt(payloadSummary.ranked_count)} 只ETF排序 · ${payloadSummary.timeframe || researchTimeframe.value}`
+  if (tab === 'regime') {
+    const appetite = result.risk_appetite || {}
+    return `${String(appetite.phase || '-')} · RAI ${formatDecimalValue(appetite.score, 1)} · ${formatInt(payloadSummary.asset_count)} 资产`
+  }
   return `${formatInt(payloadSummary.ranked_count)} 个排序标的 · ${payloadSummary.timeframe || researchTimeframe.value}`
 }
 
 function researchResultFor(tab: ResearchTabKey) {
   if (tab === 'history') return historyResult.value
   if (tab === 'cross') return crossResult.value
+  if (tab === 'regime') return regimeResult.value
   return reviewResult.value
 }
 
 function setResearchResult(tab: ResearchTabKey, result: Record<string, any>) {
   if (tab === 'history') historyResult.value = result
   if (tab === 'cross') crossResult.value = result
+  if (tab === 'regime') regimeResult.value = result
   if (tab === 'review' || tab === 'etf') reviewResult.value = result
 }
 
@@ -3784,7 +5852,7 @@ function persistResearchSnapshots() {
 function isResearchSnapshot(value: any): value is ResearchSnapshot {
   return (
     value &&
-    ['history', 'cross', 'review', 'etf'].includes(value.tab) &&
+    ['history', 'cross', 'review', 'etf', 'regime'].includes(value.tab) &&
     typeof value.id === 'string' &&
     typeof value.title === 'string' &&
     value.result &&
@@ -3794,6 +5862,16 @@ function isResearchSnapshot(value: any): value is ResearchSnapshot {
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value))
+}
+
+function downloadJson(filename: string, value: unknown) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
 }
 
 function saveSettings() {
@@ -3820,6 +5898,11 @@ function saveSettings() {
         prompt_enabled: aiPromptSaved.value,
         prompt_system: aiPromptDraft.system,
         prompt_user: aiPromptDraft.user
+      },
+      chart: {
+        theme: chartSettings.theme,
+        density: chartSettings.density,
+        show_context: chartSettings.show_context
       }
     })
   )
@@ -3831,6 +5914,7 @@ function resetSettings() {
   Object.assign(settings, config.value?.defaults || {})
   Object.assign(aiSettings, defaultAiSettings())
   Object.assign(fuyaoSettings, defaultFuyaoSettings())
+  Object.assign(chartSettings, defaultChartSettings())
   aiPromptDraft.system = ''
   aiPromptDraft.user = defaultAiUserPrompt()
   aiPromptSaved.value = false
@@ -3843,17 +5927,31 @@ function resetSettings() {
 }
 
 function resetResizableCards() {
-  document.querySelectorAll<HTMLElement>('[data-resizable-card]').forEach((element) => {
-    element.style.width = ''
-    element.style.height = ''
-    element.style.minWidth = ''
-    element.style.minHeight = ''
-  })
+  clearResizableCardInlineSize(true)
   document.body.classList.add('card-resize-resetting')
   window.requestAnimationFrame(() => {
     document.body.classList.remove('card-resize-resetting')
   })
   showNotice('info', '已还原卡片尺寸', '全部可缩放卡片已恢复自适应布局。')
+}
+
+function normalizeResizableCardWidths() {
+  window.requestAnimationFrame(() => {
+    clearResizableCardInlineSize(false)
+  })
+}
+
+function clearResizableCardInlineSize(includeHeight: boolean) {
+  document.querySelectorAll<HTMLElement>('[data-resizable-card]').forEach((element) => {
+    element.style.width = ''
+    element.style.minWidth = ''
+    element.style.maxWidth = ''
+    if (includeHeight) {
+      element.style.height = ''
+      element.style.minHeight = ''
+      element.style.maxHeight = ''
+    }
+  })
 }
 
 function restoreSettings() {
@@ -3889,6 +5987,13 @@ function restoreSettings() {
     if (saved.fuyao && typeof saved.fuyao === 'object') {
       fuyaoSettings.api_key = saved.fuyao.api_key || ''
     }
+    if (saved.chart && typeof saved.chart === 'object') {
+      Object.assign(chartSettings, {
+        theme: saved.chart.theme || chartSettings.theme,
+        density: saved.chart.density || chartSettings.density,
+        show_context: saved.chart.show_context ?? chartSettings.show_context
+      })
+    }
   } catch {
     window.localStorage.removeItem(SETTINGS_STORAGE_KEY)
   }
@@ -3906,6 +6011,14 @@ function defaultAiSettings() {
 function defaultFuyaoSettings() {
   return {
     api_key: ''
+  }
+}
+
+function defaultChartSettings() {
+  return {
+    theme: 'clean',
+    density: 'comfortable',
+    show_context: true
   }
 }
 
@@ -4114,6 +6227,59 @@ function formatDateText(date: Date) {
   return `${year}-${month}-${day}`
 }
 
+function shortDateLabel(value: unknown) {
+  const text = formatDateOnly(value)
+  return text ? text.slice(5) : '-'
+}
+
+function regimePhaseTone(phase: unknown) {
+  const text = String(phase || '')
+  if (text.includes('扩张') || text.includes('主升')) return 'positive'
+  if (text.includes('释放') || text.includes('收缩')) return 'negative'
+  return 'neutral'
+}
+
+function dailyEvidenceDetail(metric: string) {
+  if (metric.includes('MA20')) return '短期宽度'
+  if (metric.includes('MA60')) return '中期宽度'
+  if (metric.includes('跌破')) return '高流动性压力'
+  if (metric.includes('集中')) return '成交缩圈'
+  if (metric.includes('数量')) return '回流候选'
+  return '日报证据'
+}
+
+function dailyEvidenceTone(metric: string) {
+  if (metric.includes('跌破')) return 'negative'
+  if (metric.includes('数量')) return 'positive'
+  if (metric.includes('集中')) return 'warning'
+  return 'neutral'
+}
+
+function heatmapScoreLabel(value: unknown) {
+  const score = Math.max(0, Math.min(1, Number(value)))
+  return Number.isFinite(score) ? `${Math.round(score * 100)}%` : '-'
+}
+
+function riskHeatmapStatusLabel(triggered: boolean, value: unknown) {
+  if (triggered) return '触发'
+  const score = Math.max(0, Math.min(1, Number(value)))
+  if (!Number.isFinite(score)) return '-'
+  if (score >= 0.66) return '高压'
+  if (score >= 0.38) return '升温'
+  return '观察'
+}
+
+function riskHeatmapCellStyle(cell: Record<string, any>) {
+  const score = Math.max(0, Math.min(1, numberValue(cell.stress_score)))
+  const hue = 174 - score * 152
+  const alpha = 0.2 + score * 0.7
+  return {
+    backgroundColor: `hsla(${hue}, 72%, 45%, ${alpha})`,
+    borderColor: cell.stress_signal ? 'rgba(190, 18, 60, 0.88)' : 'rgba(16, 24, 40, 0.08)',
+    color: score >= 0.58 ? '#ffffff' : '#14333a'
+  }
+}
+
 function compactPath(path: string) {
   if (!path) return '未设置'
   return path.length > 34 ? `${path.slice(0, 16)}...${path.slice(-14)}` : path
@@ -4182,6 +6348,18 @@ function formatAmountValue(value: unknown) {
 function numberValue(value: unknown) {
   const numberValue = Number(value || 0)
   return Number.isFinite(numberValue) ? numberValue : 0
+}
+
+function numberOrDefault(value: unknown, fallback: number) {
+  if (value === '' || value === null || value === undefined) return fallback
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function percentOrDefault(value: unknown, fallbackPercent: number) {
+  if (value === '' || value === null || value === undefined) return fallbackPercent / 100
+  const parsed = Number(String(value).trim().replace(/%$/, ''))
+  return Number.isFinite(parsed) ? parsed / 100 : fallbackPercent / 100
 }
 
 function uniqueStrings(values: unknown[]) {
@@ -4268,6 +6446,54 @@ function setEtfTrackerPageSize(size: number) {
 
 function goEtfTrackerPage(page: number) {
   etfTrackerPagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), etfTrackerTotalPages.value)
+}
+
+function setRegimeFlowCandidatePageSize(size: number) {
+  regimeFlowCandidatePagination.pageSize = size
+  regimeFlowCandidatePagination.page = 1
+}
+
+function goRegimeFlowCandidatePage(page: number) {
+  regimeFlowCandidatePagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), regimeFlowCandidateTotalPages.value)
+}
+
+function setRegimeMarketScopePageSize(size: number) {
+  regimeMarketScopePagination.pageSize = size
+  regimeMarketScopePagination.page = 1
+}
+
+function goRegimeMarketScopePage(page: number) {
+  regimeMarketScopePagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), regimeMarketScopeTotalPages.value)
+}
+
+function applyRegimeParameterPreset(key: RegimeParameterPresetKey) {
+  const preset = REGIME_PARAMETER_PRESETS.find((item) => item.key === key)
+  if (!preset) return
+  for (const [field, value] of Object.entries(preset.values)) {
+    ;(regimeForm as Record<string, any>)[field] = value
+  }
+  showNotice('info', '风险偏好参数已切换', `${preset.label}：${preset.detail}`)
+}
+
+function normalizeRegimePercentFields() {
+  for (const field of REGIME_PERCENT_FIELD_KEYS) {
+    const current = (regimeForm as Record<string, any>)[field]
+    const normalized = normalizeLegacyPercentInput(field, current)
+    if (normalized !== current) {
+      ;(regimeForm as Record<string, any>)[field] = normalized
+    }
+  }
+}
+
+function normalizeLegacyPercentInput(field: string, value: unknown) {
+  if (!REGIME_PERCENT_FIELD_KEYS.includes(field as (typeof REGIME_PERCENT_FIELD_KEYS)[number])) return value
+  const number = Number(value)
+  if (!Number.isFinite(number) || number === 0) return value
+  const defaultPercent = REGIME_PARAMETER_PRESETS[0]?.values[field as (typeof REGIME_PERCENT_FIELD_KEYS)[number]]
+  if (!Number.isFinite(defaultPercent)) return value
+  const defaultRatio = defaultPercent / 100
+  if (Math.abs(number - defaultRatio) < 0.000001) return defaultPercent
+  return value
 }
 
 function setTaskEventPageSize(size: number) {

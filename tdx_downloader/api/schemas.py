@@ -91,6 +91,40 @@ class ReviewSearchPayload(ResearchBasePayload):
     direction_by_symbol: dict[str, str] = Field(default_factory=dict)
 
 
+class MarketRegimePayload(ResearchBasePayload):
+    benchmark_symbol: str = "000300.SH"
+    symbols: list[str] = Field(default_factory=list)
+    universe_groups: list[str] = Field(default_factory=list)
+    tdx_path: str = DEFAULT_TDX_PATH
+    start: str
+    end: str
+    forward_windows: list[int] = Field(default_factory=lambda: [3, 5, 10])
+    benchmark_rally_60_threshold: float = 0.08
+    benchmark_pullback_20_threshold: float = Field(default=-0.03, le=0.0)
+    pullback_20_threshold: float = -0.06
+    pullback_60_threshold: float = -0.10
+    liquidity_high_percentile: float = Field(default=0.80, ge=0.0, le=1.0)
+    liquidity_mid_percentile: float = Field(default=0.35, ge=0.0, le=1.0)
+    liquidity_low_percentile: float = Field(default=0.20, ge=0.0, le=1.0)
+    volatility_high_percentile: float = Field(default=0.80, ge=0.0, le=1.0)
+    volatility_low_percentile: float = Field(default=0.20, ge=0.0, le=1.0)
+    high_position_drawdown_threshold: float = Field(default=-0.10, le=0.0)
+    high_position_return_percentile: float = Field(default=0.80, ge=0.0, le=1.0)
+    leader_return_5d_threshold: float = 0.03
+    stress_ma20_break_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
+    stress_return_5d_threshold: float = 0.0
+    cash_stress_score_threshold: float = Field(default=0.62, ge=0.0, le=1.0)
+    cash_preference_proxy_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
+    risk_expansion_breadth_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
+    risk_contraction_breadth_threshold: float = Field(default=0.40, ge=0.0, le=1.0)
+    risk_release_breadth_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+    high_liquidity_selloff_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
+    concentration_top_n: int = Field(default=20, ge=1, le=500)
+    daily_report_days: int = Field(default=20, ge=1, le=120)
+    flow_candidate_limit: int = Field(default=30, ge=1, le=200)
+    risk_timeline_days: int = Field(default=60, ge=5, le=180)
+
+
 class ReviewAIPayload(BaseModel):
     base_url: str = ""
     api_key: str = ""
@@ -99,3 +133,30 @@ class ReviewAIPayload(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     temperature: float = 0.2
     timeout_seconds: int = 60
+
+
+class AICommandPayload(ResearchBasePayload):
+    text: str = ""
+    current_view: str = ""
+    research_tab: str = ""
+    tdx_path: str = DEFAULT_TDX_PATH
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    temperature: float = 0.0
+    timeout_seconds: int = 30
+
+
+class AIStockAgentPayload(ResearchBasePayload):
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    prompt: str = ""
+    skill_prompt: str = ""
+    symbols: list[str] = Field(default_factory=list)
+    start: str = Field(default_factory=lambda: (date.today() - timedelta(days=60)).isoformat())
+    end: str = Field(default_factory=lambda: date.today().isoformat())
+    temperature: float = 0.2
+    timeout_seconds: int = 60
+    max_symbols: int = Field(default=20, ge=1, le=50)
+    max_rows: int = Field(default=240, ge=20, le=1000)

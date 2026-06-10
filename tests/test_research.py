@@ -13,6 +13,8 @@ from tdx_downloader.research.review import (
     render_multi_video_script_text,
 )
 from tdx_downloader.research.features import window_features
+from tdx_downloader.research import market_regime as market_regime_module
+from tdx_downloader.research.market_regime import MarketRegimeConfig, run_market_regime_research
 from tdx_downloader.research.scoring import fast_window_feature_arrays
 from tdx_downloader.research.similarity import (
     CrossSectionSearchConfig,
@@ -260,6 +262,36 @@ def test_build_equal_weight_series_normalizes_without_dataframe_apply(monkeypatc
     assert result.warning == ""
     assert result.coverage == 1.0
     assert result.frame["stock_code"].tolist() == ["等权组合", "等权组合", "等权组合"]
+
+
+def test_market_regime_reuses_precomputed_benchmark_forward(monkeypatch: pytest.MonkeyPatch) -> None:
+    bars = pd.concat(
+        [
+            _bars("000300.SH", [10 + index * 0.03 for index in range(100)]),
+            _bars("000001.SZ", [8 + index * 0.02 for index in range(100)]),
+            _bars("000002.SZ", [12 - index * 0.01 for index in range(100)]),
+        ],
+        ignore_index=True,
+    )
+
+    def fail_aligned_benchmark_forward(*_: object, **__: object) -> None:
+        raise AssertionError("市场风偏计算不应在分组循环内重复构造基准前瞻收益。")
+
+    monkeypatch.setattr(market_regime_module, "_aligned_benchmark_forward", fail_aligned_benchmark_forward)
+
+    result = run_market_regime_research(
+        bars,
+        MarketRegimeConfig(
+            benchmark_symbol="000300.SH",
+            symbols=("000001.SZ", "000002.SZ"),
+            start="2026-01-01",
+            end="2026-05-15",
+            forward_windows=(3, 5, 10),
+        ),
+    )
+
+    assert result["factor_backtest"]
+    assert result["high_liquidity_break_study"]
 
 
 def _window_gap_days(

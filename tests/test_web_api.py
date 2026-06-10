@@ -10,6 +10,7 @@ from tdx_downloader.api.routes import catalog as catalog_routes
 from tdx_downloader.api.routes import config as config_routes
 from tdx_downloader.api.routes import download as download_routes
 from tdx_downloader.api.routes import native as native_routes
+from tdx_downloader.api.routes import research_market_regime as market_regime_routes
 from tdx_downloader.api.routes import trading_calendar as trading_calendar_routes
 from tdx_downloader.data.catalog import build_catalog, query_catalog
 from tdx_downloader.data.inventory import inventory_local_data
@@ -1025,6 +1026,178 @@ def test_api_research_cross_section_window_traversal_uses_search_interval(tmp_pa
     assert data["candidate_windows"][0]["name"] == "候选样例"
 
 
+def test_api_research_market_regime_reports_risk_appetite_from_local_cache(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    benchmark = _bars("000300.SH", [10 + index * 0.06 for index in range(75)] + [14.2 - index * 0.06 for index in range(15)])
+    pullback_turn = _bars("000001.SZ", [14, 13, 12, 11, 10, 9, 8, 8.2, 8.4, 8.7] + [8.7 + index * 0.05 for index in range(80)])
+    pullback_weak = _bars("000002.SZ", [12, 11, 10, 9, 8, 7.5, 7, 6.9, 6.8, 6.7] + [6.7 - index * 0.01 for index in range(80)])
+    high_liquidity = _bars("000003.SZ", [8 + index * 0.01 for index in range(90)])
+    high_liquidity["amount"] = [500000.0 + index * 1000 for index in range(len(high_liquidity))]
+    write_local_bars(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        bars=pd.concat([benchmark, pullback_turn, pullback_weak, high_liquidity], ignore_index=True),
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/research/market-regime",
+        json={
+            "data_root": str(data_root),
+            "adjust": "qfq",
+            "benchmark_symbol": "000300.SH",
+            "symbols": ["000001.SZ", "000002.SZ", "000003.SZ"],
+            "start": "2026-01-01",
+            "end": "2026-05-15",
+            "forward_windows": [3, 5, 10],
+            "benchmark_rally_60_threshold": 0.08,
+            "benchmark_pullback_20_threshold": -0.03,
+            "liquidity_high_percentile": 0.5,
+            "concentration_top_n": 2,
+            "daily_report_days": 7,
+            "flow_candidate_limit": 2,
+            "risk_timeline_days": 12,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["asset_count"] == 3
+    assert 0 <= data["risk_appetite"]["score"] <= 100
+    assert data["risk_appetite"]["phase"]
+    assert data["state_report"]["trend"]["breadth_ma20"] >= 0
+    assert data["daily_report"]["title"]
+    assert data["daily_report"]["answers"]["risk_phase"] == data["risk_appetite"]["phase"]
+    assert {"funds_leaving", "funds_entering", "high_liquidity_selloff", "closer_to"}.issubset(
+        data["daily_report"]["answers"]
+    )
+    assert data["answer_cards"]
+    assert {"当前风险偏好阶段", "资金正在流出哪里", "资金正在流向哪里", "回调转强是否有优势"}.issubset(
+        {row["question"] for row in data["answer_cards"]}
+    )
+    assert 1 <= len(data["daily_report_history"]) <= 7
+    assert data["daily_report_history"][-1]["phase"] == data["daily_report"]["phase"]
+    assert data["daily_report_history"][-1]["as_of"] == data["daily_report"]["as_of"]
+    assert {"funds_leaving", "funds_entering", "current_release_stage"}.issubset(data["daily_report_history"][-1])
+    assert data["risk_appetite_series"]
+    assert len({row["date"] for row in data["risk_appetite_series"]}) <= 12
+    assert {row["component"] for row in data["risk_appetite_components"]} == {
+        "市场宽度",
+        "中盘核心资产",
+        "高位资产",
+        "高流动性资产",
+        "现金偏好代理",
+    }
+    assert 1 <= len(data["flow_candidates"]) <= 2
+    assert {"score", "reason", "asset_pool"}.issubset(data["flow_candidates"][0])
+    assert data["daily_report"]["caveats"]
+    assert data["factor_backtest"]
+    assert data["factor_advantage"]["by_window"]
+    assert data["factor_advantage"]["summary"]["valid_window_count"] >= 1
+    assert data["factor_advantage"]["verdict"]
+    assert data["benchmark_regime"]["stage"] == "上涨后调整"
+    assert data["benchmark_regime"]["is_adjustment_stage"] is True
+    assert data["benchmark_regime"]["adjustment_sample_count"] > 0
+    assert data["adjustment_factor_backtest"]
+    assert all(row["sample_scope"] == "基准上涨后调整" for row in data["adjustment_factor_backtest"])
+    assert data["adjustment_factor_advantage"]["by_window"]
+    assert {"A 回调充分+转强", "B 回调充分+未转强", "D 全市场基准"}.issubset(
+        {row["group"] for row in data["factor_backtest"]}
+    )
+    assert data["migration_layers"]
+    assert data["risk_release_sequence"]["expected_order"] == ["高波资产", "高位资产", "高流动性资产", "现金偏好代理"]
+    assert data["risk_release_sequence"]["layers"]
+    assert data["risk_release_timeline"]
+    assert {"date", "layer", "stress_score", "stress_level"}.issubset(data["risk_release_timeline"][0])
+    assert data["high_liquidity_break_study"]
+    assert {row["window"] for row in data["high_liquidity_break_study"]} == {"5日", "10日", "20日"}
+    assert data["market_scope"]["latest"]["asset_count"] == 3
+    assert data["market_scope"]["series"]
+    assert data["asset_rows"]
+    first_asset = data["asset_rows"][0]
+    assert "asset_pool" in first_asset
+    assert "rs_rank" in first_asset
+    assert "amount_rank" in first_asset
+    assert data["summary"]["parameters"]["liquidity_high_percentile"] == 0.5
+    assert data["summary"]["parameters"]["benchmark_rally_60_threshold"] == 0.08
+    assert data["summary"]["parameters"]["benchmark_pullback_20_threshold"] == -0.03
+    assert data["summary"]["parameters"]["concentration_top_n"] == 2
+    assert data["summary"]["parameters"]["daily_report_days"] == 7
+    assert data["summary"]["parameters"]["flow_candidate_limit"] == 2
+    assert data["summary"]["parameters"]["risk_timeline_days"] == 12
+    assert sum(1 for row in data["asset_rows"] if row["high_liquidity_signal"]) >= 2
+    assert data["summary"]["free_float_market_cap_available"] is False
+
+
+def test_api_research_market_regime_can_resolve_sector_universe_group(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    metadata = data_root / "metadata"
+    metadata.mkdir(parents=True)
+    (metadata / "symbols.csv").write_text(
+        "stock_code,stock_name,source,path\n"
+        "880001.SH,通达信行业一,test,\n"
+        "880002.SH,通达信概念二,test,\n",
+        encoding="utf-8",
+    )
+    bars = pd.concat(
+        [
+            _bars("000300.SH", [10 + index * 0.02 for index in range(90)]),
+            _bars("880001.SH", [8 + index * 0.03 for index in range(90)]),
+            _bars("880002.SH", [7, 6.8, 6.6, 6.5, 6.4, 6.3, 6.2, 6.3, 6.4, 6.5] + [6.5 + index * 0.02 for index in range(80)]),
+        ],
+        ignore_index=True,
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/research/market-regime",
+        json={
+            "data_root": str(data_root),
+            "adjust": "qfq",
+            "benchmark_symbol": "000300.SH",
+            "symbols": [],
+            "universe_groups": ["板块指数"],
+            "start": "2026-01-01",
+            "end": "2026-05-15",
+            "forward_windows": [3, 5, 10],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["asset_count"] == 2
+    assert {row["stock_code"] for row in data["asset_rows"]} == {"880001.SH", "880002.SH"}
+
+
+def test_market_regime_group_symbols_refreshes_multiple_runtime_targets(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    received: list[str] = []
+
+    def fake_symbol_metadata(data_root: str, tdx_path: str) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    def fake_runtime_groups(data_root: str, tdx_path: str, *, target: str = "") -> list[dict[str, object]]:
+        received.append(target)
+        if target == "etf":
+            return [{"name": "ETF列表", "symbols": ["510300.SH"]}]
+        if target == "index":
+            return [{"name": "板块指数", "symbols": ["880001.SH"]}]
+        return []
+
+    monkeypatch.setattr(market_regime_routes, "symbol_metadata_with_runtime", fake_symbol_metadata)
+    monkeypatch.setattr(market_regime_routes, "shortcut_symbol_groups_with_runtime", fake_runtime_groups)
+
+    symbols = market_regime_routes._market_regime_group_symbols(
+        data_root="/tmp/data",
+        tdx_path="C:\\new_tdx64\\PYPlugins\\user",
+        groups=["ETF列表", "板块指数"],
+    )
+
+    assert received == ["etf", "index"]
+    assert symbols == ["510300.SH", "880001.SH"]
+
+
 def test_api_research_review_ranks_local_cache(tmp_path) -> None:
     data_root = tmp_path / "market"
     bars = pd.concat(
@@ -1206,4 +1379,186 @@ def test_api_research_review_ai_calls_compatible_chat(monkeypatch) -> None:  # t
     assert data["analysis"] == "数据分析"
     assert data["critique"] == "视频锐评"
     assert data["script_cards"][0]["grade"] == "人上人"
+    assert "sk-secret" not in response.text
+
+
+def test_api_ai_command_selects_chinext_symbols_and_sets_risk_parameters(tmp_path) -> None:
+    metadata = tmp_path / "metadata"
+    metadata.mkdir(parents=True)
+    (metadata / "symbols.csv").write_text(
+        "stock_code,stock_name\n"
+        "300001.SZ,创业样例A\n"
+        "301001.SZ,创业样例B\n"
+        "000001.SZ,主板样例\n",
+        encoding="utf-8",
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/command",
+        json={
+            "data_root": str(tmp_path),
+            "current_view": "research",
+            "research_tab": "regime",
+            "text": "帮我选择所有创业板股票，并把基准60日涨幅设为12%，现金偏好阈值设为65%",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["selected_symbols"] == ["300001.SZ", "301001.SZ"]
+    patches = {row["target"]: row["value"] for row in data["patches"]}
+    assert patches["regimeForm.symbols"] == "300001.SZ\n301001.SZ"
+    assert patches["regimeForm.benchmark_rally_60_threshold"] == 12
+    assert patches["regimeForm.cash_preference_proxy_threshold"] == 65
+
+
+def test_api_ai_command_plans_common_module_parameters() -> None:
+    client = TestClient(create_app())
+
+    download = client.post(
+        "/api/ai/command",
+        json={
+            "current_view": "download",
+            "text": "日线近一年强制下载，批次设为80",
+        },
+    ).json()
+    download_patches = {row["target"]: row["value"] for row in download["patches"]}
+    assert download_patches["selectedTimeframes"] == ["1d"]
+    assert download_patches["settings.date_shortcut"] == "1y"
+    assert download_patches["settings.mode"] == "force"
+    assert download_patches["settings.batch_size"] == 80
+
+    history = client.post(
+        "/api/ai/command",
+        json={
+            "current_view": "research",
+            "research_tab": "history",
+            "text": "窗口K数设为30，返回数量12，前瞻K数5,20,60",
+        },
+    ).json()
+    history_patches = {row["target"]: row["value"] for row in history["patches"]}
+    assert history_patches["historyForm.window_size"] == 30
+    assert history_patches["historyForm.top_n"] == 12
+    assert history_patches["historyForm.forward_windows"] == "5,20,60"
+
+
+def test_api_ai_command_can_use_model_parser_with_allowed_patches(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, object] = {}
+    model_content = json.dumps(
+        {
+            "summary": "模型解析完成",
+            "patches": [
+                {"target": "activeView", "value": "ai", "summary": "打开AI工作台"},
+                {"target": "aiWorkbenchForm.symbols", "value": "000001.SZ", "summary": "载入股票"},
+                {"target": "regimeForm.cash_preference_proxy_threshold", "value": 0.65, "summary": "现金阈值"},
+                {"target": "unsupported.secret", "value": "bad", "summary": "不应保留"},
+            ],
+            "warnings": [],
+        },
+        ensure_ascii=False,
+    )
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": model_content}}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout: int):  # type: ignore[no-untyped-def]
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["auth"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(ai_client.urllib.request, "urlopen", fake_urlopen)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/command",
+        json={
+            "text": "用AI分析000001.SZ，现金偏好阈值设为65%",
+            "current_view": "research",
+            "research_tab": "regime",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret",
+            "model": "compatible-model",
+            "timeout_seconds": 11,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    patches = {row["target"]: row["value"] for row in data["patches"]}
+    assert data["parser"] == "model"
+    assert captured["url"] == "https://example.test/v1/chat/completions"
+    assert captured["auth"] == "Bearer sk-secret"
+    assert captured["timeout"] == 11
+    assert patches["activeView"] == "ai"
+    assert patches["aiWorkbenchForm.symbols"] == "000001.SZ"
+    assert patches["regimeForm.cash_preference_proxy_threshold"] == 65
+    assert "unsupported.secret" not in patches
+    assert "sk-secret" not in response.text
+    assert "allowed_targets" in captured["body"]["messages"][1]["content"]
+
+
+def test_api_ai_stock_agent_opens_bounded_local_stock_data_to_model(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    data_root = tmp_path / "market"
+    write_local_bars(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        bars=_bars("000001.SZ", [10, 11, 12]),
+    )
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": "基于本地行情的AI分析"}}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout: int):  # type: ignore[no-untyped-def]
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(ai_client.urllib.request, "urlopen", fake_urlopen)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/stock-agent",
+        json={
+            "data_root": str(data_root),
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret",
+            "model": "compatible-model",
+            "prompt": "按我的skill分析这些股票",
+            "skill_prompt": "只看收盘价变化",
+            "symbols": ["000001.SZ"],
+            "start": "2026-01-01",
+            "end": "2026-01-06",
+            "max_rows": 50,
+            "timeout_seconds": 9,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["content"] == "基于本地行情的AI分析"
+    assert data["data_context"]["row_count"] == 3
+    assert data["data_context"]["latest"][0]["symbol"] == "000001.SZ"
+    body = captured["body"]
+    assert captured["timeout"] == 9
+    assert body["model"] == "compatible-model"
+    assert "000001.SZ" in body["messages"][1]["content"]
     assert "sk-secret" not in response.text
