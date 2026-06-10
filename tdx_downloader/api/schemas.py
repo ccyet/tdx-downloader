@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from tdx_downloader.data.manager import shortcut_symbols
 
 from .constants import (
+    AI_STOCK_AGENT_DEFAULT_MAX_CHARTS,
+    AI_STOCK_AGENT_MAX_CHARTS,
     DEFAULT_ADJUST,
     DEFAULT_BATCH_SIZE,
     DEFAULT_DATA_ROOT,
@@ -15,6 +17,8 @@ from .constants import (
     DEFAULT_TIMEFRAMES,
     PRICE_BARS_DEFAULT_LIMIT,
     PRICE_BARS_MAX_LIMIT,
+    PRICE_SYMBOLS_DEFAULT_LIMIT,
+    PRICE_SYMBOLS_MAX_LIMIT,
 )
 
 
@@ -62,6 +66,16 @@ class PriceBarsPayload(BaseModel):
     limit: int = Field(default=PRICE_BARS_DEFAULT_LIMIT, ge=1, le=PRICE_BARS_MAX_LIMIT)
     offset: int = Field(default=0, ge=0)
     order: str = "asc"
+
+
+class PriceSymbolsPayload(BaseModel):
+    data_root: str = DEFAULT_DATA_ROOT
+    adjust: str = DEFAULT_ADJUST
+    timeframe: str = "1d"
+    asset_types: list[str] = Field(default_factory=lambda: ["stock"])
+    keyword: str = ""
+    limit: int = Field(default=PRICE_SYMBOLS_DEFAULT_LIMIT, ge=1, le=PRICE_SYMBOLS_MAX_LIMIT)
+    offset: int = Field(default=0, ge=0)
 
 
 class ResearchBasePayload(BaseModel):
@@ -182,3 +196,4 @@ class AIStockAgentPayload(ResearchBasePayload):
     timeout_seconds: int = 60
     max_symbols: int = Field(default=20, ge=1, le=50)
     max_rows: int = Field(default=240, ge=20, le=1000)
+    max_charts: int = Field(default=AI_STOCK_AGENT_DEFAULT_MAX_CHARTS, ge=0, le=AI_STOCK_AGENT_MAX_CHARTS)

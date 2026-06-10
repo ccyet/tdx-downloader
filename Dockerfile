@@ -14,6 +14,7 @@ ENV TDX_API_PORT=8622
 ENV TDX_API_RELOAD=0
 ENV TDX_DATA_ROOT=/data/tdx-data
 ENV TDX_TQCENTER_PATH=
+ENV TDX_CORS_ORIGINS=*
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

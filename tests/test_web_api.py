@@ -200,6 +200,50 @@ def test_api_price_bars_can_select_cached_symbols_by_asset_type(tmp_path) -> Non
     assert [record["stock_code"] for record in data["records"]] == ["000001.SZ"]
 
 
+def test_api_price_symbols_returns_paginated_cached_symbol_list(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.concat(
+        [
+            _bars("000001.SZ", [10.0], start="2026-01-01"),
+            _bars("510300.SH", [4.0], start="2026-01-01"),
+        ],
+        ignore_index=True,
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+    inventory = inventory_local_data(data_root=data_root, adjust="qfq", timeframes=("1d",))
+    build_catalog(
+        data_root=data_root,
+        inventory=inventory,
+        symbol_metadata=pd.DataFrame(
+            [
+                {"stock_code": "000001.SZ", "stock_name": "平安银行", "source": "test", "path": ""},
+                {"stock_code": "510300.SH", "stock_name": "沪深300ETF", "source": "test", "path": ""},
+            ]
+        ),
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/prices/symbols",
+        params={
+            "data_root": str(data_root),
+            "adjust": "qfq",
+            "timeframe": "1d",
+            "asset_types": "stock,etf",
+            "limit": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_count"] == 2
+    assert data["record_count"] == 1
+    assert data["has_more"] is True
+    assert data["next_offset"] == 1
+    assert data["records"][0]["stock_code"] == "510300.SH"
+    assert data["records"][0]["stock_name"] == "沪深300ETF"
+
+
 def test_api_symbol_groups_uses_current_local_symbol_metadata(tmp_path) -> None:
     metadata = tmp_path / "metadata"
     metadata.mkdir()
@@ -1697,6 +1741,7 @@ def test_api_ai_stock_agent_opens_bounded_local_stock_data_to_model(tmp_path, mo
             "start": "2026-01-01",
             "end": "2026-01-06",
             "max_rows": 50,
+            "max_charts": 1,
             "timeout_seconds": 9,
         },
     )
@@ -1706,6 +1751,9 @@ def test_api_ai_stock_agent_opens_bounded_local_stock_data_to_model(tmp_path, mo
     assert data["content"] == "基于本地行情的AI分析"
     assert data["data_context"]["row_count"] == 3
     assert data["data_context"]["latest"][0]["symbol"] == "000001.SZ"
+    assert data["data_context"]["chart_limit"] == 1
+    assert data["chart_items"][0]["symbol"] == "000001.SZ"
+    assert len(data["chart_items"][0]["candles"]) == 3
     body = captured["body"]
     assert captured["timeout"] == 9
     assert body["model"] == "compatible-model"

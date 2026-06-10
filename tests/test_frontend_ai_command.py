@@ -39,6 +39,10 @@ def test_frontend_exposes_ai_workbench_and_chart_settings() -> None:
     assert "runAiWorkbench" in source
     assert "apiPost('/ai/stock-agent'" in source
     assert "aiWorkbenchLatestRows" in source
+    assert "aiWorkbenchMarkdownBlocks" in source
+    assert "aiWorkbenchChartItems" in source
+    assert "输出K线图数" in source
+    assert "max_charts: numberOrDefault(aiWorkbenchForm.max_charts, 3)" in source
     assert "统一图表设置" in source
     assert "chartSettings" in source
     assert "chartThemeClass" in source

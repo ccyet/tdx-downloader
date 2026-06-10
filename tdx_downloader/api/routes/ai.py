@@ -14,6 +14,7 @@ from tdx_downloader.data.storage import load_local_bars
 from tdx_downloader.data.symbols import load_symbol_metadata, resolve_symbol_names
 
 from ..ai_client import call_compatible_chat, call_stock_agent_ai
+from ..constants import AI_STOCK_AGENT_MAX_CHART_CANDLES
 from ..schemas import AICommandPayload, AIStockAgentPayload
 from ..serialization import _json_value, _records
 
@@ -39,6 +40,7 @@ def register_ai_routes(app: FastAPI) -> None:
                 "content": content,
                 "messages": messages,
                 "data_context": context,
+                "chart_items": context.get("chart_items", []),
                 "disclaimer": "仅用于本地行情研究，不构成投资建议。",
             }
         )
@@ -775,7 +777,8 @@ def _stock_data_context(payload: AIStockAgentPayload) -> dict[str, Any]:
     if bars.empty:
         raise ValueError("所选标的在当前时间窗口没有本地行情。")
     names = resolve_symbol_names(list(symbols), data_root=payload.data_root)
-    records = _records(bars.sort_values(["stock_code", "date"]), limit=payload.max_rows)
+    sorted_bars = bars.sort_values(["stock_code", "date"]).reset_index(drop=True)
+    records = _records(sorted_bars, limit=payload.max_rows)
     return {
         "symbols": list(symbols),
         "symbol_names": names,
@@ -786,7 +789,9 @@ def _stock_data_context(payload: AIStockAgentPayload) -> dict[str, Any]:
         "row_count": int(len(bars)),
         "record_limit": payload.max_rows,
         "records": records,
-        "latest": _latest_stock_metrics(bars, names=names),
+        "latest": _latest_stock_metrics(sorted_bars, names=names),
+        "chart_limit": payload.max_charts,
+        "chart_items": _stock_agent_chart_items(sorted_bars, names=names, max_charts=payload.max_charts),
     }
 
 
@@ -810,10 +815,40 @@ def _latest_stock_metrics(bars: pd.DataFrame, *, names: dict[str, str]) -> list[
     return rows
 
 
+def _stock_agent_chart_items(bars: pd.DataFrame, *, names: dict[str, str], max_charts: int) -> list[dict[str, Any]]:
+    if max_charts <= 0:
+        return []
+    items: list[dict[str, Any]] = []
+    for symbol, frame in bars.groupby("stock_code", sort=True):
+        if len(items) >= max_charts:
+            break
+        candles = frame.tail(AI_STOCK_AGENT_MAX_CHART_CANDLES).reset_index(drop=True)
+        if candles.empty:
+            continue
+        records = _records(candles, limit=None)
+        items.append(
+            {
+                "symbol": str(symbol),
+                "name": names.get(str(symbol), ""),
+                "label": f"AI K线 #{len(items) + 1}",
+                "candles": records,
+                "segments": [
+                    {
+                        "start": str(candles.iloc[0]["date"])[:10],
+                        "end": str(candles.iloc[-1]["date"])[:10],
+                        "direction": "AI上下文",
+                    }
+                ],
+            }
+        )
+    return items
+
+
 def _stock_agent_messages(payload: AIStockAgentPayload, context: dict[str, Any]) -> list[dict[str, str]]:
     system = (
         "你是本地股票数据研究助手。只能基于用户提供的本地行情 JSON 与用户提示词回答；"
-        "不要声称调用了外部行情、新闻或交易接口。输出需注明研究用途，不构成投资建议。"
+        "不要声称调用了外部行情、新闻或交易接口。优先使用 Markdown 输出，包含清晰小标题、要点和必要表格；"
+        "输出需注明研究用途，不构成投资建议。"
     )
     skill = payload.skill_prompt.strip()
     prompt = payload.prompt.strip()

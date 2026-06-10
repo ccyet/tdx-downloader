@@ -1964,6 +1964,10 @@
                   <span>最大标的数</span>
                   <input v-model.number="aiWorkbenchForm.max_symbols" type="number" min="1" max="50" />
                 </label>
+                <label>
+                  <span>输出K线图数</span>
+                  <input v-model.number="aiWorkbenchForm.max_charts" type="number" min="0" max="12" />
+                </label>
                 <div class="form-actions span-full">
                   <button class="btn primary" type="submit" :disabled="runningAiWorkbench || !aiConfigReady">
                     <Icon name="sparkles" />
@@ -2013,11 +2017,44 @@
 
           <Panel title="AI 输出" subtitle="模型结果与数据上下文">
             <div v-if="aiWorkbenchResult" class="ai-workbench-output">
-              <article>
-                <span>模型输出</span>
-                <pre>{{ aiWorkbenchResult.content }}</pre>
+              <section class="review-markdown-card ai-markdown-card">
+                <article
+                  v-for="(block, index) in aiWorkbenchMarkdownBlocks"
+                  :key="index"
+                  :class="['review-markdown-block', block.type]"
+                >
+                  <template v-if="block.type === 'table'">
+                    <div class="review-markdown-table">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th v-for="head in block.headers" :key="head">{{ head }}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="(row, rowIndex) in block.rows" :key="rowIndex">
+                            <td v-for="(cell, cellIndex) in row" :key="cellIndex">{{ cell }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <h4 v-if="block.title">{{ block.title }}</h4>
+                    <p v-for="(line, lineIndex) in block.lines" :key="lineIndex">{{ line }}</p>
+                  </template>
+                </article>
                 <em>{{ aiWorkbenchResult.disclaimer }}</em>
-              </article>
+              </section>
+              <div v-if="aiWorkbenchChartItems.length" class="research-kline-section ai-kline-section">
+                <div class="review-section-head">
+                  <span>AI K线图</span>
+                  <strong>{{ aiWorkbenchChartSummary }}</strong>
+                </div>
+                <div class="review-kline-grid">
+                  <KlineChart v-for="item in aiWorkbenchChartItems" :key="`ai-${item.symbol}`" :item="item" />
+                </div>
+              </div>
               <DataTable :rows="aiWorkbenchLatestRows" :columns="aiWorkbenchLatestColumns" empty="暂无最新指标。" />
               <DataTable :rows="aiWorkbenchRecordRows" :columns="aiWorkbenchRecordColumns" empty="暂无行情上下文。" />
             </div>
@@ -2844,7 +2881,8 @@ const aiWorkbenchForm = reactive({
   skill_prompt: '',
   prompt: '请基于这些本地行情数据，输出强弱判断、风险点和下一步观察项。',
   max_symbols: 20,
-  max_rows: 240
+  max_rows: 240,
+  max_charts: 3
 })
 const chartSettings = reactive({
   theme: 'clean',
@@ -3915,6 +3953,21 @@ const aiWorkbenchRecordRows = computed(() =>
     '成交额': formatAmountValue(row.amount)
   }))
 )
+const aiWorkbenchMarkdownBlocks = computed<ReviewMarkdownBlock[]>(() => {
+  const blocks = markdownBlocks(String(aiWorkbenchResult.value?.content || ''))
+  return blocks.length ? blocks : [{ type: 'paragraph', title: '', lines: ['-'], headers: [], rows: [] }]
+})
+const aiWorkbenchChartItems = computed(() =>
+  (aiWorkbenchResult.value?.chart_items || aiWorkbenchResult.value?.data_context?.chart_items || [])
+    .filter((item: Record<string, any>) => Array.isArray(item.candles) && item.candles.length)
+)
+const aiWorkbenchChartSummary = computed(() => {
+  const count = aiWorkbenchChartItems.value.length
+  const context = aiWorkbenchResult.value?.data_context || {}
+  const range = chartActualRange(aiWorkbenchChartItems.value)
+  const rangeText = range ? ` · ${range.start} 至 ${range.end}` : ''
+  return count ? `${count} 个标的 · ${context.timeframe || aiWorkbenchForm.timeframe}${rangeText}` : ''
+})
 const reviewText = computed(() => String(reviewResult.value?.text?.review || ''))
 const videoScriptText = computed(() => String(reviewResult.value?.text?.video_script || ''))
 const reviewMarkdownBlocks = computed<ReviewMarkdownBlock[]>(() =>
@@ -5329,7 +5382,8 @@ async function runAiWorkbench() {
       end: aiWorkbenchForm.end,
       temperature: Number(aiSettings.temperature ?? 0.2),
       max_symbols: numberOrDefault(aiWorkbenchForm.max_symbols, 20),
-      max_rows: numberOrDefault(aiWorkbenchForm.max_rows, 240)
+      max_rows: numberOrDefault(aiWorkbenchForm.max_rows, 240),
+      max_charts: numberOrDefault(aiWorkbenchForm.max_charts, 3)
     })
     showNotice('success', 'AI 模块已生成', '模型已读取受限本地行情上下文并返回结果。')
   } catch (error) {
@@ -6893,8 +6947,10 @@ function textBlock(lines: string[]): ReviewMarkdownBlock {
 
 function cleanMarkdownLine(line: string) {
   return line
+    .replace(/^#{1,6}\s+/, '')
     .replace(/\*\*/g, '')
     .replace(/^[-*]\s+/, '• ')
+    .replace(/^\d+[.)]\s+/, '• ')
     .trim()
 }
 

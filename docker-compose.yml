@@ -11,5 +11,6 @@ services:
       TDX_API_RELOAD: "0"
       TDX_DATA_ROOT: /data/tdx-data
       TDX_TQCENTER_PATH: ""
+      TDX_CORS_ORIGINS: "*"
     volumes:
       - "${TDX_DATA_ROOT_HOST:-/Volumes/ccOUT 1/tdx-data}:/data/tdx-data"

@@ -51,7 +51,7 @@ docker compose up -d --build
 /Volumes/ccOUT 1/tdx-data -> /data/tdx-data
 ```
 
-可用环境变量覆盖宿主机路径和端口：`TDX_DATA_ROOT_HOST`、`TDX_API_PORT`。
+可用环境变量覆盖宿主机路径、端口和跨域来源：`TDX_DATA_ROOT_HOST`、`TDX_API_PORT`、`TDX_CORS_ORIGINS`。
 Docker 默认不挂载通达信目录，避免宿主机路径不存在时容器启动失败；如需在容器内手动刷新代码表缓存，先确认真实通达信目录，再用 compose override 挂载到 `/tdx` 并设置 `TDX_TQCENTER_PATH=/tdx/PYPlugins`。
 
 推荐配置方式：
@@ -63,6 +63,9 @@ Docker 默认不挂载通达信目录，避免宿主机路径不存在时容器�
 开放 API 示例：
 
 ```bash
+# 先分页列出本地可调用的股票/ETF/指数代码
+curl "http://127.0.0.1:8622/api/prices/symbols?asset_types=stock,etf,index&timeframe=1d&limit=5000&offset=0"
+
 # 分页读取本地股票日线，asset_types 可用 stock,etf,index,other
 curl "http://127.0.0.1:8622/api/prices/bars?asset_types=stock&timeframe=1d&start=2026-06-01&end=2026-06-10&limit=5000&offset=0"
 
@@ -74,7 +77,7 @@ curl -X POST "http://127.0.0.1:8622/api/prices/bars" \
 # 使用调用方自己的大模型接口和 Skill 提示词处理本地行情
 curl -X POST "http://127.0.0.1:8622/api/ai/stock-agent" \
   -H "Content-Type: application/json" \
-  -d '{"base_url":"https://example.com/v1","api_key":"sk-...","model":"your-model","symbols":["000001.SZ"],"prompt":"按我的框架分析","skill_prompt":"你的 skill markdown"}'
+  -d '{"base_url":"https://example.com/v1","api_key":"sk-...","model":"your-model","symbols":["000001.SZ"],"prompt":"按我的框架用 Markdown 分析","skill_prompt":"你的 skill markdown","max_charts":3}'
 ```
 
 CLI：

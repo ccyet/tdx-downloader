@@ -581,7 +581,7 @@ main {
   gap: 12px;
 }
 
-.ai-workbench-output article {
+.ai-workbench-output > article {
   min-width: 0;
   display: grid;
   gap: 8px;
@@ -591,15 +591,15 @@ main {
   padding: 12px;
 }
 
-.ai-workbench-output article span,
-.ai-workbench-output article em {
+.ai-workbench-output > article span,
+.ai-workbench-output > article em {
   color: var(--muted);
   font-size: 12px;
   font-style: normal;
   font-weight: 800;
 }
 
-.ai-workbench-output pre {
+.ai-workbench-output > article pre {
   min-width: 0;
   overflow: auto;
   margin: 0;
@@ -611,6 +611,19 @@ main {
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.ai-markdown-card > em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.ai-kline-section {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .chart-setting-preview {
