@@ -2131,6 +2131,31 @@
             </form>
           </Panel>
 
+          <Panel title="开放数据 API" subtitle="外部调用">
+            <div class="api-access-list">
+              <article>
+                <span>价格 K 线</span>
+                <code>{{ priceBarsApiExample }}</code>
+                <em>按 stock / etf / index 分页读取本地 parquet；全市场数据用 limit + offset 连续拉取。</em>
+              </article>
+              <article>
+                <span>批量请求</span>
+                <code>POST {{ publicApiBaseUrl }}/prices/bars</code>
+                <em>请求体支持 symbols、asset_types、timeframe、start、end、adjust、limit、offset。</em>
+              </article>
+              <article>
+                <span>AI 数据处理</span>
+                <code>POST {{ publicApiBaseUrl }}/ai/stock-agent</code>
+                <em>调用方可传自己的 base_url、api_key、model、prompt 和 skill_prompt。</em>
+              </article>
+              <article>
+                <span>Skill 导入</span>
+                <code>AI 工作台 -> 导入 Skill / 系统提示词</code>
+                <em>导入 .md / .txt 后作为当前浏览器保存的分析提示词。</em>
+              </article>
+            </div>
+          </Panel>
+
           <Panel title="运行状态" subtitle="API">
             <div class="kv-list">
               <div class="kv-row"><span>API</span><strong>http://127.0.0.1:8622</strong></div>
@@ -3855,6 +3880,10 @@ const reviewChartSummary = computed(() => {
 })
 const aiConfigReady = computed(() =>
   Boolean(aiSettings.base_url.trim() && aiSettings.api_key.trim() && aiSettings.model.trim())
+)
+const publicApiBaseUrl = computed(() => `${window.location.origin}${API_BASE}`)
+const priceBarsApiExample = computed(
+  () => `${publicApiBaseUrl.value}/prices/bars?asset_types=stock&timeframe=1d&start=${settings.start || todayText()}&end=${settings.end || todayText()}&limit=5000`
 )
 const aiCommandScopeLabel = computed(() => {
   if (activeView.value !== 'research') return `作用于：${activeMeta.value.title}`

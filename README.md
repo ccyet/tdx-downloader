@@ -60,6 +60,23 @@ Docker 默认不挂载通达信目录，避免宿主机路径不存在时容器�
 - Mac + Parallels 取数：在 Mac 侧运行 CLI/API，让任务通过 `prlctl` 调度到 Windows；`tdx_path` 可填 `C:\new_tdx64`、`C:\new_tdx64\PYPlugins` 或 macOS 可见的 TDX 根目录。
 - 容器内目录选择器只能看到 Docker 已挂载的路径；Parallels `.pvm` 在移动硬盘上不等于容器能直接访问 Windows C 盘。
 
+开放 API 示例：
+
+```bash
+# 分页读取本地股票日线，asset_types 可用 stock,etf,index,other
+curl "http://127.0.0.1:8622/api/prices/bars?asset_types=stock&timeframe=1d&start=2026-06-01&end=2026-06-10&limit=5000&offset=0"
+
+# 指定代码批量读取分钟线
+curl -X POST "http://127.0.0.1:8622/api/prices/bars" \
+  -H "Content-Type: application/json" \
+  -d '{"symbols":["000001.SZ","510300.SH"],"timeframe":"5m","start":"2026-06-01","end":"2026-06-10","limit":5000}'
+
+# 使用调用方自己的大模型接口和 Skill 提示词处理本地行情
+curl -X POST "http://127.0.0.1:8622/api/ai/stock-agent" \
+  -H "Content-Type: application/json" \
+  -d '{"base_url":"https://example.com/v1","api_key":"sk-...","model":"your-model","symbols":["000001.SZ"],"prompt":"按我的框架分析","skill_prompt":"你的 skill markdown"}'
+```
+
 CLI：
 
 ```bash

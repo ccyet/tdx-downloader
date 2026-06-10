@@ -3377,6 +3377,46 @@ main {
   white-space: nowrap;
 }
 
+.api-access-list {
+  display: grid;
+  gap: 10px;
+}
+
+.api-access-list article {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 12px;
+}
+
+.api-access-list span {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.api-access-list code {
+  overflow-x: auto;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #0f766e;
+  padding: 8px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.api-access-list em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
 .inline-fields {
   display: grid;
   grid-template-columns: 1fr 1fr;

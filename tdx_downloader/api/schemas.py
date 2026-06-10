@@ -13,6 +13,8 @@ from .constants import (
     DEFAULT_DATA_ROOT,
     DEFAULT_TDX_PATH,
     DEFAULT_TIMEFRAMES,
+    PRICE_BARS_DEFAULT_LIMIT,
+    PRICE_BARS_MAX_LIMIT,
 )
 
 
@@ -47,6 +49,19 @@ class SymbolMetadataRefreshPayload(BaseModel):
     adjust: str = DEFAULT_ADJUST
     tdx_path: str = DEFAULT_TDX_PATH
     target: str = ""
+
+
+class PriceBarsPayload(BaseModel):
+    data_root: str = DEFAULT_DATA_ROOT
+    adjust: str = DEFAULT_ADJUST
+    timeframe: str = "1d"
+    symbols: list[str] = Field(default_factory=list)
+    asset_types: list[str] = Field(default_factory=list)
+    start: str = Field(default_factory=lambda: (date.today() - timedelta(days=20)).isoformat())
+    end: str = Field(default_factory=lambda: date.today().isoformat())
+    limit: int = Field(default=PRICE_BARS_DEFAULT_LIMIT, ge=1, le=PRICE_BARS_MAX_LIMIT)
+    offset: int = Field(default=0, ge=0)
+    order: str = "asc"
 
 
 class ResearchBasePayload(BaseModel):

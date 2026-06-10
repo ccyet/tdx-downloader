@@ -110,6 +110,96 @@ def test_catalog_payload_can_skip_cache_records(tmp_path) -> None:
     assert payload["record_limit"] == 0
 
 
+def test_api_price_bars_returns_paginated_local_bars(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.concat(
+        [
+            _bars("000001.SZ", [10.0, 11.0, 12.0], start="2026-01-01"),
+            _bars("000002.SZ", [20.0, 21.0, 22.0], start="2026-01-01"),
+        ],
+        ignore_index=True,
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+    inventory = inventory_local_data(data_root=data_root, adjust="qfq", timeframes=("1d",))
+    build_catalog(
+        data_root=data_root,
+        inventory=inventory,
+        symbol_metadata=pd.DataFrame(
+            [
+                {"stock_code": "000001.SZ", "stock_name": "平安银行", "source": "test", "path": ""},
+                {"stock_code": "000002.SZ", "stock_name": "万科A", "source": "test", "path": ""},
+            ]
+        ),
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/prices/bars",
+        json={
+            "data_root": str(data_root),
+            "adjust": "qfq",
+            "timeframe": "1d",
+            "symbols": ["000001.SZ"],
+            "start": "2026-01-01",
+            "end": "2026-01-10",
+            "limit": 1,
+            "offset": 0,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["record_count"] == 1
+    assert data["has_more"] is True
+    assert data["next_offset"] == 1
+    assert data["symbol_count"] == 1
+    assert data["records"][0]["stock_code"] == "000001.SZ"
+    assert data["records"][0]["stock_name"] == "平安银行"
+    assert data["records"][0]["close"] == 10.0
+
+
+def test_api_price_bars_can_select_cached_symbols_by_asset_type(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.concat(
+        [
+            _bars("000001.SZ", [10.0], start="2026-01-01"),
+            _bars("510300.SH", [4.0], start="2026-01-01"),
+        ],
+        ignore_index=True,
+    )
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+    inventory = inventory_local_data(data_root=data_root, adjust="qfq", timeframes=("1d",))
+    build_catalog(
+        data_root=data_root,
+        inventory=inventory,
+        symbol_metadata=pd.DataFrame(
+            [
+                {"stock_code": "000001.SZ", "stock_name": "平安银行", "source": "test", "path": ""},
+                {"stock_code": "510300.SH", "stock_name": "沪深300ETF", "source": "test", "path": ""},
+            ]
+        ),
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/prices/bars",
+        params={
+            "data_root": str(data_root),
+            "adjust": "qfq",
+            "timeframe": "1d",
+            "asset_types": "stock",
+            "start": "2026-01-01",
+            "end": "2026-01-10",
+            "limit": 10,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["symbol_count"] == 1
+    assert [record["stock_code"] for record in data["records"]] == ["000001.SZ"]
+
+
 def test_api_symbol_groups_uses_current_local_symbol_metadata(tmp_path) -> None:
     metadata = tmp_path / "metadata"
     metadata.mkdir()

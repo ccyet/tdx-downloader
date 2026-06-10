@@ -34,3 +34,12 @@ def test_directory_picker_falls_back_to_container_browser() -> None:
     assert "openDirectoryBrowser(field, extractErrorMessage(error))" in source
     assert "apiGet(`/directories?path=${query}`)" in source
     assert "使用当前目录" in source
+
+
+def test_settings_exposes_external_api_examples() -> None:
+    source = APP_VUE.read_text(encoding="utf-8")
+
+    assert "开放数据 API" in source
+    assert "/prices/bars" in source
+    assert "/ai/stock-agent" in source
+    assert "skill_prompt" in source
