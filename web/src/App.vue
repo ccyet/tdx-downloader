@@ -345,7 +345,7 @@
               </label>
 
               <label class="span-full">
-                <span>TDX PYPlugins/user</span>
+                <span>TDX PYPlugins 或根目录</span>
                 <div class="path-control">
                   <input v-model="settings.tdx_path" type="text" />
                   <button class="btn secondary" type="button" :disabled="pickingDirectory !== ''" @click="pickDirectory('tdx_path')">
@@ -2039,7 +2039,7 @@
                 </div>
               </label>
               <label class="span-full">
-                <span>TDX PYPlugins/user</span>
+                <span>TDX PYPlugins 或根目录</span>
                 <div class="path-control">
                   <input v-model="settings.tdx_path" type="text" />
                   <button class="btn secondary" type="button" :disabled="pickingDirectory !== ''" @click="pickDirectory('tdx_path')">
@@ -2048,6 +2048,22 @@
                   </button>
                 </div>
               </label>
+              <div class="symbol-cache-control span-full">
+                <div>
+                  <span>股票 / ETF / 指数列表缓存</span>
+                  <strong>{{ symbolMetadataCacheLabel }}</strong>
+                  <em :title="symbolMetadataCachePath">{{ compactPath(symbolMetadataCachePath) }}</em>
+                </div>
+                <button
+                  class="btn secondary"
+                  type="button"
+                  :disabled="loadingSymbolGroups"
+                  @click="refreshShortcutGroup('all')"
+                >
+                  <Icon name="refresh" />
+                  {{ refreshingSymbolGroup === 'all' ? '更新中' : '更新代码表缓存' }}
+                </button>
+              </div>
               <label>
                 <span>复权</span>
                 <select v-model="settings.adjust">
@@ -2133,6 +2149,72 @@
         </section>
 
       </main>
+    </div>
+
+    <div v-if="directoryBrowserOpen" class="modal-backdrop" @click.self="closeDirectoryBrowser">
+      <section class="asset-picker-modal directory-browser-modal" role="dialog" aria-modal="true" aria-labelledby="directory-browser-title">
+        <header class="asset-picker-head">
+          <div>
+            <h3 id="directory-browser-title">选择{{ directoryFieldLabel(directoryBrowserField) }}</h3>
+            <p>{{ directoryBrowserReason || '浏览当前服务可访问的目录' }}</p>
+          </div>
+          <button class="icon-button" type="button" aria-label="关闭" @click="closeDirectoryBrowser">
+            <Icon name="collapse" />
+          </button>
+        </header>
+
+        <div class="directory-browser-path">
+          <input v-model="directoryBrowserPath" type="text" aria-label="当前目录路径" @keyup.enter="loadDirectoryBrowser(directoryBrowserPath)" />
+          <button class="btn secondary" type="button" :disabled="directoryBrowserLoading" @click="loadDirectoryBrowser(directoryBrowserPath)">
+            <Icon name="folder" />
+            打开
+          </button>
+        </div>
+
+        <div class="asset-picker-summary">
+          <span :title="directoryBrowserPath">当前位置 {{ compactPath(directoryBrowserPath) }}</span>
+          <strong>{{ formatInt(directoryBrowserEntries.length) }} 个目录</strong>
+        </div>
+
+        <div v-if="directoryBrowserLoading" class="asset-picker-empty">目录读取中...</div>
+        <div v-else-if="directoryBrowserError" class="asset-picker-empty">{{ directoryBrowserError }}</div>
+        <div v-else class="directory-browser-list">
+          <button
+            v-if="directoryBrowserParent"
+            class="directory-browser-row parent"
+            type="button"
+            @click="loadDirectoryBrowser(directoryBrowserParent)"
+          >
+            <Icon name="folder" />
+            <span>
+              <strong>上级目录</strong>
+              <em>{{ directoryBrowserParent }}</em>
+            </span>
+          </button>
+          <button
+            v-for="entry in directoryBrowserEntries"
+            :key="entry.path"
+            class="directory-browser-row"
+            type="button"
+            :disabled="!entry.readable"
+            @click="loadDirectoryBrowser(entry.path)"
+          >
+            <Icon name="folder" />
+            <span>
+              <strong>{{ entry.name }}</strong>
+              <em>{{ entry.readable ? entry.path : '无读取权限' }}</em>
+            </span>
+          </button>
+          <div v-if="!directoryBrowserParent && !directoryBrowserEntries.length" class="asset-picker-empty">当前目录没有可进入的子目录。</div>
+        </div>
+
+        <footer class="asset-picker-footer">
+          <button class="btn secondary" type="button" @click="closeDirectoryBrowser">取消</button>
+          <button class="btn primary" type="button" :disabled="!directoryBrowserPath" @click="confirmDirectoryBrowserPath">
+            使用当前目录
+          </button>
+        </footer>
+      </section>
     </div>
 
     <div v-if="reviewSymbolPickerOpen" class="modal-backdrop" @click.self="closeReviewSymbolPicker">
@@ -2238,6 +2320,7 @@ interface ConfigPayload {
   symbol_names?: Record<string, string>
   integrations?: Record<string, any>
   runtime: string
+  symbol_metadata_cache?: Record<string, any>
 }
 
 interface TaskPayload {
@@ -2278,7 +2361,7 @@ interface DateRangeFields {
 type DirectoryField = 'data_root' | 'tdx_path'
 type ResearchTabKey = 'history' | 'cross' | 'review' | 'etf' | 'regime'
 type RegimeSectionTabKey = 'overview' | 'daily' | 'flow' | 'factor' | 'asset'
-type SymbolRefreshTarget = 'index' | 'etf'
+type SymbolRefreshTarget = 'all' | 'index' | 'etf'
 type ReviewSymbolPickerType = 'etf' | 'sector'
 type AssetShortcutType = 'etf' | 'stock' | 'index'
 type EtfClientCacheSource = 'empty' | 'client' | 'memory' | 'disk' | 'network' | 'cleared'
@@ -2287,6 +2370,12 @@ interface EtfClientCacheState {
   source: EtfClientCacheSource
   saved_at: number
   record_count: number
+}
+
+interface DirectoryEntry {
+  name: string
+  path: string
+  readable: boolean
 }
 
 interface ResearchSnapshot {
@@ -2626,6 +2715,14 @@ const runningAiWorkbench = ref(false)
 const activeResearchTab = ref<ResearchTabKey>('history')
 const activeRegimeSectionTab = ref<RegimeSectionTabKey>('overview')
 const pickingDirectory = ref<DirectoryField | ''>('')
+const directoryBrowserOpen = ref(false)
+const directoryBrowserField = ref<DirectoryField | ''>('')
+const directoryBrowserPath = ref('')
+const directoryBrowserParent = ref('')
+const directoryBrowserEntries = ref<DirectoryEntry[]>([])
+const directoryBrowserLoading = ref(false)
+const directoryBrowserError = ref('')
+const directoryBrowserReason = ref('')
 const planRows = ref<Array<Record<string, any>>>([])
 const planSummary = ref<Record<string, any>>({})
 const historyResult = ref<Record<string, any> | null>(null)
@@ -2638,6 +2735,7 @@ const reviewResultSignature = ref('')
 const etfTrackerResultSignature = ref('')
 const etfTrackingRows = ref<Array<Record<string, any>>>([])
 const etfReturnRows = ref<Array<Record<string, any>>>([])
+const symbolMetadataCache = ref<Record<string, any> | null>(null)
 const etfTrackingCacheState = reactive<EtfClientCacheState>({ source: 'empty', saved_at: 0, record_count: 0 })
 const etfReturnsCacheState = reactive<EtfClientCacheState>({ source: 'empty', saved_at: 0, record_count: 0 })
 const tradingCalendarDays = ref<string[]>([])
@@ -2688,7 +2786,7 @@ const regimeMarketScopePagination = reactive({
 const settings = reactive({
   data_root: '/Volumes/ccOUT 1/tdx-data',
   adjust: 'qfq',
-  tdx_path: '/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user',
+  tdx_path: '/Volumes/[C] Windows 11/new_tdx64/PYPlugins',
   start: '',
   end: '',
   mode: 'smart',
@@ -3856,6 +3954,13 @@ const uniqueAssetTypes = computed(() => {
   }))
 })
 const runtimeLabel = computed(() => config.value?.runtime === 'parallels' ? 'Parallels' : 'Local')
+const symbolMetadataCacheLabel = computed(() => {
+  const cache = symbolMetadataCache.value || config.value?.symbol_metadata_cache
+  if (!cache?.hit) return '未缓存'
+  const savedAt = symbolMetadataCacheTimeText(cache.saved_at)
+  return `${formatInt(cache.record_count)} 条${savedAt ? ` · ${savedAt}` : ''}`
+})
+const symbolMetadataCachePath = computed(() => String((symbolMetadataCache.value || config.value?.symbol_metadata_cache)?.path || ''))
 const topbarRefreshing = computed(() => loadingOverview.value || refreshingTopbar.value)
 const topbarRefreshTitle = computed(() => {
   if (activeView.value === 'cache') return '扫描缓存并更新索引'
@@ -4426,6 +4531,7 @@ async function loadConfig() {
   try {
     config.value = await apiGet('/config')
     Object.assign(settings, config.value?.defaults || {})
+    symbolMetadataCache.value = config.value?.symbol_metadata_cache || null
     selectedTimeframes.value = normalizeDownloadTimeframes(config.value?.defaults?.timeframes || ['1d'])
     researchTimeframe.value = selectedDownloadTimeframes.value[0] || '1d'
     restoreSettings()
@@ -4474,13 +4580,7 @@ async function loadSymbolGroups(preserveSelected: boolean, refreshTarget: Symbol
     })
     if (refreshTarget) params.set('target', refreshTarget)
     const data = await apiGet(`/symbol-groups?${params.toString()}`)
-    if (config.value) {
-      config.value.symbol_groups = (data.groups || []).filter(isSymbolGroup)
-      config.value.symbol_names = {
-        ...(config.value.symbol_names || {}),
-        ...(data.symbol_names || {})
-      }
-    }
+    applySymbolGroupsPayload(data)
     succeeded = true
   } catch (error) {
     showError('快捷代码加载失败', error)
@@ -4505,6 +4605,19 @@ async function loadSymbolGroups(preserveSelected: boolean, refreshTarget: Symbol
     symbolsText.value = firstGroup.symbols.join('\n')
   }
   return true
+}
+
+function applySymbolGroupsPayload(data: Record<string, any>) {
+  if (data.symbol_metadata_cache) {
+    symbolMetadataCache.value = data.symbol_metadata_cache
+    if (config.value) config.value.symbol_metadata_cache = data.symbol_metadata_cache
+  }
+  if (!config.value) return
+  config.value.symbol_groups = (data.groups || []).filter(isSymbolGroup)
+  config.value.symbol_names = {
+    ...(config.value.symbol_names || {}),
+    ...(data.symbol_names || {})
+  }
 }
 
 function ensureEtfTrackingLoaded() {
@@ -4698,6 +4811,13 @@ function etfCacheTimeText(savedAt: number) {
   return formatDateTimeText(new Date(savedAt).toISOString())
 }
 
+function symbolMetadataCacheTimeText(savedAt: unknown) {
+  const raw = Number(savedAt || 0)
+  if (!Number.isFinite(raw) || raw <= 0) return ''
+  const milliseconds = raw < 1000000000000 ? raw * 1000 : raw
+  return formatDateTimeText(new Date(milliseconds).toISOString())
+}
+
 function etfTrackerReturnSymbols() {
   return uniqueStringsInOrder([
     ...etfTrackingRows.value.map((row: Record<string, any>) => normalizeSymbol(String(row.stock_code || ''))),
@@ -4715,21 +4835,37 @@ function dynamicSymbolGroupAvailable(name: string) {
 }
 
 async function refreshShortcutGroup(target: SymbolRefreshTarget) {
-  const targetGroup = target === 'index' ? '板块指数' : 'ETF列表'
-  const targetLabel = target === 'index' ? '指数' : 'ETF'
+  if (loadingSymbolGroups.value) return
+  const targetGroup = target === 'index' ? '板块指数' : target === 'etf' ? 'ETF列表' : ''
+  const targetLabel = target === 'index' ? '指数' : target === 'etf' ? 'ETF' : '代码表'
   refreshingSymbolGroup.value = target
+  loadingSymbolGroups.value = true
   try {
-    const loaded = await loadSymbolGroups(true, target)
-    if (!loaded) return
+    settings.data_root = normalizeDataRoot(settings.data_root)
+    settings.tdx_path = normalizeTdxPath(settings.tdx_path)
+    const data = await apiPost('/symbol-metadata/refresh', {
+      data_root: settings.data_root,
+      adjust: settings.adjust,
+      tdx_path: settings.tdx_path,
+      target: target === 'all' ? '' : target
+    })
+    applySymbolGroupsPayload(data)
+    if (target === 'all') {
+      showNotice('success', '代码表缓存已更新', `已缓存 ${formatInt(data.symbol_metadata_cache?.record_count)} 条股票、ETF 与指数名称。`)
+      return
+    }
     const group = config.value?.symbol_groups.find((item) => item.name === targetGroup)
     if (!group || !group.symbols.length) {
-      showNotice('info', `${targetLabel}列表为空`, `未从当前 TDX 路径读取到${targetLabel}列表，请检查 TDX PYPlugins/user 或代码表。`)
+      showNotice('info', `${targetLabel}列表为空`, `未从当前 TDX 路径读取到${targetLabel}列表，请检查 TDX PYPlugins、TDX 根目录或代码表。`)
       return
     }
     selectedGroup.value = group.name
     symbolsText.value = group.symbols.join('\n')
     showNotice('success', `${targetLabel}列表已刷新`, `${group.name} 已读取 ${formatInt(group.symbols.length)} 只。`)
+  } catch (error) {
+    showError(`${targetLabel}列表刷新失败`, error)
   } finally {
+    loadingSymbolGroups.value = false
     refreshingSymbolGroup.value = ''
   }
 }
@@ -5368,25 +5504,73 @@ function selectTask(taskId: string) {
 }
 
 async function pickDirectory(field: DirectoryField) {
-  const labels: Record<DirectoryField, string> = {
-    data_root: '行情根目录',
-    tdx_path: 'TDX PYPlugins/user'
-  }
   pickingDirectory.value = field
   try {
     const data = await apiPost('/pick-directory', {
       initial_directory: settings[field],
-      title: `选择${labels[field]}`
+      title: `选择${directoryFieldLabel(field)}`
     })
     if (!data.path || data.cancelled) return
     settings[field] = field === 'data_root' ? normalizeDataRoot(data.path) : normalizeTdxPath(data.path)
     await loadSymbolGroups(true)
-    showNotice('success', '目录已选择', `${labels[field]} 已更新。`)
+    showNotice('success', '目录已选择', `${directoryFieldLabel(field)} 已更新。`)
   } catch (error) {
-    showError('选择目录失败', error)
+    try {
+      await openDirectoryBrowser(field, extractErrorMessage(error))
+    } catch (browserError) {
+      showError('选择目录失败', browserError)
+    }
   } finally {
     pickingDirectory.value = ''
   }
+}
+
+async function openDirectoryBrowser(field: DirectoryField, reason = '') {
+  directoryBrowserField.value = field
+  directoryBrowserReason.value = reason
+  directoryBrowserOpen.value = true
+  const initialPath = settings[field] || (field === 'data_root' ? settings.data_root : '')
+  await loadDirectoryBrowser(initialPath)
+}
+
+async function loadDirectoryBrowser(path: string) {
+  directoryBrowserLoading.value = true
+  directoryBrowserError.value = ''
+  try {
+    const query = encodeURIComponent(path || '')
+    const data = await apiGet(`/directories?path=${query}`)
+    directoryBrowserPath.value = String(data.path || '')
+    directoryBrowserParent.value = String(data.parent || '')
+    directoryBrowserEntries.value = Array.isArray(data.entries) ? data.entries : []
+  } catch (error) {
+    directoryBrowserEntries.value = []
+    directoryBrowserParent.value = ''
+    directoryBrowserError.value = extractErrorMessage(error)
+  } finally {
+    directoryBrowserLoading.value = false
+  }
+}
+
+async function confirmDirectoryBrowserPath() {
+  const field = directoryBrowserField.value
+  if (!field || !directoryBrowserPath.value) return
+  settings[field] = field === 'data_root' ? normalizeDataRoot(directoryBrowserPath.value) : normalizeTdxPath(directoryBrowserPath.value)
+  closeDirectoryBrowser()
+  await loadSymbolGroups(true)
+  showNotice('success', '目录已选择', `${directoryFieldLabel(field)} 已更新。`)
+}
+
+function closeDirectoryBrowser() {
+  directoryBrowserOpen.value = false
+  directoryBrowserField.value = ''
+  directoryBrowserError.value = ''
+  directoryBrowserReason.value = ''
+}
+
+function directoryFieldLabel(field: DirectoryField | '') {
+  if (field === 'data_root') return '行情根目录'
+  if (field === 'tdx_path') return 'TDX PYPlugins 或根目录'
+  return '文件夹'
 }
 
 function applySymbolGroup() {
@@ -5961,10 +6145,12 @@ function restoreSettings() {
     const saved = JSON.parse(raw)
     if (saved.data_root) saved.data_root = normalizeDataRoot(saved.data_root)
     if (saved.tdx_path) saved.tdx_path = normalizeTdxPath(saved.tdx_path)
+    const defaultDataRoot = normalizeDataRoot(String(config.value?.defaults?.data_root || settings.data_root))
+    const defaultTdxPath = normalizeTdxPath(String(config.value?.defaults?.tdx_path || settings.tdx_path))
     Object.assign(settings, {
-      data_root: saved.data_root || settings.data_root,
+      data_root: savedPathForCurrentRuntime(saved.data_root, defaultDataRoot) || settings.data_root,
       adjust: saved.adjust ?? settings.adjust,
-      tdx_path: saved.tdx_path || settings.tdx_path,
+      tdx_path: savedPathForCurrentRuntime(saved.tdx_path, defaultTdxPath),
       batch_size: saved.batch_size ?? settings.batch_size,
       strict_after_update: saved.strict_after_update ?? settings.strict_after_update
     })
@@ -5997,6 +6183,15 @@ function restoreSettings() {
   } catch {
     window.localStorage.removeItem(SETTINGS_STORAGE_KEY)
   }
+}
+
+function savedPathForCurrentRuntime(savedPath: unknown, defaultPath: string) {
+  const saved = String(savedPath || '').trim()
+  const currentDefault = String(defaultPath || '').trim()
+  if (!saved) return currentDefault
+  if (!currentDefault && saved.startsWith('/Volumes/')) return ''
+  if (currentDefault.startsWith('/data/') && saved.startsWith('/Volumes/')) return currentDefault
+  return saved
 }
 
 function defaultAiSettings() {
@@ -6299,13 +6494,12 @@ function normalizeDataRoot(path: string) {
 function normalizeTdxPath(path: string) {
   const text = String(path || '').trim().replace(/[\\/]+$/, '')
   if (!text) return ''
-  const separator = text.includes('\\') && !text.includes('/') ? '\\' : '/'
   const parts = text.split(/[\\/]+/)
   const last = parts[parts.length - 1]?.toLowerCase() || ''
-  if (last === 'user' || last === 'sys') return text
-  if (last === 'pyplugins') return `${text}${separator}user`
-  if (last.includes('new_tdx64') || last.includes('newtdx64') || last.includes('new_tdx')) {
-    return `${text}${separator}PYPlugins${separator}user`
+  const parent = parts[parts.length - 2]?.toLowerCase() || ''
+  if ((last === 'user' || last === 'sys') && parent === 'pyplugins') {
+    const collapsed = parts.slice(0, -1).join(text.includes('\\') && !text.includes('/') ? '\\' : '/')
+    return collapsed || text
   }
   return text
 }

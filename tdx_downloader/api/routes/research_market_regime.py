@@ -98,7 +98,10 @@ def _market_regime_symbols(payload: MarketRegimePayload) -> tuple[str, ...]:
 def _market_regime_group_symbols(*, data_root: str, tdx_path: str, groups: list[str]) -> list[str]:
     try:
         metadata = symbol_metadata_with_runtime(data_root, tdx_path)
-        available_groups = shortcut_symbol_groups(metadata=metadata)
+        available_groups = shortcut_symbol_groups(
+            metadata=metadata,
+            include_catalog_universe=not _has_non_catalog_symbol_metadata(metadata),
+        )
         if _missing_requested_groups(available_groups, groups):
             runtime_groups: list[dict[str, object]] = []
             targets = _runtime_targets(groups)
@@ -116,6 +119,13 @@ def _market_regime_group_symbols(*, data_root: str, tdx_path: str, groups: list[
         if name in groups:
             symbols.extend(group.get("symbols", []) or [])
     return symbols
+
+
+def _has_non_catalog_symbol_metadata(metadata: pd.DataFrame) -> bool:
+    if metadata.empty or "source" not in metadata.columns:
+        return bool(len(metadata))
+    sources = metadata["source"].fillna("").astype(str).str.strip().str.lower()
+    return bool((sources.ne("") & sources.ne("catalog")).any())
 
 
 def _missing_requested_groups(available_groups: list[dict[str, object]], requested_groups: list[str]) -> bool:

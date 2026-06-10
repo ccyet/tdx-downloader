@@ -3198,6 +3198,95 @@ main {
   padding-top: 2px;
 }
 
+.directory-browser-modal {
+  width: min(820px, 100%);
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+}
+
+.directory-browser-path {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.directory-browser-path input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 10px 12px;
+  color: var(--ink);
+  font-size: 13px;
+  outline: none;
+}
+
+.directory-browser-list {
+  min-height: 260px;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfffe;
+  padding: 10px;
+}
+
+.directory-browser-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.directory-browser-row:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.directory-browser-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.directory-browser-row.parent {
+  border-color: rgba(13, 148, 136, 0.22);
+  background: rgba(240, 253, 250, 0.82);
+}
+
+.directory-browser-row span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.directory-browser-row strong,
+.directory-browser-row em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-browser-row strong {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.directory-browser-row em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
 .task-form input,
 .task-form select,
 .task-form textarea {
@@ -3241,6 +3330,50 @@ main {
 
 .path-control .btn {
   min-width: 118px;
+  white-space: nowrap;
+}
+
+.symbol-cache-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #dbe4ec;
+  border-radius: 8px;
+  background: #fbfffe;
+  padding: 12px;
+}
+
+.symbol-cache-control > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.symbol-cache-control span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.symbol-cache-control strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.symbol-cache-control em {
+  min-width: 0;
+  overflow: hidden;
+  color: #667085;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.symbol-cache-control .btn {
+  min-width: 148px;
   white-space: nowrap;
 }
 
@@ -3883,6 +4016,7 @@ td {
   .mini-grid,
   .inline-fields,
   .path-control,
+  .symbol-cache-control,
   .quick-update,
   .task-form,
   .regime-preset-actions,
@@ -3917,7 +4051,8 @@ td {
 
   .asset-picker-head,
   .asset-picker-footer,
-  .asset-picker-summary {
+  .asset-picker-summary,
+  .directory-browser-path {
     align-items: flex-start;
     flex-direction: column;
   }
@@ -3928,7 +4063,8 @@ td {
 
   .asset-picker-tools input,
   .asset-picker-tools select,
-  .asset-picker-tools .btn {
+  .asset-picker-tools .btn,
+  .directory-browser-path .btn {
     width: 100%;
   }
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 import sys
+from typing import Any
 
 
 def _open_native_directory_dialog(initial_directory: str | Path, title: str) -> Path | None:
@@ -11,6 +12,36 @@ def _open_native_directory_dialog(initial_directory: str | Path, title: str) -> 
     if sys.platform.startswith("win"):
         return _open_windows_directory_dialog(initial_directory, title)
     raise RuntimeError("当前系统暂不支持弹窗选择文件夹，请直接输入路径。")
+
+
+def list_directory(path: str | Path = "") -> dict[str, Any]:
+    directory = _directory_for_listing(path)
+    entries: list[dict[str, Any]] = []
+    try:
+        children = list(directory.iterdir())
+    except OSError as exc:
+        raise RuntimeError(f"目录不可读取：{directory}") from exc
+    for child in sorted(children, key=lambda item: (not item.is_dir(), item.name.lower())):
+        try:
+            is_dir = child.is_dir()
+        except OSError:
+            continue
+        if not is_dir:
+            continue
+        entries.append(
+            {
+                "name": child.name,
+                "path": str(child),
+                "readable": _is_readable_directory(child),
+            }
+        )
+    parent = directory.parent if directory.parent != directory else None
+    return {
+        "path": str(directory),
+        "parent": str(parent) if parent is not None else None,
+        "entries": entries,
+        "entry_count": len(entries),
+    }
 
 
 def _open_macos_directory_dialog(initial_directory: str | Path, title: str) -> Path | None:
@@ -114,3 +145,26 @@ def _existing_directory(path: Path) -> Path:
         if parent.exists() and parent.is_dir():
             return parent
     return Path.home()
+
+
+def _directory_for_listing(path: str | Path) -> Path:
+    raw = str(path or "").strip()
+    if not raw:
+        data_root = Path("/data")
+        return data_root if data_root.exists() and data_root.is_dir() else Path.cwd()
+    expanded = Path(raw).expanduser()
+    if expanded.exists() and expanded.is_dir():
+        return expanded
+    if expanded.exists() and expanded.is_file():
+        return expanded.parent
+    return _existing_directory(expanded)
+
+
+def _is_readable_directory(path: Path) -> bool:
+    try:
+        next(path.iterdir(), None)
+    except StopIteration:
+        return True
+    except OSError:
+        return False
+    return True

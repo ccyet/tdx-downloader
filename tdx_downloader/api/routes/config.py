@@ -17,13 +17,14 @@ from tdx_downloader.data.catalog import ASSET_TYPE_LABELS
 from tdx_downloader.data.manager import normalize_symbol_tuple, shortcut_symbol_groups
 from tdx_downloader.data.parallels_runtime import (
     etf_tracking_with_runtime,
+    refresh_symbol_metadata_with_runtime,
     shortcut_symbol_groups_with_runtime,
     should_use_parallels_runtime,
     symbol_metadata_with_runtime,
 )
 from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES, normalize_symbol
 from tdx_downloader.data.storage import load_daily_bars, load_local_bars
-from tdx_downloader.data.symbols import DEFAULT_STOCK_NAME_BY_CODE, load_symbol_metadata
+from tdx_downloader.data.symbols import DEFAULT_STOCK_NAME_BY_CODE, load_symbol_metadata, symbol_metadata_cache_info
 from tdx_downloader.data.tdx import DEFAULT_ETF_TRACKING_INDEX_SYMBOLS
 
 from .. import schemas
@@ -60,7 +61,7 @@ def register_config_routes(app: FastAPI) -> None:
     def config() -> dict[str, Any]:
         today = date.today()
         symbol_metadata = load_symbol_metadata(DEFAULT_DATA_ROOT, tdx_path=DEFAULT_TDX_PATH)
-        groups = shortcut_symbol_groups(metadata=symbol_metadata)
+        groups = _api_shortcut_symbol_groups(symbol_metadata)
         return {
             "defaults": {
                 "data_root": DEFAULT_DATA_ROOT,
@@ -83,6 +84,7 @@ def register_config_routes(app: FastAPI) -> None:
                 }
             },
             "runtime": "parallels" if should_use_parallels_runtime() else "local",
+            "symbol_metadata_cache": symbol_metadata_cache_info(data_root=DEFAULT_DATA_ROOT, tdx_path=DEFAULT_TDX_PATH),
         }
 
     @app.get("/api/symbol-groups")
@@ -91,10 +93,15 @@ def register_config_routes(app: FastAPI) -> None:
         tdx_path: str = DEFAULT_TDX_PATH,
         adjust: str = DEFAULT_ADJUST,
         target: str = "",
+        refresh: bool = False,
     ) -> dict[str, Any]:
         try:
-            symbol_metadata = symbol_metadata_with_runtime(data_root, tdx_path)
-            groups = shortcut_symbol_groups(metadata=symbol_metadata)
+            symbol_metadata = (
+                symbol_metadata_with_runtime(data_root, tdx_path, force_refresh=True)
+                if refresh
+                else symbol_metadata_with_runtime(data_root, tdx_path)
+            )
+            groups = _api_shortcut_symbol_groups(symbol_metadata)
             if target and _missing_target_symbol_group(groups, target):
                 groups = shortcut_symbol_groups_with_runtime(data_root, tdx_path, target=target)
         except RuntimeError as exc:
@@ -103,6 +110,27 @@ def register_config_routes(app: FastAPI) -> None:
         return {
             "groups": sorted_groups,
             "symbol_names": _symbol_group_names(sorted_groups, symbol_metadata=symbol_metadata),
+            "symbol_metadata_cache": symbol_metadata_cache_info(data_root=data_root, tdx_path=tdx_path),
+        }
+
+    @app.post("/api/symbol-metadata/refresh")
+    def refresh_symbol_metadata(payload: schemas.SymbolMetadataRefreshPayload) -> dict[str, Any]:
+        try:
+            symbol_metadata = refresh_symbol_metadata_with_runtime(payload.data_root, payload.tdx_path)
+            groups = _api_shortcut_symbol_groups(symbol_metadata)
+            if payload.target and _missing_target_symbol_group(groups, payload.target):
+                groups = shortcut_symbol_groups_with_runtime(payload.data_root, payload.tdx_path, target=payload.target)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        sorted_groups = _sort_picker_symbol_groups_by_recent_amount(
+            groups,
+            data_root=payload.data_root,
+            adjust=payload.adjust,
+        )
+        return {
+            "groups": sorted_groups,
+            "symbol_names": _symbol_group_names(sorted_groups, symbol_metadata=symbol_metadata),
+            "symbol_metadata_cache": symbol_metadata_cache_info(data_root=payload.data_root, tdx_path=payload.tdx_path),
         }
 
     @app.get("/api/etf-tracking")
@@ -193,6 +221,20 @@ def register_config_routes(app: FastAPI) -> None:
 
 def _cache_meta(hit: bool, ttl_seconds: int, *, scope: str) -> dict[str, Any]:
     return {"hit": hit, "scope": scope, "ttl_seconds": ttl_seconds}
+
+
+def _api_shortcut_symbol_groups(symbol_metadata: pd.DataFrame) -> list[dict[str, list[str] | str]]:
+    return shortcut_symbol_groups(
+        metadata=symbol_metadata,
+        include_catalog_universe=not _has_non_catalog_symbol_metadata(symbol_metadata),
+    )
+
+
+def _has_non_catalog_symbol_metadata(symbol_metadata: pd.DataFrame) -> bool:
+    if symbol_metadata.empty or "source" not in symbol_metadata.columns:
+        return bool(len(symbol_metadata))
+    sources = symbol_metadata["source"].fillna("").astype(str).str.strip().str.lower()
+    return bool((sources.ne("") & sources.ne("catalog")).any())
 
 
 def _route_cache_get(

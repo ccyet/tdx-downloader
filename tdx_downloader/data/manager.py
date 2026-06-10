@@ -255,6 +255,7 @@ def shortcut_symbol_groups(
     data_root: str | Path | None = None,
     tdx_path: str | Path = "",
     metadata: pd.DataFrame | None = None,
+    include_catalog_universe: bool = False,
 ) -> list[dict[str, list[str] | str]]:
     groups: list[dict[str, list[str] | str]] = [
         {"name": name, "symbols": list(symbols)} for name, symbols in QUICK_SYMBOL_GROUPS.items()
@@ -262,7 +263,10 @@ def shortcut_symbol_groups(
     symbol_metadata = metadata
     if symbol_metadata is None and data_root is not None:
         symbol_metadata = load_symbol_metadata(data_root, tdx_path=tdx_path)
-    dynamic_groups = _dynamic_shortcut_groups(symbol_metadata)
+    dynamic_groups = _dynamic_shortcut_groups(
+        symbol_metadata,
+        include_catalog_universe=include_catalog_universe,
+    )
     for name in ("ETF列表", "板块指数", "全A股票"):
         symbols = dynamic_groups.get(name, ())
         if symbols:
@@ -270,15 +274,20 @@ def shortcut_symbol_groups(
     return groups
 
 
-def _dynamic_shortcut_groups(metadata: pd.DataFrame | None) -> dict[str, tuple[str, ...]]:
+def _dynamic_shortcut_groups(
+    metadata: pd.DataFrame | None,
+    *,
+    include_catalog_universe: bool = False,
+) -> dict[str, tuple[str, ...]]:
     if metadata is None or metadata.empty:
         return {"ETF列表": (), "全A股票": (), "板块指数": ()}
+    allow_catalog_universe = include_catalog_universe and not _has_non_catalog_symbol_metadata(metadata)
     all_a: list[str] = []
     etfs: list[str] = []
     sector_indexes: list[str] = []
     for row in metadata.itertuples(index=False):
         source = str(getattr(row, "source", "") or "").strip().lower()
-        if source == CATALOG_SYMBOL_SOURCE:
+        if source == CATALOG_SYMBOL_SOURCE and not allow_catalog_universe:
             continue
         symbol = normalize_symbol(getattr(row, "stock_code", ""))
         if not symbol:
@@ -299,6 +308,13 @@ def _dynamic_shortcut_groups(metadata: pd.DataFrame | None) -> dict[str, tuple[s
         "全A股票": tuple(sorted(unique_symbols(all_a))),
         "板块指数": tuple(sorted(unique_symbols(sector_indexes))),
     }
+
+
+def _has_non_catalog_symbol_metadata(metadata: pd.DataFrame) -> bool:
+    if "source" not in metadata.columns:
+        return bool(len(metadata))
+    sources = metadata["source"].fillna("").astype(str).str.strip().str.lower()
+    return bool((sources.ne("") & sources.ne(CATALOG_SYMBOL_SOURCE)).any())
 
 
 def cache_summary(catalog: pd.DataFrame) -> dict[str, object]:

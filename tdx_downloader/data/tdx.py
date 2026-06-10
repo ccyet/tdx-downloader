@@ -670,7 +670,7 @@ def _load_tq(tqcenter_path: str = "") -> Any:
         details = " | ".join(errors)
         raise RuntimeError(
             "无法导入 tqcenter。请先在 Windows/Parallels 内启动并登录通达信终端，并通过 "
-            f"{TDX_TQCENTER_ENV_VAR} 或页面文件夹选择器指向 PYPlugins/user。详情: {details}"
+            f"{TDX_TQCENTER_ENV_VAR} 或页面文件夹选择器指向 TDX 根目录或 PYPlugins。详情: {details}"
         ) from exc
 
 

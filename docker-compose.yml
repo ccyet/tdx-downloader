@@ -1,0 +1,15 @@
+services:
+  tdx-downloader-api:
+    build: .
+    container_name: tdx-downloader-api
+    restart: unless-stopped
+    ports:
+      - "${TDX_API_PORT:-8622}:8622"
+    environment:
+      TDX_API_HOST: 0.0.0.0
+      TDX_API_PORT: 8622
+      TDX_API_RELOAD: "0"
+      TDX_DATA_ROOT: /data/tdx-data
+      TDX_TQCENTER_PATH: ""
+    volumes:
+      - "${TDX_DATA_ROOT_HOST:-/Volumes/ccOUT 1/tdx-data}:/data/tdx-data"

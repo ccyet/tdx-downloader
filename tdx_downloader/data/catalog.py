@@ -139,10 +139,10 @@ def infer_asset_type(symbol: object, stock_name: object = "") -> str:
         return "other"
     code, exchange = normalized.split(".", 1)
     name = str(stock_name or "").upper()
-    if "ETF" in name or "LOF" in name or "基金" in name or _looks_like_etf_code(code):
-        return "etf"
     if (exchange == "SH" and code.startswith(("000", "880"))) or (exchange == "SZ" and code.startswith("399")):
         return "index"
+    if "ETF" in name or "LOF" in name or "基金" in name or _looks_like_etf_code(code):
+        return "etf"
     if code.startswith(("000", "001", "002", "003", "300", "301", "600", "601", "603", "605", "688", "689")):
         return "stock"
     if exchange == "BJ" and code.startswith(("430", "830", "831", "832", "833", "834", "835", "836", "837", "838", "839", "920")):

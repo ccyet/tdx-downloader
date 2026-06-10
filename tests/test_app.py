@@ -47,7 +47,7 @@ def test_app_renders_standalone_tdx_downloader_controls() -> None:
     assert any(item.label == "行情根目录路径" for item in app.text_input)
     data_root_input = next(item for item in app.text_input if item.label == "行情根目录路径")
     assert data_root_input.value == "/Volumes/ccOUT 1/tdx-data"
-    assert any(item.label == "TDX PYPlugins/user路径" for item in app.text_input)
+    assert any(item.label == "TDX PYPlugins 或根目录路径" for item in app.text_input)
     assert sum(1 for button in app.button if button.label == "选择文件夹") >= 2
     assert any(item.label == "代码来源" for item in app.selectbox)
     assert DEFAULT_TIMEFRAMES == ("1d",)
@@ -124,10 +124,10 @@ def test_parallels_prepare_command_uses_cli_runtime() -> None:
 
 
 def test_default_tdx_path_prefers_mounted_parallels_pyplugins(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    candidate = Path("/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user")
+    candidate = Path("/Volumes/[C] Windows 11/new_tdx64/PYPlugins")
 
     def fake_exists(path: Path) -> bool:
-        return path == candidate / "tqcenter.py"
+        return path == candidate / "user" / "tqcenter.py"
 
     monkeypatch.setattr(tdx_app.Path, "exists", fake_exists)
 
@@ -138,7 +138,7 @@ def test_default_tdx_path_uses_parallels_hint_on_mac_without_mount(monkeypatch) 
     monkeypatch.setattr(tdx_app.sys, "platform", "darwin")
     monkeypatch.setattr(tdx_app.Path, "exists", lambda _: False)
 
-    assert tdx_app._default_tdx_path() == Path("/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user")
+    assert tdx_app._default_tdx_path() == Path("/Volumes/[C] Windows 11/new_tdx64/PYPlugins")
 
 
 def test_directory_picker_migrates_old_home_tdx_default() -> None:
@@ -151,9 +151,9 @@ def test_directory_picker_migrates_old_home_tdx_default() -> None:
     app.session_state["dm_tdx_path_picker_v2_default_path"] = old_default
     app.run(timeout=5)
 
-    tdx_path_input = next(item for item in app.text_input if item.label == "TDX PYPlugins/user路径")
+    tdx_path_input = next(item for item in app.text_input if item.label == "TDX PYPlugins 或根目录路径")
 
-    assert tdx_path_input.value == "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"
+    assert tdx_path_input.value == "/Volumes/[C] Windows 11/new_tdx64/PYPlugins"
 
 
 def test_directory_picker_migrates_home_tdx_path_without_default_marker() -> None:
@@ -165,9 +165,9 @@ def test_directory_picker_migrates_home_tdx_path_without_default_marker() -> Non
     app.session_state["dm_tdx_path_picker_v2_path_input"] = old_default
     app.run(timeout=5)
 
-    tdx_path_input = next(item for item in app.text_input if item.label == "TDX PYPlugins/user路径")
+    tdx_path_input = next(item for item in app.text_input if item.label == "TDX PYPlugins 或根目录路径")
 
-    assert tdx_path_input.value == "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"
+    assert tdx_path_input.value == "/Volumes/[C] Windows 11/new_tdx64/PYPlugins"
 
 
 def test_parse_cli_table_and_force_frame() -> None:
@@ -214,7 +214,7 @@ def test_app_source_file_keeps_modern_guidance_and_cloud_boundaries() -> None:
     assert "st.file_uploader(" in source
     assert "altair_chart" not in source
     assert 'st.text_input("行情根目录"' not in source
-    assert 'st.text_input("TDX PYPlugins/user"' not in source
+    assert 'st.text_input("TDX PYPlugins 或根目录"' not in source
 
 
 def test_uploaded_symbol_files_parse_csv_and_txt() -> None:

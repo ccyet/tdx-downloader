@@ -5,7 +5,7 @@ import sqlite3
 
 import pandas as pd
 
-from tdx_downloader.data.catalog import query_catalog
+from tdx_downloader.data.catalog import infer_asset_type, query_catalog
 from tdx_downloader.data.audit import audit_local_data, data_gap_episodes
 from tdx_downloader.data.inventory import inventory_local_data
 from tdx_downloader.data.manager import (
@@ -14,7 +14,7 @@ from tdx_downloader.data.manager import (
     shortcut_symbol_groups,
     shortcut_symbols,
 )
-from tdx_downloader.data.symbols import load_tdx_symbol_metadata
+from tdx_downloader.data.symbols import load_symbol_metadata, load_tdx_symbol_metadata
 from tdx_downloader.data.storage import write_local_bars
 
 
@@ -576,6 +576,31 @@ def test_shortcut_symbol_groups_does_not_use_catalog_as_market_universe() -> Non
     assert "板块指数" not in groups
 
 
+def test_shortcut_symbol_groups_can_use_catalog_as_docker_fallback() -> None:
+    metadata = pd.DataFrame(
+        {
+            "stock_code": ["000001.SZ", "510300.SH", "880001.SH"],
+            "stock_name": ["平安银行", "沪深300ETF", "种植业"],
+            "source": ["catalog", "catalog", "catalog"],
+            "path": [""] * 3,
+        }
+    )
+
+    groups = {
+        group["name"]: group["symbols"]
+        for group in shortcut_symbol_groups(metadata=metadata, include_catalog_universe=True)
+    }
+
+    assert groups["全A股票"] == ["000001.SZ"]
+    assert groups["ETF列表"] == ["510300.SH"]
+    assert groups["板块指数"] == ["880001.SH"]
+
+
+def test_infer_asset_type_keeps_880_fund_named_concepts_as_index() -> None:
+    assert infer_asset_type("880801.SH", "基金重仓") == "index"
+    assert infer_asset_type("510300.SH", "沪深300ETF") == "etf"
+
+
 def test_tdx_symbol_metadata_reads_current_tdx_tnf_names(tmp_path: Path) -> None:
     hq_cache = tmp_path / "T0002" / "hq_cache"
     hq_cache.mkdir(parents=True)
@@ -589,4 +614,28 @@ def test_tdx_symbol_metadata_reads_current_tdx_tnf_names(tmp_path: Path) -> None
 
     assert metadata[["stock_code", "stock_name"]].to_dict("records") == [
         {"stock_code": "880001.SH", "stock_name": "种植业"}
+    ]
+
+
+def test_symbol_metadata_uses_disk_cache_after_tdx_table_moves(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    tdx_root = tmp_path / "tdx"
+    hq_cache = tdx_root / "T0002" / "hq_cache"
+    hq_cache.mkdir(parents=True)
+    record = bytearray(360)
+    record[0:6] = b"510300"
+    name = "沪深300ETF".encode("gbk")
+    record[31 : 31 + len(name)] = name
+    table = hq_cache / "shs.tnf"
+    table.write_bytes(bytes(50) + bytes(record))
+
+    first = load_symbol_metadata(data_root, tdx_path=tdx_root)
+    table.unlink()
+    second = load_symbol_metadata(data_root, tdx_path=tdx_root)
+
+    assert first[["stock_code", "stock_name"]].to_dict("records") == [
+        {"stock_code": "510300.SH", "stock_name": "沪深300ETF"}
+    ]
+    assert second[["stock_code", "stock_name"]].to_dict("records") == [
+        {"stock_code": "510300.SH", "stock_name": "沪深300ETF"}
     ]

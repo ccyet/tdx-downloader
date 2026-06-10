@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -32,7 +33,10 @@ def _mount_static_frontend(app: FastAPI) -> None:
 def main() -> None:
     import uvicorn
 
-    uvicorn.run("tdx_downloader.api.app:app", host="127.0.0.1", port=8622, reload=True)
+    host = os.getenv("TDX_API_HOST", "127.0.0.1")
+    port = int(os.getenv("TDX_API_PORT", "8622"))
+    reload = os.getenv("TDX_API_RELOAD", "1").strip().lower() in {"1", "true", "yes", "on"}
+    uvicorn.run("tdx_downloader.api.app:app", host=host, port=port, reload=reload)
 
 
 app = create_app()

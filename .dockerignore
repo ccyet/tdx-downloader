@@ -1,0 +1,10 @@
+.git
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+.DS_Store
+web/node_modules
+web/dist
+web/tsconfig.tsbuildinfo
+tdx_downloader.egg-info

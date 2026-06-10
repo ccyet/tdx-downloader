@@ -4,11 +4,18 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
-from ..native_picker import _open_native_directory_dialog
+from ..native_picker import _open_native_directory_dialog, list_directory
 from ..schemas import DirectoryPickerPayload
 
 
 def register_native_routes(app: FastAPI) -> None:
+    @app.get("/api/directories")
+    def directories(path: str = "") -> dict[str, Any]:
+        try:
+            return list_directory(path)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/pick-directory")
     def pick_directory(payload: DirectoryPickerPayload) -> dict[str, Any]:
         try:

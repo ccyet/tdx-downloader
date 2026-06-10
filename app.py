@@ -26,8 +26,7 @@ from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES
 
 DEFAULT_DATA_ROOT = "/Volumes/ccOUT 1/tdx-data"
 DEFAULT_TDX_PATH_CANDIDATES = (
-    "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user",
-    "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/sys",
+    "/Volumes/[C] Windows 11/new_tdx64/PYPlugins",
 )
 NAV_ITEMS = ("数据范围", "下载任务", "本地缓存", "执行记录", "设置")
 SYMBOL_PREVIEW_PAGE_SIZE = 10
@@ -197,7 +196,7 @@ def main() -> None:
         tdx_path = (
             ""
             if use_default_tdx_path
-            else str(_directory_picker("TDX PYPlugins/user", _default_tdx_path(), key="dm_tdx_path_picker_v2"))
+            else str(_directory_picker("TDX PYPlugins 或根目录", _default_tdx_path(), key="dm_tdx_path_picker_v2"))
         )
         batch_size = int(
             st.number_input("TDX 批次大小", min_value=1, max_value=500, value=100, step=10, key="dm_batch_size")
@@ -259,7 +258,7 @@ def _render_sidebar_brand() -> None:
 def _default_tdx_path() -> Path:
     for candidate in DEFAULT_TDX_PATH_CANDIDATES:
         path = Path(candidate)
-        if (path / "tqcenter.py").exists():
+        if any((path / relative).exists() for relative in ("tqcenter.py", "user/tqcenter.py", "sys/tqcenter.py")):
             return path
     if sys.platform == "darwin":
         return Path(DEFAULT_TDX_PATH_CANDIDATES[0])
@@ -968,7 +967,7 @@ def _render_settings_workspace(
         with st.container(border=True):
             st.markdown("##### 路径")
             st.markdown(_key_value_html("行情根目录", _display_path(data_root)), unsafe_allow_html=True)
-            st.markdown(_key_value_html("TDX PYPlugins/user", _display_path(tdx_path) if tdx_path else "系统默认"), unsafe_allow_html=True)
+            st.markdown(_key_value_html("TDX PYPlugins 或根目录", _display_path(tdx_path) if tdx_path else "系统默认"), unsafe_allow_html=True)
     with settings_cols[1]:
         with st.container(border=True):
             st.markdown("##### 下载参数")

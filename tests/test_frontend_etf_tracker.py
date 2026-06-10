@@ -202,6 +202,14 @@ def test_symbol_group_refresh_merges_tdx_names_for_picker_classification() -> No
     assert "...(data.symbol_names || {})" in source
 
 
+def test_symbol_group_refresh_uses_persistent_metadata_refresh_endpoint() -> None:
+    source = APP_VUE.read_text(encoding="utf-8")
+
+    assert "symbolMetadataCacheLabel" in source
+    assert "apiPost('/symbol-metadata/refresh'" in source
+    assert "更新代码表缓存" in source
+
+
 def test_etf_category_handles_bond_money_code_ranges_when_name_is_generic() -> None:
     source = APP_VUE.read_text(encoding="utf-8")
 

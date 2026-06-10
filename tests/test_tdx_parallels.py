@@ -29,7 +29,7 @@ class _Args:
 class _SymbolGroupsArgs:
     command = "symbol-groups"
     data_root = DEFAULT_DATA_ROOT
-    tdx_path = "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"
+    tdx_path = "/Volumes/[C] Windows 11/new_tdx64/PYPlugins"
     output = "json"
 
 
@@ -70,7 +70,7 @@ def test_forward_args_maps_symbol_groups_paths_for_windows_cli() -> None:
 
     assert forwarded[:3] == ["symbol-groups", "--runtime", "local"]
     assert forwarded[forwarded.index("--data-root") + 1] == r"\\psf\ccOUT 1\tdx-data"
-    assert forwarded[forwarded.index("--tdx-path") + 1] == r"C:\new_tdx64\PYPlugins\user"
+    assert forwarded[forwarded.index("--tdx-path") + 1] == r"C:\new_tdx64\PYPlugins"
     assert forwarded[-2:] == ["--output", "json"]
 
 
@@ -82,7 +82,7 @@ def test_forward_args_maps_symbol_metadata_paths_for_windows_cli() -> None:
 
     assert forwarded[:3] == ["symbol-metadata", "--runtime", "local"]
     assert forwarded[forwarded.index("--data-root") + 1] == r"\\psf\ccOUT 1\tdx-data"
-    assert forwarded[forwarded.index("--tdx-path") + 1] == r"C:\new_tdx64\PYPlugins\user"
+    assert forwarded[forwarded.index("--tdx-path") + 1] == r"C:\new_tdx64\PYPlugins"
     assert forwarded[-2:] == ["--output", "json"]
 
 

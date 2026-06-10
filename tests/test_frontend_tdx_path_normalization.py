@@ -13,4 +13,24 @@ def test_tdx_path_is_normalized_before_restore_pick_and_api_calls() -> None:
     assert "settings.tdx_path = normalizeTdxPath(settings.tdx_path)" in source
     assert "saved.tdx_path = normalizeTdxPath(saved.tdx_path)" in source
     assert "normalizeTdxPath(data.path)" in source
-    assert "PYPlugins${separator}user" in source
+    assert "last === 'pyplugins'" not in source
+    assert "last.includes('new_tdx64')" not in source
+    assert "parts.slice(0, -1)" in source
+
+
+def test_docker_default_data_root_ignores_saved_macos_volume_path() -> None:
+    source = APP_VUE.read_text(encoding="utf-8")
+
+    assert "function savedPathForCurrentRuntime" in source
+    assert "currentDefault.startsWith('/data/')" in source
+    assert "saved.startsWith('/Volumes/')" in source
+    assert "if (!currentDefault && saved.startsWith('/Volumes/')) return ''" in source
+
+
+def test_directory_picker_falls_back_to_container_browser() -> None:
+    source = APP_VUE.read_text(encoding="utf-8")
+
+    assert "directoryBrowserOpen" in source
+    assert "openDirectoryBrowser(field, extractErrorMessage(error))" in source
+    assert "apiGet(`/directories?path=${query}`)" in source
+    assert "使用当前目录" in source

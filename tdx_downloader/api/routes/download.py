@@ -18,6 +18,7 @@ from tdx_downloader.data.parallels_runtime import (
     symbol_metadata_with_runtime,
 )
 from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES
+from tdx_downloader.data.symbols import load_symbol_metadata
 
 from ..serialization import _json_dict, _numeric_sum, _records
 from ..schemas import DownloadPayload
@@ -130,11 +131,16 @@ def _run_download_task(task_id: str, payload: DownloadPayload, mode: str) -> Non
             )
             _append_event(task_id, {"stage": "task_summary", "message": message})
         _append_event(task_id, {"stage": "catalog_refresh_start", "message": "开始刷新缓存资产索引。"})
+        symbol_metadata = (
+            symbol_metadata_with_runtime(payload.data_root, payload.tdx_path)
+            if should_use_parallels_runtime()
+            else load_symbol_metadata(payload.data_root, tdx_path=payload.tdx_path)
+        )
         snapshot = service.cache_snapshot(
             timeframes=SUPPORTED_TIMEFRAMES,
             symbols=None,
             tdx_path=payload.tdx_path,
-            symbol_metadata=symbol_metadata_with_runtime(payload.data_root, payload.tdx_path),
+            symbol_metadata=symbol_metadata,
             rebuild_catalog=True,
         )
         _append_event(

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from tdx_downloader.cli import DEFAULT_DATA_ROOT as DEFAULT_DATA_ROOT
+import os
 
-DEFAULT_TDX_PATH = "/Volumes/[C] Windows 11/new_tdx64/PYPlugins/user"
+from tdx_downloader.cli import DEFAULT_DATA_ROOT as CLI_DEFAULT_DATA_ROOT
+
+DEFAULT_DATA_ROOT = os.getenv("TDX_DATA_ROOT", CLI_DEFAULT_DATA_ROOT)
+DEFAULT_TDX_PATH = os.getenv(
+    "TDX_TDX_PATH",
+    os.getenv("TDX_TQCENTER_PATH", "/Volumes/[C] Windows 11/new_tdx64/PYPlugins"),
+)
 DEFAULT_ADJUST = "qfq"
 DEFAULT_TIMEFRAMES = ("1d",)
 DEFAULT_BATCH_SIZE = 100

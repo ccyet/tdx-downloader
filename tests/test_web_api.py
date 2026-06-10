@@ -231,6 +231,40 @@ def test_api_symbol_groups_sorts_picker_groups_by_recent_amount(monkeypatch, tmp
     assert groups["全A股票"] == ["000001.SZ", "000002.SZ"]
 
 
+def test_api_symbol_metadata_refresh_returns_groups_and_cache_state(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    def fake_refresh_symbol_metadata(data_root: str, tdx_path: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"stock_code": "510300.SH", "stock_name": "沪深300ETF", "source": "tdx_tnf", "path": tdx_path},
+                {"stock_code": "880001.SH", "stock_name": "种植业", "source": "tdx_tnf", "path": tdx_path},
+                {"stock_code": "000001.SZ", "stock_name": "平安银行", "source": "tdx_tnf", "path": tdx_path},
+            ]
+        )
+
+    monkeypatch.setattr(config_routes, "refresh_symbol_metadata_with_runtime", fake_refresh_symbol_metadata)
+    monkeypatch.setattr(
+        config_routes,
+        "symbol_metadata_cache_info",
+        lambda **_: {"hit": True, "record_count": 3, "saved_at": 1781000000.0, "path": "cache.json"},
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/symbol-metadata/refresh",
+        json={"data_root": str(tmp_path), "tdx_path": "C:\\tdx", "target": "etf"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    groups = {group["name"]: group["symbols"] for group in data["groups"]}
+    assert groups["ETF列表"] == ["510300.SH"]
+    assert groups["板块指数"] == ["880001.SH"]
+    assert groups["全A股票"] == ["000001.SZ"]
+    assert data["symbol_names"]["510300.SH"] == "沪深300ETF"
+    assert data["symbol_metadata_cache"]["hit"] is True
+    assert data["symbol_metadata_cache"]["record_count"] == 3
+
+
 def test_api_etf_tracking_returns_tdx_tracking_records(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     received: list[tuple[str, str, tuple[str, ...]]] = []
 
@@ -651,6 +685,31 @@ def test_api_pick_directory_surfaces_runtime_error(monkeypatch) -> None:
 
     assert response.status_code == 400
     assert "暂不支持" in response.json()["detail"]
+
+
+def test_api_directories_lists_child_directories(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    (tmp_path / "tdx-data").mkdir()
+    (tmp_path / "new_tdx64").mkdir()
+    (tmp_path / "README.txt").write_text("not a directory", encoding="utf-8")
+    client = TestClient(create_app())
+
+    response = client.get("/api/directories", params={"path": str(tmp_path)})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["path"] == str(tmp_path)
+    assert data["parent"] == str(tmp_path.parent)
+    assert [entry["name"] for entry in data["entries"]] == ["new_tdx64", "tdx-data"]
+    assert all(entry["readable"] for entry in data["entries"])
+
+
+def test_api_directories_uses_nearest_existing_parent(tmp_path) -> None:
+    client = TestClient(create_app())
+
+    response = client.get("/api/directories", params={"path": str(tmp_path / "missing" / "child")})
+
+    assert response.status_code == 200
+    assert response.json()["path"] == str(tmp_path)
 
 
 def test_windows_directory_picker_uses_powershell_folder_dialog(monkeypatch, tmp_path) -> None:

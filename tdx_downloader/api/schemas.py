@@ -42,6 +42,13 @@ class EtfReturnsPayload(BaseModel):
     end: str = Field(default_factory=lambda: date.today().isoformat())
 
 
+class SymbolMetadataRefreshPayload(BaseModel):
+    data_root: str = DEFAULT_DATA_ROOT
+    adjust: str = DEFAULT_ADJUST
+    tdx_path: str = DEFAULT_TDX_PATH
+    target: str = ""
+
+
 class ResearchBasePayload(BaseModel):
     data_root: str = DEFAULT_DATA_ROOT
     adjust: str = DEFAULT_ADJUST

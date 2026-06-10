@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from hashlib import sha256
+import json
 from pathlib import Path
 import sqlite3
+from time import time as wall_time
+from typing import Any
 
 import pandas as pd
 
@@ -9,6 +13,7 @@ from tdx_downloader.data.catalog import catalog_path_for
 from tdx_downloader.data.schema import TIMEFRAME_DIR_NAMES, normalize_symbol, unique_symbols
 
 SYMBOL_METADATA_COLUMNS = ["stock_code", "stock_name", "source", "path"]
+SYMBOL_METADATA_CACHE_VERSION = 1
 DEFAULT_STOCK_NAME_BY_CODE = {
     "000001.SH": "上证指数",
     "000001.SZ": "平安银行",
@@ -38,11 +43,20 @@ DEFAULT_STOCK_NAME_BY_CODE = {
 }
 
 
-def load_symbol_metadata(data_root: str | Path, *, tdx_path: str | Path = "") -> pd.DataFrame:
+def load_symbol_metadata(
+    data_root: str | Path,
+    *,
+    tdx_path: str | Path = "",
+    force_refresh: bool = False,
+) -> pd.DataFrame:
     """加载股票代码和名称；优先使用 sidecar/TDX，本地 catalog 补缺失名称。"""
     frames = [_load_sidecar_symbol_metadata(data_root)]
     if tdx_path:
-        frames.append(load_tdx_symbol_metadata(tdx_path))
+        frames.append(load_tdx_symbol_metadata(tdx_path, data_root=data_root, force_refresh=force_refresh))
+    elif not force_refresh:
+        cached = read_symbol_metadata_cache(data_root=data_root, tdx_path="")
+        if cached is not None:
+            frames.append(cached)
     frames.append(_load_catalog_symbol_metadata(data_root))
     return _merge_symbol_metadata(frames)
 
@@ -65,12 +79,83 @@ def resolve_symbol_names(
     return names
 
 
-def load_tdx_symbol_metadata(tdx_path: str | Path) -> pd.DataFrame:
+def load_tdx_symbol_metadata(
+    tdx_path: str | Path,
+    *,
+    data_root: str | Path | None = None,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
     """从通达信 hq_cache 的 tnf 代码表读取股票名称。"""
+    if data_root is not None and not force_refresh:
+        cached = read_symbol_metadata_cache(data_root=data_root, tdx_path=tdx_path)
+        if cached is not None:
+            return cached
     rows: list[dict[str, object]] = []
     for path in _tdx_tnf_candidates(tdx_path):
         rows.extend(_read_tdx_tnf_file(path))
-    return _metadata_frame(rows)
+    metadata = _metadata_frame(rows)
+    if data_root is not None:
+        save_symbol_metadata_cache(data_root=data_root, tdx_path=tdx_path, metadata=metadata)
+    return metadata
+
+
+def read_symbol_metadata_cache(*, data_root: str | Path, tdx_path: str | Path) -> pd.DataFrame | None:
+    payload = _read_symbol_metadata_cache_payload(data_root=data_root, tdx_path=tdx_path)
+    if payload is None:
+        return None
+    records = payload.get("records")
+    if not isinstance(records, list):
+        return None
+    return _metadata_frame([record for record in records if isinstance(record, dict)])
+
+
+def save_symbol_metadata_cache(
+    *,
+    data_root: str | Path,
+    tdx_path: str | Path,
+    metadata: pd.DataFrame,
+) -> str:
+    path = symbol_metadata_cache_path(data_root=data_root, tdx_path=tdx_path)
+    frame = _metadata_frame(metadata.to_dict("records")) if not metadata.empty else _metadata_frame([])
+    payload = {
+        "version": SYMBOL_METADATA_CACHE_VERSION,
+        "saved_at": wall_time(),
+        "tdx_path": str(tdx_path),
+        "record_count": int(len(frame)),
+        "records": _metadata_records(frame),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str), encoding="utf-8")
+        temp_path.replace(path)
+    except OSError as exc:
+        return str(exc)
+    return ""
+
+
+def symbol_metadata_cache_info(*, data_root: str | Path, tdx_path: str | Path) -> dict[str, Any]:
+    path = symbol_metadata_cache_path(data_root=data_root, tdx_path=tdx_path)
+    payload = _read_symbol_metadata_cache_payload(data_root=data_root, tdx_path=tdx_path)
+    if payload is None:
+        return {
+            "hit": False,
+            "path": str(path),
+            "record_count": 0,
+            "saved_at": None,
+        }
+    return {
+        "hit": True,
+        "path": str(path),
+        "record_count": int(payload.get("record_count") or 0),
+        "saved_at": payload.get("saved_at"),
+    }
+
+
+def symbol_metadata_cache_path(*, data_root: str | Path, tdx_path: str | Path) -> Path:
+    key = {"version": SYMBOL_METADATA_CACHE_VERSION, "tdx_path": str(tdx_path).strip()}
+    digest = sha256(json.dumps(key, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    return Path(data_root).expanduser() / ".tdx_downloader" / "symbol_metadata" / f"{digest}.json"
 
 
 def _load_sidecar_symbol_metadata(data_root: str | Path) -> pd.DataFrame:
@@ -100,6 +185,28 @@ def _load_catalog_symbol_metadata(data_root: str | Path) -> pd.DataFrame:
         for row in frame.itertuples(index=False)
     ]
     return _metadata_frame(rows).drop_duplicates(subset=["stock_code"], keep="first").reset_index(drop=True)
+
+
+def _read_symbol_metadata_cache_payload(*, data_root: str | Path, tdx_path: str | Path) -> dict[str, Any] | None:
+    path = symbol_metadata_cache_path(data_root=data_root, tdx_path=tdx_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if int(payload.get("version") or 0) != SYMBOL_METADATA_CACHE_VERSION:
+        return None
+    return payload
+
+
+def _metadata_records(frame: pd.DataFrame) -> list[dict[str, object]]:
+    if frame.empty:
+        return []
+    cleaned = frame.loc[:, SYMBOL_METADATA_COLUMNS].astype(object).where(pd.notna(frame), None)
+    return [dict(record) for record in cleaned.to_dict("records")]
 
 
 def _sidecar_symbol_files(data_root: str | Path) -> list[Path]:

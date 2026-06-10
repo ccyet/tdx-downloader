@@ -18,7 +18,7 @@ from tdx_downloader.data.manager import (
     shortcut_symbol_groups,
 )
 from tdx_downloader.data.schema import normalize_symbol
-from tdx_downloader.data.symbols import SYMBOL_METADATA_COLUMNS, load_symbol_metadata
+from tdx_downloader.data.symbols import SYMBOL_METADATA_COLUMNS, load_symbol_metadata, save_symbol_metadata_cache
 from tdx_downloader.data.tdx import (
     DEFAULT_ETF_TRACKING_INDEX_SYMBOLS,
     ETF_TRACKING_COLUMNS,
@@ -89,7 +89,14 @@ def shortcut_symbol_groups_with_runtime(
     return _normalize_symbol_group_records(records)
 
 
-def symbol_metadata_with_runtime(data_root: str | Path, tdx_path: str | Path) -> pd.DataFrame:
+def symbol_metadata_with_runtime(
+    data_root: str | Path,
+    tdx_path: str | Path,
+    *,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    if force_refresh:
+        return refresh_symbol_metadata_with_runtime(data_root, tdx_path)
     metadata = load_symbol_metadata(data_root, tdx_path=tdx_path)
     if not should_use_parallels_runtime() or not metadata.empty:
         return metadata
@@ -97,7 +104,24 @@ def symbol_metadata_with_runtime(data_root: str | Path, tdx_path: str | Path) ->
         parallels_symbol_metadata_command(data_root, tdx_path),
         timeout=PARALLELS_SYMBOL_METADATA_TIMEOUT_SECONDS,
     )
-    return _normalize_symbol_metadata_records(records)
+    refreshed = _normalize_symbol_metadata_records(records)
+    save_symbol_metadata_cache(data_root=data_root, tdx_path=tdx_path, metadata=refreshed)
+    return refreshed
+
+
+def refresh_symbol_metadata_with_runtime(data_root: str | Path, tdx_path: str | Path) -> pd.DataFrame:
+    if not should_use_parallels_runtime():
+        refreshed = load_symbol_metadata(data_root, tdx_path=tdx_path, force_refresh=True)
+        if not str(tdx_path).strip():
+            save_symbol_metadata_cache(data_root=data_root, tdx_path=tdx_path, metadata=refreshed)
+        return refreshed
+    records = run_parallels_cli_records(
+        parallels_symbol_metadata_command(data_root, tdx_path),
+        timeout=PARALLELS_SYMBOL_METADATA_TIMEOUT_SECONDS,
+    )
+    refreshed = _normalize_symbol_metadata_records(records)
+    save_symbol_metadata_cache(data_root=data_root, tdx_path=tdx_path, metadata=refreshed)
+    return refreshed
 
 
 def etf_tracking_with_runtime(

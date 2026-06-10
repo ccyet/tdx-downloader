@@ -31,6 +31,35 @@ npm run dev
 
 访问 `http://127.0.0.1:5173`。API 服务默认在 `http://127.0.0.1:8622`，Vite 开发服务会把 `/api` 转发到该服务。
 
+常驻运行只启动 API 即可；FastAPI 会挂载 `web/dist` 静态前端：
+
+```bash
+python -m tdx_downloader.web_api
+```
+
+符号代码表会缓存到数据目录下的 `.tdx_downloader/symbol_metadata/`，重启后默认读缓存；需要更新股票、ETF、指数列表时，在 Web 控制台“系统设置”里点击“更新代码表缓存”。
+
+Docker 全天运行：
+
+```bash
+docker compose up -d --build
+```
+
+默认挂载：
+
+```text
+/Volumes/ccOUT 1/tdx-data -> /data/tdx-data
+```
+
+可用环境变量覆盖宿主机路径和端口：`TDX_DATA_ROOT_HOST`、`TDX_API_PORT`。
+Docker 默认不挂载通达信目录，避免宿主机路径不存在时容器启动失败；如需在容器内手动刷新代码表缓存，先确认真实通达信目录，再用 compose override 挂载到 `/tdx` 并设置 `TDX_TQCENTER_PATH=/tdx/PYPlugins`。
+
+推荐配置方式：
+
+- Docker 全天运行：`data_root=/data/tdx-data`，`tdx_path` 留空；使用已缓存的股票、ETF、指数列表。
+- Mac + Parallels 取数：在 Mac 侧运行 CLI/API，让任务通过 `prlctl` 调度到 Windows；`tdx_path` 可填 `C:\new_tdx64`、`C:\new_tdx64\PYPlugins` 或 macOS 可见的 TDX 根目录。
+- 容器内目录选择器只能看到 Docker 已挂载的路径；Parallels `.pvm` 在移动硬盘上不等于容器能直接访问 Windows C 盘。
+
 CLI：
 
 ```bash
@@ -78,7 +107,7 @@ python -m tdx_downloader.cli prepare-data \
 - Windows Python：`C:\Users\Public\venvs\tdx-downloader\Scripts\python.exe`
 - Windows 仓库：默认由 macOS 共享路径推导，可用 `TDX_PARALLELS_REPO` 覆盖
 - 外置盘共享：`/Volumes/ccOUT 1` 已配置为 Parallels Host Shared Folder，Windows 侧路径为 `\\psf\ccOUT 1`
-- 通达信默认目录：`C:\new_tdx64`，可用 `TDX_TQCENTER_PATH` 覆盖 `PYPlugins/user` 路径，可用 `TDX_TERMINAL_PATH` 覆盖 `TdxW.exe`
+- 通达信默认目录：`C:\new_tdx64`，可用 `TDX_TQCENTER_PATH` 覆盖 TDX 根目录或 `PYPlugins` 路径，可用 `TDX_TERMINAL_PATH` 覆盖 `TdxW.exe`
 - Windows 执行会话：必须通过 `prlctl exec --current-user` 进入当前登录用户会话；普通 `prlctl exec` 会落到 SYSTEM/Session 0，`tqcenter` 无法连接已登录的通达信客户端。
 
 如果重建 VM，需要先加外置盘共享：
