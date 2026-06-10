@@ -104,13 +104,19 @@ python -m tdx_downloader.cli prepare-data \
 本机批量更新全 A / ETF / 指数缓存，适合放到定时任务；对外 Web/API 只读取这个本地缓存：
 
 ```bash
-tdx-downloader prepare-data \
-  --asset-types stock,etf,index \
-  --timeframes 1d,5m \
-  --start 2026-01-01 \
-  --end 2026-06-10 \
-  --tdx-path "/Volumes/[C] Windows 11/new_tdx64/PYPlugins" \
-  --data-root "/Volumes/ccOUT 1/tdx-data"
+./scripts/update-local-data.sh
+```
+
+可用环境变量覆盖范围和周期：
+
+```bash
+START_DATE=2026-01-01 \
+END_DATE="$(date +%F)" \
+TIMEFRAMES=1d,5m,15m \
+ASSET_TYPES=stock,etf,index \
+TDX_DATA_ROOT_HOST="/Volumes/ccOUT 1/tdx-data" \
+TDX_TQCENTER_PATH="/Volumes/[C] Windows 11/new_tdx64/PYPlugins" \
+./scripts/update-local-data.sh
 ```
 
 默认写入：

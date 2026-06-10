@@ -119,7 +119,7 @@
           <button @click="notice = null">关闭</button>
         </div>
 
-        <section class="ai-command-shell" aria-label="大模型命令框">
+        <section v-if="activeView !== 'ai'" class="ai-command-shell" aria-label="大模型命令框">
           <div class="ai-command-head">
             <div>
               <strong>大模型命令框</strong>
@@ -1917,33 +1917,15 @@
           </Panel>
         </section>
 
-        <section v-else-if="activeView === 'ai'" class="view-stack ai-workbench-view">
-          <section class="content-grid two">
-            <Panel title="AI 模块" subtitle="Stock Data Interface">
-              <form class="task-form ai-workbench-form" @submit.prevent="runAiWorkbench">
-                <label class="span-full">
-                  <div class="field-head">
-                    <span>导入 Skill / 系统提示词</span>
-                    <div class="field-actions">
-                      <label class="mini-action skill-file-action">
-                        <Icon name="folder" />
-                        导入文本
-                        <input type="file" accept=".md,.txt,text/markdown,text/plain" @change="importAiSkillPrompt" />
-                      </label>
-                      <button class="mini-action" type="button" @click="aiWorkbenchForm.skill_prompt = ''">清空</button>
-                    </div>
-                  </div>
-                  <textarea v-model="aiWorkbenchForm.skill_prompt" rows="6" placeholder="粘贴你的 skill、研究框架或输出约束。"></textarea>
-                </label>
-                <label class="span-full">
-                  <span>用户任务</span>
-                  <textarea v-model="aiWorkbenchForm.prompt" rows="4" placeholder="例如：用我的框架判断这批股票的强弱、风险点和下一步观察项。"></textarea>
-                </label>
-                <label class="span-full">
-                  <span>股票代码</span>
-                  <textarea v-model="aiWorkbenchForm.symbols" rows="4" placeholder="000001.SZ&#10;300750.SZ"></textarea>
-                </label>
-                <div class="inline-fields span-full">
+        <section v-else-if="activeView === 'ai'" class="ai-workbench-view">
+          <div class="ai-chat-layout">
+            <aside class="ai-side-panel">
+              <section class="ai-side-card">
+                <header>
+                  <span>数据参数</span>
+                  <strong>{{ aiWorkbenchForm.timeframe }} · {{ aiSelectedSymbols.length }} 只</strong>
+                </header>
+                <div class="ai-side-grid">
                   <label>
                     <span>开始</span>
                     <input v-model="aiWorkbenchForm.start" type="date" />
@@ -1958,114 +1940,169 @@
                       <option v-for="timeframe in config?.timeframes || ['1d']" :key="timeframe" :value="timeframe">{{ timeframe }}</option>
                     </select>
                   </label>
+                  <label>
+                    <span>标的上限</span>
+                    <input v-model.number="aiWorkbenchForm.max_symbols" type="number" min="1" max="50" />
+                  </label>
+                  <label>
+                    <span>数据行</span>
+                    <input v-model.number="aiWorkbenchForm.max_rows" type="number" min="20" max="1000" step="20" />
+                  </label>
+                  <label>
+                    <span>K线图</span>
+                    <input v-model.number="aiWorkbenchForm.max_charts" type="number" min="0" max="12" />
+                  </label>
                 </div>
-                <label>
-                  <span>最大数据行</span>
-                  <input v-model.number="aiWorkbenchForm.max_rows" type="number" min="20" max="1000" step="20" />
-                </label>
-                <label>
-                  <span>最大标的数</span>
-                  <input v-model.number="aiWorkbenchForm.max_symbols" type="number" min="1" max="50" />
-                </label>
-                <label>
-                  <span>输出K线图数</span>
-                  <input v-model.number="aiWorkbenchForm.max_charts" type="number" min="0" max="12" />
-                </label>
-                <div class="form-actions span-full">
-                  <button class="btn primary" type="submit" :disabled="runningAiWorkbench || !aiConfigReady">
+              </section>
+
+              <section class="ai-side-card">
+                <header>
+                  <span>Skill 侧载</span>
+                  <strong>{{ aiWorkbenchForm.skill_prompt.trim() ? '已载入' : '未载入' }}</strong>
+                </header>
+                <div class="ai-side-actions">
+                  <label class="mini-action skill-file-action">
+                    <Icon name="folder" />
+                    导入文本
+                    <input type="file" accept=".md,.txt,text/markdown,text/plain" @change="importAiSkillPrompt" />
+                  </label>
+                  <button class="mini-action" type="button" @click="aiWorkbenchForm.skill_prompt = ''">清空</button>
+                </div>
+                <textarea v-model="aiWorkbenchForm.skill_prompt" rows="7" placeholder="粘贴或导入你的 skill、研究框架、输出约束。"></textarea>
+              </section>
+
+              <section class="ai-side-card ai-symbol-side-card">
+                <header>
+                  <span>标的选择</span>
+                  <strong>{{ aiSymbolVisibleRows.length }} / {{ aiCurrentSymbolRows.length }}</strong>
+                </header>
+                <select v-model="aiSymbolGroupName">
+                  <option v-for="group in aiSymbolGroups" :key="group.name" :value="group.name">
+                    {{ group.name }} · {{ group.symbols.length }}只
+                  </option>
+                </select>
+                <input v-model="aiSymbolKeyword" type="search" placeholder="搜索代码或名称" />
+                <div class="ai-natural-filter">
+                  <input v-model="aiSymbolNaturalQuery" type="text" placeholder="例如：选择创业板里做 AI 分析" />
+                  <button
+                    class="mini-action"
+                    type="button"
+                    :disabled="runningAiSymbolFilter || !aiSymbolNaturalQuery.trim()"
+                    @click="runAiSymbolFilter"
+                  >
                     <Icon name="sparkles" />
-                    {{ runningAiWorkbench ? '运行中' : '调用 AI' }}
+                    筛选
                   </button>
+                </div>
+                <div class="ai-symbol-actions">
+                  <button class="mini-action" type="button" :disabled="!aiCurrentSymbolRows.length" @click="replaceAiSymbolsFromGroup">
+                    替换为本类
+                  </button>
+                  <button class="mini-action" type="button" :disabled="!aiSymbolVisibleRows.length" @click="appendVisibleAiSymbols">
+                    追加筛选
+                  </button>
+                  <button class="mini-action" type="button" @click="aiWorkbenchForm.symbols = ''">清空</button>
+                </div>
+                <div class="ai-symbol-list">
+                  <button
+                    v-for="row in aiSymbolVisibleRows"
+                    :key="row.symbol"
+                    type="button"
+                    :class="['ai-symbol-row', { active: aiSelectedSymbolSet.has(row.symbol) }]"
+                    @click="toggleAiSymbol(row.symbol)"
+                  >
+                    <strong>{{ row.symbol }}</strong>
+                    <span>{{ row.name || '-' }}</span>
+                    <em>{{ row.assetLabel }}</em>
+                  </button>
+                </div>
+                <label class="ai-selected-symbols">
+                  <span>已选代码</span>
+                  <textarea v-model="aiWorkbenchForm.symbols" rows="4" placeholder="从上方列表选择，或手动输入代码。"></textarea>
+                </label>
+              </section>
+            </aside>
+
+            <section class="ai-chat-panel">
+              <div class="ai-chat-context">
+                <span>{{ aiWorkbenchContextSummary }}</span>
+                <em>{{ aiConfigReady ? `模型 ${aiSettings.model}` : '请先在设置页配置模型' }}</em>
+              </div>
+
+              <div class="ai-chat-thread">
+                <article class="ai-chat-message user">
+                  <span>用户目标</span>
+                  <p>{{ aiWorkbenchForm.prompt || '在底部输入你的分析目标。' }}</p>
+                </article>
+                <article v-if="aiWorkbenchResult" class="ai-chat-message assistant">
+                  <span>AI 输出</span>
+                  <div class="ai-workbench-output">
+                    <section class="review-markdown-card ai-markdown-card">
+                      <article
+                        v-for="(block, index) in aiWorkbenchMarkdownBlocks"
+                        :key="index"
+                        :class="['review-markdown-block', block.type]"
+                      >
+                        <template v-if="block.type === 'table'">
+                          <div class="review-markdown-table">
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th v-for="head in block.headers" :key="head">{{ head }}</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                <tr v-for="(row, rowIndex) in block.rows" :key="rowIndex">
+                                  <td v-for="(cell, cellIndex) in row" :key="cellIndex">{{ cell }}</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+                        </template>
+                        <template v-else-if="block.type === 'code'">
+                          <pre class="review-markdown-code"><code>{{ block.lines.join('\n') }}</code></pre>
+                        </template>
+                        <template v-else>
+                          <h4 v-if="block.title">{{ block.title }}</h4>
+                          <p v-for="(line, lineIndex) in block.lines" :key="lineIndex">{{ line }}</p>
+                        </template>
+                      </article>
+                      <em>{{ aiWorkbenchResult.disclaimer }}</em>
+                    </section>
+                    <div v-if="aiWorkbenchChartItems.length" class="research-kline-section ai-kline-section">
+                      <div class="review-section-head">
+                        <span>AI K线图</span>
+                        <strong>{{ aiWorkbenchChartSummary }}</strong>
+                      </div>
+                      <div class="review-kline-grid">
+                        <KlineChart v-for="item in aiWorkbenchChartItems" :key="`ai-${item.symbol}`" :item="item" />
+                      </div>
+                    </div>
+                    <DataTable :rows="aiWorkbenchLatestRows" :columns="aiWorkbenchLatestColumns" empty="暂无最新指标。" />
+                    <DataTable :rows="aiWorkbenchRecordRows" :columns="aiWorkbenchRecordColumns" empty="暂无行情上下文。" />
+                  </div>
+                </article>
+                <EmptyState v-else title="等待对话" body="左侧选择数据与 Skill，在底部输入任务后调用模型。" />
+              </div>
+
+              <form class="ai-chat-composer" @submit.prevent="runAiWorkbench">
+                <textarea
+                  v-model="aiWorkbenchForm.prompt"
+                  rows="4"
+                  placeholder="告诉 AI 你的目标，例如：用我的框架判断这批股票的强弱、风险点和下一步观察项。"
+                ></textarea>
+                <div class="ai-composer-actions">
                   <button class="btn secondary" type="button" @click="aiWorkbenchForm.symbols = reviewForm.symbols || symbolsText">
                     载入当前标的
                   </button>
-                </div>
-                <div class="ai-settings-note span-full">
-                  只会把当前选择的本地行情 JSON 发给模型；不开放任意代码执行或外部交易操作。
-                </div>
-              </form>
-            </Panel>
-
-            <Panel title="统一图表设置" subtitle="全局显示偏好">
-              <form class="task-form chart-settings-form" @submit.prevent="saveSettings">
-                <label>
-                  <span>色彩风格</span>
-                  <select v-model="chartSettings.theme">
-                    <option value="clean">清爽</option>
-                    <option value="contrast">高对比</option>
-                  </select>
-                </label>
-                <label>
-                  <span>图表密度</span>
-                  <select v-model="chartSettings.density">
-                    <option value="comfortable">舒展</option>
-                    <option value="compact">紧凑</option>
-                  </select>
-                </label>
-                <label class="check-row span-full">
-                  <input v-model="chartSettings.show_context" type="checkbox" />
-                  <span>显示图表上下文说明</span>
-                </label>
-                <div class="chart-setting-preview span-full">
-                  <span>当前风格</span>
-                  <strong>{{ chartSettings.theme === 'contrast' ? '高对比' : '清爽' }} · {{ chartSettings.density === 'compact' ? '紧凑' : '舒展' }}</strong>
-                  <em>设置会同步影响页面图表与结果卡片间距。</em>
-                </div>
-                <div class="form-actions span-full">
-                  <button class="btn primary" type="submit">保存图表设置</button>
+                  <button class="btn primary" type="submit" :disabled="runningAiWorkbench || !aiConfigReady || !aiWorkbenchForm.prompt.trim()">
+                    <Icon name="sparkles" />
+                    {{ runningAiWorkbench ? '运行中' : '发送' }}
+                  </button>
                 </div>
               </form>
-            </Panel>
-          </section>
-
-          <Panel title="AI 输出" subtitle="模型结果与数据上下文">
-            <div v-if="aiWorkbenchResult" class="ai-workbench-output">
-              <section class="review-markdown-card ai-markdown-card">
-                <article
-                  v-for="(block, index) in aiWorkbenchMarkdownBlocks"
-                  :key="index"
-                  :class="['review-markdown-block', block.type]"
-                >
-                  <template v-if="block.type === 'table'">
-                    <div class="review-markdown-table">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th v-for="head in block.headers" :key="head">{{ head }}</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr v-for="(row, rowIndex) in block.rows" :key="rowIndex">
-                            <td v-for="(cell, cellIndex) in row" :key="cellIndex">{{ cell }}</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </template>
-                  <template v-else-if="block.type === 'code'">
-                    <pre class="review-markdown-code"><code>{{ block.lines.join('\n') }}</code></pre>
-                  </template>
-                  <template v-else>
-                    <h4 v-if="block.title">{{ block.title }}</h4>
-                    <p v-for="(line, lineIndex) in block.lines" :key="lineIndex">{{ line }}</p>
-                  </template>
-                </article>
-                <em>{{ aiWorkbenchResult.disclaimer }}</em>
-              </section>
-              <div v-if="aiWorkbenchChartItems.length" class="research-kline-section ai-kline-section">
-                <div class="review-section-head">
-                  <span>AI K线图</span>
-                  <strong>{{ aiWorkbenchChartSummary }}</strong>
-                </div>
-                <div class="review-kline-grid">
-                  <KlineChart v-for="item in aiWorkbenchChartItems" :key="`ai-${item.symbol}`" :item="item" />
-                </div>
-              </div>
-              <DataTable :rows="aiWorkbenchLatestRows" :columns="aiWorkbenchLatestColumns" empty="暂无最新指标。" />
-              <DataTable :rows="aiWorkbenchRecordRows" :columns="aiWorkbenchRecordColumns" empty="暂无行情上下文。" />
-            </div>
-            <EmptyState v-else title="等待 AI 任务" body="配置股票数据和提示词后调用模型。" />
-          </Panel>
+            </section>
+          </div>
         </section>
 
         <section v-else-if="activeView === 'settings'" class="content-grid two">
@@ -2779,6 +2816,7 @@ const loadingTradingCalendar = ref(false)
 const runningResearch = ref<ResearchTabKey | ''>('')
 const runningAiReview = ref(false)
 const runningAiCommand = ref(false)
+const runningAiSymbolFilter = ref(false)
 const runningAiWorkbench = ref(false)
 const activeResearchTab = ref<ResearchTabKey>('history')
 const activeRegimeSectionTab = ref<RegimeSectionTabKey>('overview')
@@ -2879,6 +2917,9 @@ const aiPromptDraft = reactive({
 const aiCommandForm = reactive({
   text: ''
 })
+const aiSymbolGroupName = ref('')
+const aiSymbolKeyword = ref('')
+const aiSymbolNaturalQuery = ref('')
 const aiWorkbenchForm = reactive({
   symbols: '000001.SZ\n300750.SZ',
   start: tradingLookbackStartText(60),
@@ -3388,6 +3429,26 @@ function displaySymbolName(symbol: unknown) {
   if (!normalized) return '-'
   const etfMeta = etfTrackingMetaBySymbol.value.get(normalized)
   return symbolNameMap.value.get(normalized) || cacheSymbolMeta.value.get(normalized)?.name || etfMeta?.stock_name || '-'
+}
+
+function assetTypeLabel(value: string) {
+  const labels: Record<string, string> = {
+    stock: '个股',
+    etf: 'ETF',
+    index: '指数',
+    other: '其他'
+  }
+  return labels[String(value || 'other')] || '其他'
+}
+
+function guessAssetType(symbol: string, name: string, groupName: string) {
+  const code = String(symbol || '').split('.', 1)[0]
+  const upperName = String(name || '').toUpperCase()
+  if (groupName.includes('ETF') || upperName.includes('ETF') || upperName.includes('LOF')) return 'etf'
+  if (groupName.includes('指数') || (symbol.endsWith('.SH') && code.startsWith('000')) || code.startsWith('399')) return 'index'
+  if (/^(159|510|511|512|513|515|516|517|518|520|560|561|562|563|588)/.test(code)) return 'etf'
+  if (/^(000|001|002|003|300|301|600|601|603|605|688|689|430|830|831|832|833|834|835|836|837|838|839|920)/.test(code)) return 'stock'
+  return 'other'
 }
 
 const regimeRiskTimelineRows = computed(() =>
@@ -4125,6 +4186,41 @@ const parsedSymbols = computed(() => parseSymbols(symbolsText.value))
 const allAssetSymbols = computed(() =>
   uniqueStringsInOrder((config.value?.symbol_groups || []).flatMap((group) => group.symbols))
 )
+const aiSymbolGroups = computed(() => (config.value?.symbol_groups || []).filter((group) => group.symbols.length > 0))
+const aiCurrentSymbolGroup = computed(() => {
+  const groups = aiSymbolGroups.value
+  return groups.find((group) => group.name === aiSymbolGroupName.value) || groups[0] || null
+})
+const aiSelectedSymbols = computed(() => parseSymbols(aiWorkbenchForm.symbols))
+const aiSelectedSymbolSet = computed(() => new Set(aiSelectedSymbols.value))
+const aiCurrentSymbolRows = computed(() =>
+  uniqueStringsInOrder(aiCurrentSymbolGroup.value?.symbols || []).map((symbol) => {
+    const normalized = normalizeSymbol(symbol)
+    const meta = cacheSymbolMeta.value.get(normalized)
+    const name = symbolNameMap.value.get(normalized) || meta?.name || ''
+    const assetType = meta?.assetType || guessAssetType(normalized, name, aiCurrentSymbolGroup.value?.name || '')
+    return {
+      symbol: normalized,
+      name,
+      assetType,
+      assetLabel: assetTypeLabel(assetType)
+    }
+  }).filter((row) => row.symbol)
+)
+const aiSymbolVisibleRows = computed(() => {
+  const keyword = aiSymbolKeyword.value.trim().toLowerCase()
+  const rows = keyword
+    ? aiCurrentSymbolRows.value.filter((row) =>
+        `${row.symbol} ${row.name} ${row.assetType} ${row.assetLabel}`.toLowerCase().includes(keyword)
+      )
+    : aiCurrentSymbolRows.value
+  return rows.slice(0, REVIEW_SYMBOL_PICKER_VISIBLE_LIMIT)
+})
+const aiWorkbenchContextSummary = computed(() => {
+  const range = `${aiWorkbenchForm.start || '-'} 至 ${aiWorkbenchForm.end || '-'}`
+  const skill = aiWorkbenchForm.skill_prompt.trim() ? 'Skill 已载入' : '无 Skill'
+  return `${formatInt(aiSelectedSymbols.value.length)} 只 · ${aiWorkbenchForm.timeframe} · ${range} · ${skill}`
+})
 const downloadTimeframeOptions = computed(() => sortTimeframes(config.value?.timeframes || Object.keys(TIMEFRAME_DIR_NAMES)))
 const selectedDownloadTimeframes = computed(() => normalizeDownloadTimeframes(selectedTimeframes.value))
 const downloadTimeframeSummary = computed(() => {
@@ -4633,6 +4729,7 @@ async function loadConfig() {
     selectedGroup.value = firstGroup.name
     symbolsText.value = firstGroup.symbols.join('\n')
   }
+  ensureAiSymbolGroup()
   void loadSymbolGroups(true)
 }
 
@@ -4705,6 +4802,18 @@ function applySymbolGroupsPayload(data: Record<string, any>) {
   config.value.symbol_names = {
     ...(config.value.symbol_names || {}),
     ...(data.symbol_names || {})
+  }
+  ensureAiSymbolGroup()
+}
+
+function ensureAiSymbolGroup() {
+  const groups = config.value?.symbol_groups || []
+  if (!groups.length) {
+    aiSymbolGroupName.value = ''
+    return
+  }
+  if (!groups.some((group) => group.name === aiSymbolGroupName.value)) {
+    aiSymbolGroupName.value = groups[0].name
   }
 }
 
@@ -5666,6 +5775,71 @@ function applySymbolGroup() {
   if (selectedGroup.value === 'custom') return
   const group = config.value?.symbol_groups.find((item) => item.name === selectedGroup.value)
   if (group) symbolsText.value = group.symbols.join('\n')
+}
+
+function replaceAiSymbolsFromGroup() {
+  const limit = Math.max(1, Math.trunc(Number(aiWorkbenchForm.max_symbols) || 20))
+  const allSymbols = uniqueStringsInOrder(aiCurrentSymbolRows.value.map((row) => row.symbol))
+  const symbols = allSymbols.slice(0, limit)
+  aiWorkbenchForm.symbols = symbols.join('\n')
+  const suffix = allSymbols.length > symbols.length ? `，按上限取前 ${formatInt(symbols.length)} / ${formatInt(allSymbols.length)} 只。` : `，共 ${formatInt(symbols.length)} 只。`
+  showNotice('success', 'AI 标的已替换', `${aiCurrentSymbolGroup.value?.name || '当前分类'}${suffix}`)
+}
+
+function appendVisibleAiSymbols() {
+  const limit = Math.max(1, Math.trunc(Number(aiWorkbenchForm.max_symbols) || 20))
+  const beforeCount = aiSelectedSymbols.value.length
+  const symbols = uniqueStringsInOrder([
+    ...aiSelectedSymbols.value,
+    ...aiSymbolVisibleRows.value.map((row) => row.symbol)
+  ]).slice(0, limit)
+  aiWorkbenchForm.symbols = symbols.join('\n')
+  const addedCount = Math.max(0, symbols.length - beforeCount)
+  showNotice('success', 'AI 标的已追加', `已追加 ${formatInt(addedCount)} 只，当前 ${formatInt(symbols.length)} / ${formatInt(limit)} 只。`)
+}
+
+function toggleAiSymbol(symbol: string) {
+  const normalized = normalizeSymbol(symbol)
+  if (!normalized) return
+  const selected = aiSelectedSymbolSet.value.has(normalized)
+    ? aiSelectedSymbols.value.filter((item) => item !== normalized)
+    : [...aiSelectedSymbols.value, normalized]
+  aiWorkbenchForm.symbols = uniqueStringsInOrder(selected).join('\n')
+}
+
+async function runAiSymbolFilter() {
+  const text = aiSymbolNaturalQuery.value.trim()
+  if (!text || runningAiSymbolFilter.value) return
+  runningAiSymbolFilter.value = true
+  try {
+    const result = await apiPost('/ai/command', {
+      ...researchPayloadBase(),
+      tdx_path: settings.tdx_path,
+      text,
+      current_view: 'ai',
+      research_tab: activeResearchTab.value,
+      base_url: aiSettings.base_url.trim(),
+      api_key: aiSettings.api_key.trim(),
+      model: aiSettings.model.trim(),
+      temperature: Number(aiSettings.temperature ?? 0)
+    })
+    applyAiCommandResult(result)
+    const selected = parseSymbols(aiWorkbenchForm.symbols)
+    const limit = Math.max(1, Math.trunc(Number(aiWorkbenchForm.max_symbols) || 20))
+    const totalCount = Number(result.selected_symbol_count || selected.length)
+    if (selected.length > limit) {
+      aiWorkbenchForm.symbols = selected.slice(0, limit).join('\n')
+    }
+    const loadedCount = parseSymbols(aiWorkbenchForm.symbols).length
+    const message = totalCount > loadedCount
+      ? `匹配 ${formatInt(totalCount)} 只，按标的上限载入前 ${formatInt(loadedCount)} 只。`
+      : (loadedCount ? `已载入 ${formatInt(loadedCount)} 只标的。` : (result.summary || '已应用筛选结果。'))
+    showNotice('success', '自然语言筛选完成', message)
+  } catch (error) {
+    showError('自然语言筛选失败', error)
+  } finally {
+    runningAiSymbolFilter.value = false
+  }
 }
 
 function applyAllAssetsRecentUpdate() {
