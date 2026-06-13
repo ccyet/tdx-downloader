@@ -1786,6 +1786,8 @@ def test_api_research_market_regime_reports_risk_appetite_from_local_cache(tmp_p
         "高流动性资产",
         "现金偏好代理",
     }
+    assert all("return_1d" in row for row in data["risk_appetite_components"])
+    assert data["risk_appetite_components"][0]["return_1d"] is not None
     assert 1 <= len(data["flow_candidates"]) <= 2
     assert {"score", "reason", "asset_pool"}.issubset(data["flow_candidates"][0])
     assert data["daily_report"]["caveats"]

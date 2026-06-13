@@ -219,6 +219,7 @@ def _feature_frame(bars: pd.DataFrame, *, config: MarketRegimeConfig, benchmark_
     frame["amount60"] = amount.transform(lambda series: series.rolling(60, min_periods=10).mean())
     frame["amount_contraction"] = frame["amount20"] / frame["amount60"] - 1.0
     daily_return = close.pct_change(fill_method=None)
+    frame["ret_1"] = daily_return
     frame["hv20"] = daily_return.groupby(frame["stock_code"]).transform(lambda series: series.rolling(20, min_periods=5).std()) * math.sqrt(
         TRADING_DAYS_PER_YEAR
     )
@@ -978,6 +979,7 @@ def _risk_appetite_components(
     concentration = _finite(scope_latest.get("top20_amount_share"))
     high_liquidity = next((row for row in migration_layers if row.get("layer") == "高流动性资产"), {})
     high_liquidity_break = _finite(high_liquidity.get("ma20_break_ratio"))
+    return_1d = _safe_mean(latest["ret_1"])
     momentum = _safe_mean(latest["ret_5"])
     cash_preference = float(np.clip(high_liquidity_break * 0.45 + (1 - breadth) * 0.4 + max(0.0, -momentum) * 3.0, 0, 1))
     high_position = latest.loc[latest["high_position_signal"].fillna(False)]
@@ -990,6 +992,7 @@ def _risk_appetite_components(
             "asset_count": int(latest["stock_code"].nunique()),
             "score": float(np.clip(breadth * 100, 0, 100)),
             "contribution": float((breadth - 0.5) * 55),
+            "return_1d": return_1d,
             "return_5d": momentum,
             "ma20_break_ratio": float(1 - breadth),
             "amount_share": 1.0,
@@ -1028,6 +1031,7 @@ def _risk_appetite_components(
             "asset_count": int(latest["stock_code"].nunique()),
             "score": float(np.clip((1 - cash_preference) * 100, 0, 100)),
             "contribution": float(-cash_preference * 10),
+            "return_1d": return_1d,
             "return_5d": momentum,
             "ma20_break_ratio": high_liquidity_break,
             "amount_share": concentration,
@@ -1054,11 +1058,13 @@ def _component_row(
             "asset_count": 0,
             "score": None,
             "contribution": 0.0,
+            "return_1d": None,
             "return_5d": None,
             "ma20_break_ratio": None,
             "amount_share": 0.0,
             "threshold": None,
         }
+    return_1d = _safe_mean(sample["ret_1"])
     return_5d = _safe_mean(sample["ret_5"])
     ma20_break_ratio = float((~sample["above_ma20"].fillna(False)).mean())
     amount = pd.to_numeric(sample["amount20"], errors="coerce").fillna(0).sum()
@@ -1071,6 +1077,7 @@ def _component_row(
         "asset_count": int(sample["stock_code"].nunique()),
         "score": float(np.clip(score, 0, 100)),
         "contribution": float(contribution),
+        "return_1d": return_1d,
         "return_5d": return_5d,
         "ma20_break_ratio": ma20_break_ratio,
         "amount_share": float(amount / total_amount) if total_amount else 0.0,

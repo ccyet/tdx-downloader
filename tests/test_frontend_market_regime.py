@@ -164,6 +164,8 @@ def test_market_regime_view_exposes_decoupled_result_surfaces() -> None:
     assert "因子优势" in source
     assert "RAI 趋势" in source
     assert "RAI 0-100" in source
+    assert "'当日收益': formatPercentValue(row.return_1d)" in source
+    assert "{ key: '当日收益', label: '当日收益' }" in source
     assert "拖动时间轴" in source
     assert "onRegimeRaiWindowInput" in source
     assert "越低代表现金偏好与风险释放越强" in source
