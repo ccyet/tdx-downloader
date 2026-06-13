@@ -12,6 +12,28 @@ from tdx_downloader.data.schema import normalize_bars, normalize_symbol
 TRADING_DAYS_PER_YEAR = 252
 MARKET_REGIME_STUDY_WINDOWS = (5, 10, 20)
 RISK_RELEASE_LAYER_ORDER = ("高波资产", "高位资产", "高流动性资产", "现金偏好代理")
+RISK_RELEASE_LAYER_EXPLANATIONS: dict[str, dict[str, str]] = {
+    "高波资产": {
+        "event_label": "弹性资产先承压",
+        "event_meaning": "高波动资产通常代表进攻盘，先转弱说明风险释放开始。",
+        "trigger_rule": "跌破MA20比例达到压力阈值，且近5日收益低于压力阈值。",
+    },
+    "高位资产": {
+        "event_label": "高位筹码松动",
+        "event_meaning": "前期强势资产补跌，说明风险从弹性资产扩散到拥挤交易。",
+        "trigger_rule": "高位资产跌破MA20比例达到压力阈值，且近5日收益低于压力阈值。",
+    },
+    "高流动性资产": {
+        "event_label": "权重资产补跌",
+        "event_meaning": "高成交额资产走弱，说明资金开始撤离流动性最好的核心资产。",
+        "trigger_rule": "高流动性资产跌破MA20比例达到压力阈值，且近5日收益低于压力阈值。",
+    },
+    "现金偏好代理": {
+        "event_label": "现金偏好抬升",
+        "event_meaning": "市场宽度收缩、权重破位和短期动量转弱共同指向防守。",
+        "trigger_rule": "现金压力分达到阈值，由宽度收缩、权重破位和近5日弱势共同决定。",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -82,6 +104,13 @@ def run_market_regime_research(bars: pd.DataFrame, config: MarketRegimeConfig) -
         end=end_ts,
     )
     factor_advantage = _factor_advantage(factor_backtest)
+    benchmark_regime = _benchmark_regime(
+        frame,
+        benchmark_symbol=benchmark_symbol,
+        config=config,
+        start=start_ts,
+        end=end_ts,
+    )
     adjustment_factor_backtest = _factor_backtest(
         classified_frame,
         benchmark_forward=benchmark_forward,
@@ -90,20 +119,25 @@ def run_market_regime_research(bars: pd.DataFrame, config: MarketRegimeConfig) -
         end=end_ts,
         adjustment_only=True,
     )
-    adjustment_factor_advantage = _factor_advantage(adjustment_factor_backtest)
-    benchmark_regime = _benchmark_regime(
-        frame,
-        benchmark_symbol=benchmark_symbol,
+    adjustment_factor_timeline_backtest = _factor_backtest_by_adjustment_timeline(
+        classified_frame,
+        benchmark_forward=benchmark_forward,
         config=config,
-        start=start_ts,
-        end=end_ts,
+        adjustment_timeline=benchmark_regime.get("adjustment_timeline", []),
     )
+    adjustment_factor_advantage = _factor_advantage(adjustment_factor_backtest)
     migration_layers = _migration_layers(latest)
     risk_layer_history = _risk_release_layer_history(sample_frame, config)
     latest_layer_history = _risk_release_layer_history(latest, config)
     risk_release_sequence = _risk_release_sequence(risk_layer_history, latest_layer_history)
     risk_release_timeline = _risk_release_timeline(risk_layer_history, config)
-    high_liquidity_break_study = _high_liquidity_break_study(sample_frame, benchmark_forward=benchmark_forward)
+    high_liquidity_break_events = _high_liquidity_break_events(sample_frame, config)
+    high_liquidity_break_study = _high_liquidity_break_study(
+        sample_frame,
+        benchmark_forward=benchmark_forward,
+        events=high_liquidity_break_events,
+    )
+    high_liquidity_break_timeline = _high_liquidity_break_timeline(high_liquidity_break_events)
     market_scope = _market_scope(sample_frame, config)
     risk_appetite = _risk_appetite(latest, migration_layers, market_scope, config)
     risk_appetite_components = _risk_appetite_components(latest, migration_layers, market_scope, config)
@@ -158,11 +192,13 @@ def run_market_regime_research(bars: pd.DataFrame, config: MarketRegimeConfig) -
         "factor_backtest": factor_backtest,
         "factor_advantage": factor_advantage,
         "adjustment_factor_backtest": adjustment_factor_backtest,
+        "adjustment_factor_timeline_backtest": adjustment_factor_timeline_backtest,
         "adjustment_factor_advantage": adjustment_factor_advantage,
         "migration_layers": migration_layers,
         "risk_release_sequence": risk_release_sequence,
         "risk_release_timeline": risk_release_timeline,
         "high_liquidity_break_study": high_liquidity_break_study,
+        "high_liquidity_break_timeline": high_liquidity_break_timeline,
         "market_scope": market_scope,
         "asset_rows": _asset_rows(latest),
     }
@@ -373,6 +409,67 @@ def _factor_backtest(
     return rows
 
 
+def _factor_backtest_by_adjustment_timeline(
+    frame: pd.DataFrame,
+    *,
+    benchmark_forward: pd.DataFrame,
+    config: MarketRegimeConfig,
+    adjustment_timeline: object,
+) -> list[dict[str, object]]:
+    if frame.empty or not isinstance(adjustment_timeline, list):
+        return []
+    rows: list[dict[str, object]] = []
+    for event in adjustment_timeline:
+        if not isinstance(event, dict):
+            continue
+        start = pd.to_datetime(event.get("start_date"), errors="coerce")
+        end = pd.to_datetime(event.get("end_date"), errors="coerce")
+        if pd.isna(start) or pd.isna(end):
+            continue
+        sample = frame.loc[frame["date"].between(start, end)].copy()
+        if sample.empty:
+            continue
+        sample["group"] = np.select(
+            [
+                sample["pullback_sufficient"] & sample["turn_strong"],
+                sample["pullback_sufficient"] & ~sample["turn_strong"],
+                sample["strong_continuation"],
+            ],
+            ["A 回调充分+转强", "B 回调充分+未转强", "C 强势延续"],
+            default="D 全市场基准",
+        )
+        for group in ["A 回调充分+转强", "B 回调充分+未转强", "C 强势延续", "D 全市场基准"]:
+            group_frame = sample.loc[sample["group"] == group]
+            for window in config.forward_windows:
+                column = f"fwd_{int(window)}"
+                if column not in group_frame.columns:
+                    continue
+                values = pd.to_numeric(group_frame[column], errors="coerce").dropna()
+                if values.empty:
+                    continue
+                benchmark_values = _aligned_forward_values(benchmark_forward, group_frame.loc[values.index, "date"], int(window))
+                rows.append(
+                    {
+                        "event_index": event.get("event_index"),
+                        "event_label": event.get("event_label"),
+                        "event_start": event.get("start_date"),
+                        "event_end": event.get("end_date"),
+                        "event_trade_day_count": event.get("trade_day_count"),
+                        "event_period_return": event.get("period_return"),
+                        "event_min_drawdown_20": event.get("min_drawdown_20"),
+                        "event_is_current": event.get("is_current"),
+                        "group": group,
+                        "window": f"{int(window)}日",
+                        "sample_scope": "基准回调事件",
+                        "sample_count": int(values.count()),
+                        "mean_return": float(values.mean()),
+                        "win_rate": float((values > 0).mean()),
+                        "excess_return": float(values.mean() - benchmark_values.mean()) if not benchmark_values.empty else float("nan"),
+                    }
+                )
+    return rows
+
+
 def _factor_advantage(factor_backtest: list[dict[str, object]]) -> dict[str, object]:
     if not factor_backtest:
         return {"summary": {}, "by_window": [], "verdict": "样本不足"}
@@ -449,7 +546,9 @@ def _benchmark_regime(
             "is_adjustment_stage": False,
             "sample_count": 0,
             "adjustment_sample_count": 0,
+            "adjustment_event_count": 0,
             "adjustment_ratio": 0.0,
+            "adjustment_timeline": [],
             "rally_60_threshold": config.benchmark_rally_60_threshold,
             "pullback_20_threshold": config.benchmark_pullback_20_threshold,
         }
@@ -458,6 +557,7 @@ def _benchmark_regime(
     latest_ret_60 = _numeric_or_nan(latest.get("ret_60"))
     latest_drawdown_20 = _numeric_or_nan(latest.get("drawdown_20"))
     latest_is_adjustment = bool(mask.loc[latest.name]) if latest.name in mask.index else False
+    adjustment_timeline = _benchmark_adjustment_timeline(sample, mask, config)
     return {
         "benchmark_symbol": benchmark_symbol,
         "as_of": latest.get("date"),
@@ -469,10 +569,67 @@ def _benchmark_regime(
         "above_ma60": _bool_value(latest.get("above_ma60")),
         "sample_count": int(sample["date"].nunique()),
         "adjustment_sample_count": int(sample.loc[mask, "date"].nunique()),
+        "adjustment_event_count": len(adjustment_timeline),
         "adjustment_ratio": float(mask.mean()) if len(mask) else 0.0,
+        "adjustment_timeline": adjustment_timeline,
         "rally_60_threshold": config.benchmark_rally_60_threshold,
         "pullback_20_threshold": config.benchmark_pullback_20_threshold,
     }
+
+
+def _benchmark_adjustment_timeline(
+    sample: pd.DataFrame,
+    mask: pd.Series,
+    config: MarketRegimeConfig,
+) -> list[dict[str, object]]:
+    if sample.empty or mask.empty:
+        return []
+    ordered = sample.sort_values("date").copy()
+    ordered_mask = mask.reindex(ordered.index).fillna(False).astype(bool)
+    latest_date = pd.Timestamp(ordered["date"].iloc[-1])
+    rows: list[dict[str, object]] = []
+    current_indices: list[object] = []
+
+    def flush_segment(indices: list[object]) -> None:
+        if not indices:
+            return
+        segment = ordered.loc[indices].sort_values("date")
+        start_row = segment.iloc[0]
+        end_row = segment.iloc[-1]
+        start_close = _numeric_or_nan(start_row.get("close"))
+        end_close = _numeric_or_nan(end_row.get("close"))
+        period_return = end_close / start_close - 1.0 if math.isfinite(start_close) and start_close else float("nan")
+        event_index = len(rows) + 1
+        rows.append(
+            {
+                "event_index": event_index,
+                "event_label": f"第{event_index}次回调",
+                "start_date": start_row.get("date"),
+                "end_date": end_row.get("date"),
+                "trade_day_count": int(segment["date"].nunique()),
+                "period_return": period_return,
+                "start_close": start_close,
+                "end_close": end_close,
+                "start_ret_60": _numeric_or_nan(start_row.get("ret_60")),
+                "end_ret_60": _numeric_or_nan(end_row.get("ret_60")),
+                "max_ret_60": _safe_max(segment["ret_60"]) if "ret_60" in segment.columns else float("nan"),
+                "start_drawdown_20": _numeric_or_nan(start_row.get("drawdown_20")),
+                "end_drawdown_20": _numeric_or_nan(end_row.get("drawdown_20")),
+                "min_drawdown_20": _safe_min(segment["drawdown_20"]) if "drawdown_20" in segment.columns else float("nan"),
+                "is_current": pd.Timestamp(end_row.get("date")) == latest_date,
+                "rally_60_threshold": config.benchmark_rally_60_threshold,
+                "pullback_20_threshold": config.benchmark_pullback_20_threshold,
+            }
+        )
+
+    for index, active in ordered_mask.items():
+        if active:
+            current_indices.append(index)
+            continue
+        flush_segment(current_indices)
+        current_indices = []
+    flush_segment(current_indices)
+    return list(reversed(rows))
 
 
 def _benchmark_stage(ret_60: float, drawdown_20: float, config: MarketRegimeConfig) -> str:
@@ -607,7 +764,8 @@ def _risk_release_sequence(history: pd.DataFrame, latest_history: pd.DataFrame) 
     first_dates: dict[str, pd.Timestamp | None] = {}
     rows: list[dict[str, object]] = []
     anchor_date: pd.Timestamp | None = None
-    for layer in RISK_RELEASE_LAYER_ORDER:
+    for index, layer in enumerate(RISK_RELEASE_LAYER_ORDER, start=1):
+        explanation = RISK_RELEASE_LAYER_EXPLANATIONS.get(layer, {})
         layer_history = history.loc[history["layer"] == layer].sort_values("date")
         stress_rows = layer_history.loc[layer_history["stress_signal"]]
         first_date = pd.Timestamp(stress_rows["date"].iloc[0]) if not stress_rows.empty else None
@@ -619,6 +777,11 @@ def _risk_release_sequence(history: pd.DataFrame, latest_history: pd.DataFrame) 
         rows.append(
             {
                 "layer": layer,
+                "order_index": index,
+                "order_label": f"第{index}步",
+                "event_label": explanation.get("event_label", layer),
+                "event_meaning": explanation.get("event_meaning", ""),
+                "trigger_rule": explanation.get("trigger_rule", ""),
                 "first_stress_date": first_date,
                 "lead_lag_days": int((first_date - anchor_date).days) if first_date is not None and anchor_date is not None else None,
                 "current_stress": bool(latest_record.get("stress_signal", False)),
@@ -865,29 +1028,101 @@ def _sequence_score(dates: list[pd.Timestamp]) -> float:
     return float(ordered_pairs / (len(dates) - 1))
 
 
-def _high_liquidity_break_study(sample: pd.DataFrame, *, benchmark_forward: pd.DataFrame) -> list[dict[str, object]]:
+def _high_liquidity_break_events(sample: pd.DataFrame, config: MarketRegimeConfig) -> pd.DataFrame:
+    columns = [
+        "date",
+        "event_label",
+        "asset_count",
+        "break_count",
+        "break_ratio",
+        "break_threshold",
+        "return_5d",
+        "amount_share",
+    ]
+    if sample.empty:
+        return pd.DataFrame(columns=columns)
+    high_liquidity = sample.loc[sample["high_liquidity_signal"].fillna(False)].copy()
+    if high_liquidity.empty:
+        return pd.DataFrame(columns=columns)
+    total_amount_by_date = pd.to_numeric(sample["amount20"], errors="coerce").fillna(0).groupby(sample["date"]).sum()
+    rows: list[dict[str, object]] = []
+    for date_value, daily in high_liquidity.groupby("date", sort=True):
+        asset_count = int(daily["stock_code"].nunique())
+        if asset_count <= 0:
+            continue
+        break_mask = ~daily["above_ma20"].fillna(False)
+        break_count = int(break_mask.sum())
+        break_ratio = float(break_count / asset_count)
+        if break_ratio < config.high_liquidity_selloff_threshold:
+            continue
+        amount = pd.to_numeric(daily["amount20"], errors="coerce").fillna(0).sum()
+        total_amount = float(total_amount_by_date.get(date_value, 0.0) or 0.0)
+        rows.append(
+            {
+                "date": date_value,
+                "event_label": "高流动性资产破位",
+                "asset_count": asset_count,
+                "break_count": break_count,
+                "break_ratio": break_ratio,
+                "break_threshold": config.high_liquidity_selloff_threshold,
+                "return_5d": _safe_mean(daily["ret_5"]) if "ret_5" in daily.columns else None,
+                "amount_share": float(amount / total_amount) if total_amount else 0.0,
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _high_liquidity_break_timeline(events: pd.DataFrame) -> list[dict[str, object]]:
+    if events.empty:
+        return []
+    return events.sort_values("date", ascending=False).to_dict("records")
+
+
+def _high_liquidity_break_study(
+    sample: pd.DataFrame,
+    *,
+    benchmark_forward: pd.DataFrame,
+    events: pd.DataFrame,
+) -> list[dict[str, object]]:
     if sample.empty:
         return [
-            {"window": f"{window}日", "event_count": 0, "market_mean_return": None, "benchmark_mean_return": None, "benchmark_win_rate": None}
+            {
+                "window": f"{window}日",
+                "event_count": 0,
+                "triggered_date_count": 0,
+                "event_asset_mean_return": None,
+                "market_mean_return": None,
+                "benchmark_mean_return": None,
+                "benchmark_win_rate": None,
+                "break_ratio_at_event": None,
+                "break_threshold": None,
+            }
             for window in MARKET_REGIME_STUDY_WINDOWS
         ]
-    events = sample.loc[sample["high_liquidity_signal"].fillna(False) & ~sample["above_ma20"].fillna(False)].copy()
+    event_dates = pd.Series(pd.to_datetime(events["date"]).dropna().unique()) if not events.empty else pd.Series(dtype="datetime64[ns]")
+    high_liquidity = sample.loc[sample["high_liquidity_signal"].fillna(False)].copy()
     rows: list[dict[str, object]] = []
     for window in MARKET_REGIME_STUDY_WINDOWS:
         column = f"fwd_{window}"
-        event_values = pd.to_numeric(events[column], errors="coerce").dropna() if column in events.columns else pd.Series(dtype=float)
-        event_dates = events.loc[event_values.index, "date"] if not event_values.empty else pd.Series(dtype="datetime64[ns]")
-        market_values = _market_forward_values(sample, event_dates, window)
-        benchmark_values = _aligned_forward_values(benchmark_forward, event_dates, window)
+        if not high_liquidity.empty and column in high_liquidity.columns and not event_dates.empty:
+            event_daily = high_liquidity.loc[high_liquidity["date"].isin(event_dates)].groupby("date")[column].mean()
+            event_values = pd.to_numeric(event_daily, errors="coerce").dropna()
+        else:
+            event_values = pd.Series(dtype=float)
+        valid_event_dates = pd.Series(pd.to_datetime(event_values.index)) if not event_values.empty else pd.Series(dtype="datetime64[ns]")
+        market_values = _market_forward_values(sample, valid_event_dates, window)
+        benchmark_values = _aligned_forward_values(benchmark_forward, valid_event_dates, window)
         rows.append(
             {
                 "window": f"{window}日",
                 "event_count": int(event_values.count()),
+                "triggered_date_count": int(event_dates.count()),
                 "event_asset_mean_return": float(event_values.mean()) if not event_values.empty else None,
                 "market_mean_return": float(market_values.mean()) if not market_values.empty else None,
                 "benchmark_mean_return": float(benchmark_values.mean()) if not benchmark_values.empty else None,
                 "benchmark_win_rate": float((benchmark_values > 0).mean()) if not benchmark_values.empty else None,
-                "breadth_ma20_at_event": _safe_mean(events.loc[event_values.index, "above_ma20"].astype(float)) if not event_values.empty else None,
+                "break_ratio_at_event": _safe_mean(events["break_ratio"]) if not events.empty else None,
+                "break_threshold": _safe_mean(events["break_threshold"]) if not events.empty else None,
             }
         )
     return rows
@@ -982,6 +1217,7 @@ def _risk_appetite_components(
     return_1d = _safe_mean(latest["ret_1"])
     momentum = _safe_mean(latest["ret_5"])
     cash_preference = float(np.clip(high_liquidity_break * 0.45 + (1 - breadth) * 0.4 + max(0.0, -momentum) * 3.0, 0, 1))
+    high_volatility = latest.loc[latest["volatility_bucket"] == "高波动"]
     high_position = latest.loc[latest["high_position_signal"].fillna(False)]
     mid_core = latest.loc[latest["asset_pool"] == "中盘核心"]
     high_liquidity_sample = latest.loc[latest["high_liquidity_signal"].fillna(False)]
@@ -998,6 +1234,13 @@ def _risk_appetite_components(
             "amount_share": 1.0,
             "threshold": config.risk_expansion_breadth_threshold,
         },
+        _supplement_component_row(
+            "高波资产",
+            high_volatility,
+            total_amount=total_amount,
+            signal_positive="高波修复",
+            signal_negative="高波承压",
+        ),
         _component_row(
             "中盘核心资产",
             mid_core,
@@ -1039,6 +1282,46 @@ def _risk_appetite_components(
         },
     ]
     return rows
+
+
+def _supplement_component_row(
+    component: str,
+    sample: pd.DataFrame,
+    *,
+    total_amount: float,
+    signal_positive: str,
+    signal_negative: str,
+) -> dict[str, object]:
+    if sample.empty:
+        return {
+            "component": component,
+            "signal": "样本不足",
+            "asset_count": 0,
+            "score": None,
+            "contribution": None,
+            "return_1d": None,
+            "return_5d": None,
+            "ma20_break_ratio": None,
+            "amount_share": 0.0,
+            "threshold": None,
+        }
+    return_1d = _safe_mean(sample["ret_1"])
+    return_5d = _safe_mean(sample["ret_5"])
+    ma20_break_ratio = float((~sample["above_ma20"].fillna(False)).mean())
+    amount = pd.to_numeric(sample["amount20"], errors="coerce").fillna(0).sum()
+    signal = signal_positive if return_5d >= 0 and ma20_break_ratio < 0.5 else signal_negative
+    return {
+        "component": component,
+        "signal": signal,
+        "asset_count": int(sample["stock_code"].nunique()),
+        "score": None,
+        "contribution": None,
+        "return_1d": return_1d,
+        "return_5d": return_5d,
+        "ma20_break_ratio": ma20_break_ratio,
+        "amount_share": float(amount / total_amount) if total_amount else 0.0,
+        "threshold": None,
+    }
 
 
 def _component_row(
@@ -1373,6 +1656,16 @@ def _asset_rows(latest: pd.DataFrame) -> list[dict[str, object]]:
 def _safe_mean(values: pd.Series) -> float:
     numeric = pd.to_numeric(values, errors="coerce").dropna()
     return float(numeric.mean()) if not numeric.empty else float("nan")
+
+
+def _safe_min(values: pd.Series) -> float:
+    numeric = pd.to_numeric(values, errors="coerce").dropna()
+    return float(numeric.min()) if not numeric.empty else float("nan")
+
+
+def _safe_max(values: pd.Series) -> float:
+    numeric = pd.to_numeric(values, errors="coerce").dropna()
+    return float(numeric.max()) if not numeric.empty else float("nan")
 
 
 def _numeric_or_nan(value: object) -> float:

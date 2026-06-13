@@ -1554,7 +1554,7 @@ def _catalog_record_is_stale(row: object, path: Path) -> bool:
     modified_at = _optional_timestamp(getattr(row, "modified_at", pd.NaT))
     if pd.isna(modified_at):
         return True
-    stat_modified_at = pd.Timestamp.fromtimestamp(stat.st_mtime)
+    stat_modified_at = pd.Timestamp(stat.st_mtime, unit="s")
     return abs((modified_at - stat_modified_at).total_seconds()) > 1.0
 
 

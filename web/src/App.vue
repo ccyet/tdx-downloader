@@ -2374,7 +2374,7 @@
               role="tabpanel"
               :aria-labelledby="regimeSectionTabId('flow')"
             >
-              <Panel title="RAI 组成拆解" subtitle="高位、中盘、高流动性与市场宽度">
+              <Panel title="RAI 组成拆解" subtitle="市场宽度、高波、高位与高流动性">
                 <PaginatedDataTable
                   :rows="displayRegimeComponentRows"
                   :columns="regimeComponentColumns"
@@ -2382,29 +2382,33 @@
                   aria-label="RAI组成拆解"
                 />
               </Panel>
-              <Panel title="波动率 × 流动性" subtitle="资金迁移">
-                <PaginatedDataTable
-                  :rows="displayRegimeMigrationRows"
-                  :columns="regimeMigrationColumns"
-                  empty="运行研究后显示高波动、高位、高流动性资产迁移状态。"
-                  aria-label="波动率流动性"
-                />
-              </Panel>
-              <Panel title="风险释放顺序" subtitle="高波 → 高位 → 高流动性 → 现金">
+              <Panel title="风险释放事件链" subtitle="触发=该层压力信号成立；顺序=压力沿高波、高位、权重、现金偏好扩散">
                 <PaginatedDataTable
                   :rows="displayRegimeSequenceRows"
                   :columns="regimeSequenceColumns"
-                  empty="运行研究后显示风险释放阶段的触发顺序。"
+                  empty="运行研究后显示各层级压力事件、触发条件和扩散顺序。"
                   aria-label="风险释放顺序"
                 />
               </Panel>
-              <Panel title="高流动性补跌" subtitle="未来 5/10/20 日">
+              <Panel title="高流动性补跌事件" subtitle="按交易日统计：破位比例达到阈值才算 1 次事件">
                 <PaginatedDataTable
                   :rows="displayRegimeHighLiquidityBreakRows"
                   :columns="regimeHighLiquidityBreakColumns"
-                  empty="运行研究后显示高流动性资产跌破趋势后的前瞻表现。"
+                  empty="运行研究后显示高流动性资产破位事件后的前瞻表现。"
                   aria-label="高流动性补跌"
                 />
+                <section class="task-paged-section">
+                  <div class="task-section-head">
+                    <strong>事件发生 timeline</strong>
+                    <span>每个交易日最多记 1 次事件</span>
+                  </div>
+                  <PaginatedDataTable
+                    :rows="displayRegimeHighLiquidityBreakTimelineRows"
+                    :columns="regimeHighLiquidityBreakTimelineColumns"
+                    empty="运行研究后显示高流动性资产破位比例达到阈值的日期。"
+                    aria-label="高流动性补跌事件时间线"
+                  />
+                </section>
               </Panel>
               <Panel title="市场缩圈" subtitle="上涨资产、成交额集中度、领涨数量">
                 <div v-if="displayRegimeMarketScopeRows.length" class="table-toolbar regime-market-scope-toolbar">
@@ -2573,6 +2577,18 @@
                   empty="运行研究后显示基准阶段。"
                   aria-label="基准调整阶段"
                 />
+                <section class="task-paged-section">
+                  <div class="task-section-head">
+                    <strong>基准回调 timeline</strong>
+                    <span>连续达到上涨后回撤阈值的区间</span>
+                  </div>
+                  <PaginatedDataTable
+                    :rows="displayRegimeBenchmarkTimelineRows"
+                    :columns="regimeBenchmarkTimelineColumns"
+                    empty="当前区间没有达到上涨后回撤阈值的连续区间。"
+                    aria-label="基准回调时间线"
+                  />
+                </section>
               </Panel>
               <Panel title="调整阶段因子优势" subtitle="A组相对全市场基准">
                 <PaginatedDataTable
@@ -2582,11 +2598,11 @@
                   aria-label="调整阶段因子优势"
                 />
               </Panel>
-              <Panel title="调整阶段回测明细" subtitle="基准上涨后回撤">
+              <Panel title="调整阶段回测明细" subtitle="按基准回调 timeline 分组">
                 <PaginatedDataTable
                   :rows="displayRegimeAdjustmentFactorRows"
-                  :columns="regimeFactorColumns"
-                  empty="当前区间没有满足基准上涨后调整的分组样本。"
+                  :columns="regimeAdjustmentFactorTimelineColumns"
+                  empty="当前区间没有满足基准回调事件的分组样本。"
                   aria-label="调整阶段回测明细"
                 />
               </Panel>
@@ -4419,6 +4435,16 @@ const AI_SYMBOL_PAGE_SIZE_OPTIONS = [25, 50, 100]
 const REGIME_FLOW_CANDIDATE_PAGE_SIZE_OPTIONS = [10, 20, 30]
 const REGIME_MARKET_SCOPE_PAGE_SIZE_OPTIONS = [10, 15, 30]
 const REGIME_RAI_WINDOW_SIZE = 60
+const COMMON_INDEX_NAMES: Record<string, string> = {
+  '000001.SH': '上证指数',
+  '000016.SH': '上证50',
+  '000300.SH': '沪深300',
+  '000905.SH': '中证500',
+  '000852.SH': '中证1000',
+  '000688.SH': '科创50',
+  '399001.SZ': '深证成指',
+  '399006.SZ': '创业板指'
+}
 const REGIME_PERCENT_FIELD_KEYS = [
   'benchmark_rally_60_threshold',
   'benchmark_pullback_20_threshold',
@@ -5641,7 +5667,14 @@ function displaySymbolName(symbol: unknown) {
   const normalized = normalizeSymbol(String(symbol || ''))
   if (!normalized) return '-'
   const etfMeta = etfTrackingMetaBySymbol.value.get(normalized)
-  return symbolNameMap.value.get(normalized) || cacheSymbolMeta.value.get(normalized)?.name || etfMeta?.stock_name || '-'
+  return symbolNameMap.value.get(normalized) || cacheSymbolMeta.value.get(normalized)?.name || etfMeta?.stock_name || COMMON_INDEX_NAMES[normalized] || '-'
+}
+
+function benchmarkDisplayLabel(row: Record<string, any>) {
+  const symbol = normalizeSymbol(String(row.benchmark_symbol || regimeForm.benchmark_symbol || ''))
+  const name = String(row.benchmark_name || displaySymbolName(symbol) || '').trim()
+  if (!symbol) return name || '-'
+  return name && name !== '-' ? `${symbol} · ${name}` : symbol
 }
 
 function assetTypeLabel(value: string) {
@@ -5855,7 +5888,7 @@ const displayRegimeBenchmarkRows = computed(() => {
   if (!row) return []
   return [
     {
-      '基准': row.benchmark_symbol || regimeForm.benchmark_symbol,
+      '基准': benchmarkDisplayLabel(row),
       '日期': formatDateOnly(row.as_of),
       '阶段': row.stage || '-',
       '当前调整': row.is_adjustment_stage ? '是' : '否',
@@ -5863,12 +5896,27 @@ const displayRegimeBenchmarkRows = computed(() => {
       '20日回撤': formatPercentValue(row.drawdown_20),
       '样本数': formatInt(row.sample_count),
       '调整样本': formatInt(row.adjustment_sample_count),
+      '回调次数': formatInt(row.adjustment_event_count),
       '调整占比': formatPercentValue(row.adjustment_ratio),
       '涨幅阈值': formatPercentValue(row.rally_60_threshold),
       '回撤阈值': formatPercentValue(row.pullback_20_threshold)
     }
   ]
 })
+const displayRegimeBenchmarkTimelineRows = computed(() =>
+  (regimeResult.value?.benchmark_regime?.adjustment_timeline || []).map((row: Record<string, any>) => ({
+    '次数': row.event_label || (row.event_index ? `第${row.event_index}次回调` : '-'),
+    '开始': formatDateOnly(row.start_date),
+    '结束': formatDateOnly(row.end_date),
+    '交易日数': formatInt(row.trade_day_count),
+    '区间收益': formatPercentValue(row.period_return),
+    '60日最高涨幅': formatPercentValue(row.max_ret_60),
+    '最深20日回撤': formatPercentValue(row.min_drawdown_20),
+    '结束回撤': formatPercentValue(row.end_drawdown_20),
+    '状态': row.is_current ? '进行中' : '已结束',
+    '触发规则': `60日涨幅≥${formatPercentValue(row.rally_60_threshold)}，20日回撤≤${formatPercentValue(row.pullback_20_threshold)}`
+  }))
+)
 const displayRegimeAdjustmentFactorAdvantageRows = computed(() =>
   (regimeResult.value?.adjustment_factor_advantage?.by_window || []).map((row: Record<string, any>) => ({
     '窗口': row.window,
@@ -5883,7 +5931,13 @@ const displayRegimeAdjustmentFactorAdvantageRows = computed(() =>
   }))
 )
 const displayRegimeAdjustmentFactorRows = computed(() =>
-  (regimeResult.value?.adjustment_factor_backtest || []).map((row: Record<string, any>) => ({
+  (regimeResult.value?.adjustment_factor_timeline_backtest || []).map((row: Record<string, any>) => ({
+    '回调事件': row.event_label || (row.event_index ? `第${row.event_index}次回调` : '-'),
+    '回调区间': `${formatDateOnly(row.event_start) || '-'} 至 ${formatDateOnly(row.event_end) || '-'}`,
+    '回调交易日': formatInt(row.event_trade_day_count),
+    '基准区间收益': formatPercentValue(row.event_period_return),
+    '基准最深回撤': formatPercentValue(row.event_min_drawdown_20),
+    '事件状态': row.event_is_current ? '进行中' : '已结束',
     '分组': String(row.group || '').replace('回调充分+转强', '回调充分 + 转强').replace('回调充分+未转强', '回调充分 + 未转强'),
     '窗口': row.window,
     '样本数': formatInt(row.sample_count),
@@ -5915,36 +5969,53 @@ const displayRegimeFactorRows = computed(() =>
     '超额收益': formatPercentValue(row.excess_return)
   }))
 )
-const displayRegimeMigrationRows = computed(() =>
-  (regimeResult.value?.migration_layers || []).map((row: Record<string, any>) => ({
-    '层级': row.layer,
-    '资产数': formatInt(row.asset_count),
-    '近5日收益': formatPercentValue(row.return_5d),
-    '跌破MA20': formatPercentValue(row.ma20_break_ratio),
-    '成交额占比': formatPercentValue(row.amount_share)
-  }))
-)
+function riskReleaseLeadLagText(value: unknown) {
+  if (value === null || value === undefined || value === '') return '未触发'
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '未触发'
+  if (number === 0) return '释放起点'
+  if (number > 0) return `晚于起点 ${formatInt(number)} 日`
+  return `早于起点 ${formatInt(Math.abs(number))} 日`
+}
 const displayRegimeSequenceRows = computed(() =>
   (regimeResult.value?.risk_release_sequence?.layers || []).map((row: Record<string, any>) => ({
+    '顺序': row.order_label || (row.order_index ? `第${row.order_index}步` : '-'),
     '阶段': row.layer,
-    '首次触发': formatDateOnly(row.first_stress_date) || '-',
-    '领先/滞后天数': row.lead_lag_days ?? '-',
-    '当前触发': row.current_stress ? '是' : '否',
+    '观察事件': row.event_label || '-',
+    '事件代表': row.event_meaning || '-',
+    '触发条件': row.trigger_rule || '-',
+    '首次触发日': formatDateOnly(row.first_stress_date) || '-',
+    '相对释放起点': riskReleaseLeadLagText(row.lead_lag_days),
+    '当前状态': row.current_stress ? '当前触发' : '未触发',
+    '压力分': formatPercentValue(row.stress_score),
     '资产数': formatInt(row.asset_count),
     '近5日收益': formatPercentValue(row.return_5d),
-    '跌破MA20': formatPercentValue(row.ma20_break_ratio),
-    '压力分': formatPercentValue(row.stress_score)
+    '跌破MA20': formatPercentValue(row.ma20_break_ratio)
   }))
 )
 const displayRegimeHighLiquidityBreakRows = computed(() =>
   (regimeResult.value?.high_liquidity_break_study || []).map((row: Record<string, any>) => ({
     '窗口': row.window,
-    '事件数': formatInt(row.event_count),
-    '事件资产收益': formatPercentValue(row.event_asset_mean_return),
-    '全市场收益': formatPercentValue(row.market_mean_return),
-    '基准收益': formatPercentValue(row.benchmark_mean_return),
+    '有效事件日': formatInt(row.event_count),
+    '触发日期数': formatInt(row.triggered_date_count),
+    '高流动性后续收益': formatPercentValue(row.event_asset_mean_return),
+    '全市场后续收益': formatPercentValue(row.market_mean_return),
+    '基准后续收益': formatPercentValue(row.benchmark_mean_return),
     '基准胜率': formatPercentValue(row.benchmark_win_rate),
-    '事件宽度': formatPercentValue(row.breadth_ma20_at_event)
+    '平均破位比例': formatPercentValue(row.break_ratio_at_event),
+    '触发阈值': formatPercentValue(row.break_threshold)
+  }))
+)
+const displayRegimeHighLiquidityBreakTimelineRows = computed(() =>
+  (regimeResult.value?.high_liquidity_break_timeline || []).map((row: Record<string, any>) => ({
+    '日期': formatDateOnly(row.date),
+    '事件': row.event_label || '高流动性资产破位',
+    '资产数': formatInt(row.asset_count),
+    '破位资产': formatInt(row.break_count),
+    '破位比例': formatPercentValue(row.break_ratio),
+    '触发阈值': formatPercentValue(row.break_threshold),
+    '近5日收益': formatPercentValue(row.return_5d),
+    '成交额占比': formatPercentValue(row.amount_share)
   }))
 )
 const displayRegimeMarketScopeRows = computed(() =>
@@ -7781,9 +7852,22 @@ const regimeBenchmarkColumns = [
   { key: '20日回撤', label: '20日回撤' },
   { key: '样本数', label: '样本数' },
   { key: '调整样本', label: '调整样本' },
+  { key: '回调次数', label: '回调次数' },
   { key: '调整占比', label: '调整占比' },
   { key: '涨幅阈值', label: '涨幅阈值' },
   { key: '回撤阈值', label: '回撤阈值' }
+]
+const regimeBenchmarkTimelineColumns = [
+  { key: '次数', label: '次数' },
+  { key: '开始', label: '开始' },
+  { key: '结束', label: '结束' },
+  { key: '交易日数', label: '交易日数' },
+  { key: '区间收益', label: '区间收益' },
+  { key: '60日最高涨幅', label: '60日最高涨幅' },
+  { key: '最深20日回撤', label: '最深20日回撤' },
+  { key: '结束回撤', label: '结束回撤' },
+  { key: '状态', label: '状态' },
+  { key: '触发规则', label: '触发规则' }
 ]
 const regimeFactorColumns = [
   { key: '分组', label: '分组' },
@@ -7793,31 +7877,54 @@ const regimeFactorColumns = [
   { key: '胜率', label: '胜率' },
   { key: '超额收益', label: '超额收益' }
 ]
-const regimeMigrationColumns = [
-  { key: '层级', label: '层级' },
-  { key: '资产数', label: '资产数' },
-  { key: '近5日收益', label: '近5日收益' },
-  { key: '跌破MA20', label: '跌破MA20' },
-  { key: '成交额占比', label: '成交额占比' }
+const regimeAdjustmentFactorTimelineColumns = [
+  { key: '回调事件', label: '回调事件' },
+  { key: '回调区间', label: '回调区间' },
+  { key: '回调交易日', label: '回调交易日' },
+  { key: '基准区间收益', label: '基准区间收益' },
+  { key: '基准最深回撤', label: '基准最深回撤' },
+  { key: '事件状态', label: '事件状态' },
+  { key: '分组', label: '分组' },
+  { key: '窗口', label: '窗口' },
+  { key: '样本数', label: '样本数' },
+  { key: '平均收益', label: '平均收益' },
+  { key: '胜率', label: '胜率' },
+  { key: '超额收益', label: '超额收益' }
 ]
 const regimeSequenceColumns = [
+  { key: '顺序', label: '顺序' },
   { key: '阶段', label: '阶段' },
-  { key: '首次触发', label: '首次触发' },
-  { key: '领先/滞后天数', label: '领先/滞后' },
-  { key: '当前触发', label: '当前触发' },
+  { key: '观察事件', label: '观察事件' },
+  { key: '事件代表', label: '事件代表' },
+  { key: '触发条件', label: '触发条件' },
+  { key: '首次触发日', label: '首次触发' },
+  { key: '相对释放起点', label: '相对释放起点' },
+  { key: '当前状态', label: '当前状态' },
+  { key: '压力分', label: '压力分' },
   { key: '资产数', label: '资产数' },
   { key: '近5日收益', label: '近5日收益' },
-  { key: '跌破MA20', label: '跌破MA20' },
-  { key: '压力分', label: '压力分' }
+  { key: '跌破MA20', label: '跌破MA20' }
 ]
 const regimeHighLiquidityBreakColumns = [
   { key: '窗口', label: '窗口' },
-  { key: '事件数', label: '事件数' },
-  { key: '事件资产收益', label: '事件资产收益' },
-  { key: '全市场收益', label: '全市场收益' },
-  { key: '基准收益', label: '基准收益' },
+  { key: '有效事件日', label: '有效事件日' },
+  { key: '触发日期数', label: '触发日期数' },
+  { key: '高流动性后续收益', label: '高流动性后续收益' },
+  { key: '全市场后续收益', label: '全市场后续收益' },
+  { key: '基准后续收益', label: '基准后续收益' },
   { key: '基准胜率', label: '基准胜率' },
-  { key: '事件宽度', label: '事件宽度' }
+  { key: '平均破位比例', label: '平均破位比例' },
+  { key: '触发阈值', label: '触发阈值' }
+]
+const regimeHighLiquidityBreakTimelineColumns = [
+  { key: '日期', label: '日期' },
+  { key: '事件', label: '事件' },
+  { key: '资产数', label: '资产数' },
+  { key: '破位资产', label: '破位资产' },
+  { key: '破位比例', label: '破位比例' },
+  { key: '触发阈值', label: '触发阈值' },
+  { key: '近5日收益', label: '近5日收益' },
+  { key: '成交额占比', label: '成交额占比' }
 ]
 const regimeDailyHistoryColumns = [
   { key: '日期', label: '日期' },
@@ -8420,7 +8527,12 @@ async function loadOverview(refresh: boolean, options: { includeRecords?: boolea
     if (includeRecords && activeView.value === 'research' && activeResearchTab.value === 'etf') {
       void loadEtfReturns(false, { preferCache: true })
     }
-    if (refresh) showNotice('success', '缓存扫描完成', 'SQLite 索引与缓存概览已刷新。')
+    if (refresh && nextOverview.refresh_started) {
+      showNotice('info', '缓存扫描已开始', '后台任务正在刷新 SQLite 索引，当前页面先显示已有缓存概览。')
+      void loadTasks({ silent: true })
+    } else if (refresh) {
+      showNotice('success', '缓存扫描完成', 'SQLite 索引与缓存概览已刷新。')
+    }
     return true
   } catch (error) {
     showError(refresh ? '缓存扫描失败' : '缓存概览加载失败', error)

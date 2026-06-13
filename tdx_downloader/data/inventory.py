@@ -15,6 +15,7 @@ from tdx_downloader.data.schema import (
     unique_symbols,
 )
 
+_SHARED_SUMMARY_UNSET = object()
 
 INVENTORY_COLUMNS = [
     "stock_code",
@@ -53,10 +54,19 @@ def inventory_local_data(
     normalized_timeframes = _unique_timeframes(list(timeframes))
     if not normalized_timeframes:
         raise ValueError("timeframes 不能为空。")
-    normalized_symbols = (
-        unique_symbols(tuple(symbols))
-        if symbols is not None
-        else _discover_inventory_symbols(data_root=data_root, adjust=adjust, timeframes=normalized_timeframes)
+    requested_symbols = unique_symbols(tuple(symbols)) if symbols is not None else None
+    shared_summaries = _shared_delta_inventory_summaries(
+        data_root=data_root,
+        adjust=adjust,
+        timeframes=normalized_timeframes,
+        symbols=requested_symbols,
+    )
+    shared_symbols_by_timeframe = _shared_symbols_by_timeframe(shared_summaries)
+    normalized_symbols = requested_symbols or _discover_inventory_symbols(
+        data_root=data_root,
+        adjust=adjust,
+        timeframes=normalized_timeframes,
+        shared_symbols_by_timeframe=shared_symbols_by_timeframe,
     )
     if not normalized_symbols:
         return pd.DataFrame(columns=INVENTORY_COLUMNS)
@@ -64,7 +74,12 @@ def inventory_local_data(
     symbol_pairs = (
         [(timeframe, symbol) for timeframe in normalized_timeframes for symbol in normalized_symbols]
         if symbols is not None
-        else _discover_inventory_symbol_pairs(data_root=data_root, adjust=adjust, timeframes=normalized_timeframes)
+        else _discover_inventory_symbol_pairs(
+            data_root=data_root,
+            adjust=adjust,
+            timeframes=normalized_timeframes,
+            shared_symbols_by_timeframe=shared_symbols_by_timeframe,
+        )
     )
     existing_by_key = _existing_inventory_records(existing_catalog) if fast_existing else {}
     roots = {timeframe: resolve_timeframe_root(data_root, timeframe) / adjust for timeframe in normalized_timeframes}
@@ -75,6 +90,7 @@ def inventory_local_data(
             adjust=adjust,
             symbol=symbol,
             existing=existing,
+            shared_summary=shared_summaries.get((symbol, timeframe, str(adjust))),
         )
         for timeframe, symbol in symbol_pairs
         for existing in (existing_by_key.get((symbol, timeframe, str(adjust))),)
@@ -106,13 +122,18 @@ def _discover_inventory_symbols(
     data_root: str | Path,
     adjust: str,
     timeframes: list[str],
+    shared_symbols_by_timeframe: dict[str, set[str]] | None = None,
 ) -> list[str]:
     """未指定代码时按已存在的 parquet 文件反推标的清单。"""
     seen: set[str] = set()
     symbols: list[str] = []
     for timeframe in timeframes:
         root = resolve_timeframe_root(data_root, timeframe) / adjust
-        symbols_for_timeframe = set(_shared_delta_symbols(data_root=data_root, adjust=adjust, timeframe=timeframe))
+        symbols_for_timeframe = (
+            set(_shared_delta_symbols(data_root=data_root, adjust=adjust, timeframe=timeframe))
+            if shared_symbols_by_timeframe is None
+            else set(shared_symbols_by_timeframe.get(timeframe, set()))
+        )
         if root.exists():
             symbols_for_timeframe.update(_parquet_file_symbols(root))
             symbols_for_timeframe.update(_delta_sidecar_symbols(root))
@@ -129,11 +150,16 @@ def _discover_inventory_symbol_pairs(
     data_root: str | Path,
     adjust: str,
     timeframes: list[str],
+    shared_symbols_by_timeframe: dict[str, set[str]] | None = None,
 ) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for timeframe in timeframes:
         root = resolve_timeframe_root(data_root, timeframe) / adjust
-        symbols = set(_shared_delta_symbols(data_root=data_root, adjust=adjust, timeframe=timeframe))
+        symbols = (
+            set(_shared_delta_symbols(data_root=data_root, adjust=adjust, timeframe=timeframe))
+            if shared_symbols_by_timeframe is None
+            else set(shared_symbols_by_timeframe.get(timeframe, set()))
+        )
         if root.exists():
             symbols.update(_parquet_file_symbols(root))
             symbols.update(_delta_sidecar_symbols(root))
@@ -184,10 +210,30 @@ def _inventory_symbol_file_from_path(
     adjust: str,
     symbol: str,
     existing: dict[str, object] | None = None,
+    shared_summary: dict[str, object] | None | object = _SHARED_SUMMARY_UNSET,
 ) -> dict[str, object]:
     file_size_bytes, modified_at = _inventory_file_state(path)
     delta_paths = _delta_part_paths(path)
-    shared_summary = _shared_delta_inventory_summary(path=path, timeframe=timeframe, adjust=adjust, symbol=symbol)
+    exists = path.exists() or bool(delta_paths)
+    base = {
+        "stock_code": symbol,
+        "timeframe": ensure_supported_timeframe(timeframe),
+        "adjust": adjust,
+        "exists": exists,
+        "file_size_bytes": file_size_bytes,
+        "modified_at": modified_at,
+        "path": str(path),
+    }
+    if exists and existing is not None and _existing_inventory_record_is_current(existing, base):
+        return {
+            **existing,
+            "exists": True,
+            "file_size_bytes": base["file_size_bytes"],
+            "modified_at": base["modified_at"],
+            "path": str(path),
+        }
+    if shared_summary is _SHARED_SUMMARY_UNSET:
+        shared_summary = _shared_delta_inventory_summary(path=path, timeframe=timeframe, adjust=adjust, symbol=symbol)
     if shared_summary is not None:
         shared_size = int(shared_summary.get("file_size_bytes", 0) or 0)
         shared_modified = shared_summary.get("modified_at", pd.NaT)
@@ -197,7 +243,7 @@ def _inventory_symbol_file_from_path(
         modified_at_ts = _naive_timestamp(modified_at)
         if not pd.isna(shared_modified_ts):
             modified_at = shared_modified_ts if pd.isna(modified_at_ts) else max(modified_at_ts, shared_modified_ts)
-    exists = path.exists() or bool(delta_paths) or shared_summary is not None
+    exists = exists or shared_summary is not None
     base = {
         "stock_code": symbol,
         "timeframe": ensure_supported_timeframe(timeframe),
@@ -210,7 +256,13 @@ def _inventory_symbol_file_from_path(
     if not exists:
         return _inventory_record(base, status="missing_file", message="本地 parquet 不存在。")
     if existing is not None and _existing_inventory_record_is_current(existing, base):
-        return {**existing, "exists": True, "path": str(path)}
+        return {
+            **existing,
+            "exists": True,
+            "file_size_bytes": base["file_size_bytes"],
+            "modified_at": base["modified_at"],
+            "path": str(path),
+        }
     if shared_summary is not None and not path.exists() and not delta_paths:
         return _inventory_record(
             base,
@@ -308,7 +360,15 @@ def _existing_inventory_record_is_current(existing: dict[str, object], base: dic
     new_epoch = _timestamp_epoch(base.get("modified_at", pd.NaT))
     if old_epoch is None or new_epoch is None:
         return False
-    return abs(float(old_epoch) - float(new_epoch)) <= 1.0
+    diff = abs(float(old_epoch) - float(new_epoch))
+    return diff <= 1.0 or _same_timestamp_with_timezone_shift(diff)
+
+
+def _same_timestamp_with_timezone_shift(diff_seconds: float) -> bool:
+    if diff_seconds <= 1.0 or diff_seconds > 14 * 60 * 60:
+        return False
+    hours = diff_seconds / 3600
+    return abs(hours - round(hours)) <= (1 / 3600)
 
 
 def _timestamp_epoch(value: object) -> float | None:
@@ -340,7 +400,7 @@ def _inventory_file_state(path: Path) -> tuple[int, pd.Timestamp]:
     if not paths:
         return 0, pd.NaT
     size = sum(int(item.stat().st_size) for item in paths if item.exists())
-    modified = max(pd.Timestamp.fromtimestamp(item.stat().st_mtime) for item in paths if item.exists())
+    modified = max(pd.Timestamp(item.stat().st_mtime, unit="s") for item in paths if item.exists())
     return int(size), modified
 
 
@@ -373,6 +433,57 @@ def _shared_delta_inventory_summary(
         "file_size_bytes": int(pd.to_numeric(parts["file_size_bytes"], errors="coerce").fillna(0).drop_duplicates().sum()),
         "modified_at": pd.to_datetime(parts["created_at"], errors="coerce").dropna().max(),
     }
+
+
+def _shared_delta_inventory_summaries(
+    *,
+    data_root: str | Path,
+    adjust: str,
+    timeframes: list[str],
+    symbols: tuple[str, ...] | None,
+) -> dict[tuple[str, str, str], dict[str, object]]:
+    try:
+        parts = query_market_data_part_symbols(
+            data_root=data_root,
+            symbols=symbols,
+            adjust=adjust,
+            timeframes=tuple(timeframes),
+        )
+    except Exception:  # noqa: BLE001
+        return {}
+    if parts.empty:
+        return {}
+    required = {"stock_code", "timeframe", "adjust", "rows", "min_at", "max_at", "file_size_bytes", "created_at"}
+    if not required.issubset(parts.columns):
+        return {}
+    summaries: dict[tuple[str, str, str], dict[str, object]] = {}
+    for (symbol, timeframe, item_adjust), group in parts.groupby(["stock_code", "timeframe", "adjust"], sort=False):
+        symbol_text = normalize_symbol(symbol)
+        if not symbol_text:
+            continue
+        starts = pd.to_datetime(group["min_at"], errors="coerce").dropna()
+        ends = pd.to_datetime(group["max_at"], errors="coerce").dropna()
+        if starts.empty or ends.empty:
+            continue
+        summaries[(symbol_text, str(timeframe), str(item_adjust))] = {
+            "rows": int(pd.to_numeric(group["rows"], errors="coerce").fillna(0).sum()),
+            "start": starts.min(),
+            "end": ends.max(),
+            "file_size_bytes": int(
+                pd.to_numeric(group["file_size_bytes"], errors="coerce").fillna(0).drop_duplicates().sum()
+            ),
+            "modified_at": pd.to_datetime(group["created_at"], errors="coerce").dropna().max(),
+        }
+    return summaries
+
+
+def _shared_symbols_by_timeframe(
+    summaries: dict[tuple[str, str, str], dict[str, object]],
+) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
+    for symbol, timeframe, _adjust in summaries:
+        result.setdefault(timeframe, set()).add(symbol)
+    return result
 
 
 def _data_root_from_symbol_path(path: Path, *, timeframe: str, adjust: str) -> Path:

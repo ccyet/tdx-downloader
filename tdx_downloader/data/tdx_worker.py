@@ -901,7 +901,7 @@ def _direct_written_rows(
     )
     rows: list[dict[str, object]] = []
     file_size_bytes = int(target_path.stat().st_size)
-    modified_at = pd.Timestamp.fromtimestamp(target_path.stat().st_mtime)
+    modified_at = pd.Timestamp(target_path.stat().st_mtime, unit="s")
     for item in summary.itertuples(index=False):
         symbol = normalize_symbol(getattr(item, "symbol", ""))
         if not symbol:

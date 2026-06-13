@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query
 import pandas as pd
 
-from tdx_downloader.data.catalog import ASSET_TYPE_LABELS
+from tdx_downloader.data.catalog import ASSET_TYPE_LABELS, CatalogDatabaseBusy, query_catalog
 from tdx_downloader.data.manager import QUICK_SYMBOL_GROUPS, normalize_symbol_tuple, shortcut_symbol_groups
 from tdx_downloader.data.parallels_runtime import (
     etf_tracking_with_runtime,
@@ -410,13 +410,16 @@ def _recent_amount_scores(*, data_root: str, adjust: str, symbols: list[str]) ->
     unique = normalize_symbol_tuple(symbols)
     if not unique:
         return {}
-    bars = load_local_bars(
+    end_ts = _recent_amount_anchor_date(data_root=data_root, adjust=adjust, symbols=unique)
+    if pd.isna(end_ts):
+        return {}
+    start_ts = end_ts - pd.Timedelta(days=max(45, PICKER_LIQUIDITY_LOOKBACK_BARS * 3))
+    bars = load_daily_bars(
         data_root=data_root,
-        timeframe="1d",
         adjust=adjust,
         symbols=unique,
-        start="1900-01-01",
-        end="2100-01-01",
+        start=start_ts.date().isoformat(),
+        end=end_ts.date().isoformat(),
     )
     if bars.empty or "amount" not in bars.columns:
         return {}
@@ -429,6 +432,26 @@ def _recent_amount_scores(*, data_root: str, adjust: str, symbols: list[str]) ->
     recent = frame.groupby("stock_code", group_keys=False).tail(PICKER_LIQUIDITY_LOOKBACK_BARS)
     scores = recent.groupby("stock_code")["amount"].mean()
     return {str(symbol): float(value) for symbol, value in scores.items() if math.isfinite(float(value))}
+
+
+def _recent_amount_anchor_date(*, data_root: str, adjust: str, symbols: tuple[str, ...]) -> pd.Timestamp:
+    try:
+        catalog = query_catalog(
+            data_root=data_root,
+            symbols=symbols,
+            adjust=adjust,
+            timeframes=("1d",),
+            data_kinds=("price",),
+            indicators=("ohlcv",),
+            statuses=("cached",),
+            read_timeout_seconds=0.2,
+        )
+    except CatalogDatabaseBusy:
+        return pd.NaT
+    if catalog.empty or "end_at" not in catalog.columns:
+        return pd.NaT
+    end_values = pd.to_datetime(catalog["end_at"], errors="coerce").dropna()
+    return pd.Timestamp(end_values.max()) if not end_values.empty else pd.NaT
 
 
 def _sort_symbols_by_amount(symbols: list[str], scores: dict[str, float]) -> list[str]:

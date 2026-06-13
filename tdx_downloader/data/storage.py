@@ -946,7 +946,7 @@ def delta_sidecar_summary(
                 for part in delta_parts:
                     stat = part.stat()
                     bytes_total += int(stat.st_size)
-                    modified = pd.Timestamp.fromtimestamp(stat.st_mtime)
+                    modified = pd.Timestamp(stat.st_mtime, unit="s")
                     newest_mtime = modified if pd.isna(newest_mtime) else max(newest_mtime, modified)
         total_symbols += symbols
         total_parts += parts
@@ -1074,7 +1074,7 @@ def _file_state_with_deltas(path: Path) -> tuple[int, pd.Timestamp]:
     if not existing:
         return 0, pd.NaT
     file_size = sum(int(item.stat().st_size) for item in existing)
-    modified_at = max(pd.Timestamp.fromtimestamp(item.stat().st_mtime) for item in existing)
+    modified_at = max(pd.Timestamp(item.stat().st_mtime, unit="s") for item in existing)
     return int(file_size), modified_at
 
 
@@ -1495,7 +1495,7 @@ def _shared_file_state(paths: list[Path]) -> tuple[int, pd.Timestamp]:
     if not existing:
         return 0, pd.NaT
     file_size = sum(int(path.stat().st_size) for path in existing)
-    modified_at = max(pd.Timestamp.fromtimestamp(path.stat().st_mtime) for path in existing)
+    modified_at = max(pd.Timestamp(path.stat().st_mtime, unit="s") for path in existing)
     return int(file_size), modified_at
 
 

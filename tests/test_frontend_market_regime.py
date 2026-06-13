@@ -130,18 +130,18 @@ def test_market_regime_view_exposes_decoupled_result_surfaces() -> None:
         "displayRegimeAdjustmentFactorRows",
         "displayRegimeFactorAdvantageRows",
         "displayRegimeFactorRows",
-        "displayRegimeMigrationRows",
         "displayRegimeSequenceRows",
         "displayRegimeHighLiquidityBreakRows",
+        "displayRegimeHighLiquidityBreakTimelineRows",
         "displayRegimeMarketScopeRows",
         "pagedRegimeMarketScopeRows",
         "regimeMarketScopePagination",
         "regimeMarketScopeTotalPages",
         "displayRegimeAssetRows",
         "regimeFactorColumns",
-        "regimeMigrationColumns",
         "regimeSequenceColumns",
         "regimeHighLiquidityBreakColumns",
+        "regimeHighLiquidityBreakTimelineColumns",
         "regimeDailyHistoryColumns",
         "regimeComponentColumns",
         "regimeFlowCandidateColumns",
@@ -199,6 +199,7 @@ def test_market_regime_view_exposes_decoupled_result_surfaces() -> None:
     assert "regime-heatmap-date', { muted: !item.show }" in source
     assert "最近日报序列" in source
     assert "RAI 组成拆解" in source
+    assert "市场宽度、高波、高位与高流动性" in source
     assert "PaginatedDataTable" in source
     assert ":rows=\"displayRegimeDailyHistoryRows\"" in source
     assert ":rows=\"displayRegimeComponentRows\"" in source
@@ -210,14 +211,35 @@ def test_market_regime_view_exposes_decoupled_result_surfaces() -> None:
     assert "goRegimeFlowCandidatePage" in source
     assert "DataTable :rows=\"pagedRegimeFlowCandidateRows\"" in source
     assert "基准调整阶段" in source
+    assert "基准回调 timeline" in source
+    assert "displayRegimeBenchmarkTimelineRows" in source
+    assert "regimeBenchmarkTimelineColumns" in source
+    assert "'399006.SZ': '创业板指'" in source
+    assert "benchmarkDisplayLabel(row)" in source
     assert "调整阶段因子优势" in source
     assert "调整阶段回测明细" in source
+    assert "按基准回调 timeline 分组" in source
+    assert "adjustment_factor_timeline_backtest" in source
+    assert "regimeAdjustmentFactorTimelineColumns" in source
+    assert "回调事件" in source
+    assert "基准最深回撤" in source
     assert "研究宇宙" in source
     assert "回调充分 + 转强" in source
-    assert "波动率 × 流动性" in source
-    assert "资金迁移" in source
-    assert "风险释放顺序" in source
-    assert "高流动性补跌" in source
+    assert "波动率 × 流动性" not in source
+    assert "aria-label=\"波动率流动性\"" not in source
+    assert "风险释放事件链" in source
+    assert "触发=该层压力信号成立" in source
+    assert "观察事件" in source
+    assert "事件代表" in source
+    assert "触发条件" in source
+    assert "相对释放起点" in source
+    assert "riskReleaseLeadLagText" in source
+    assert "高流动性补跌事件" in source
+    assert "事件发生 timeline" in source
+    assert "每个交易日最多记 1 次事件" in source
+    assert "有效事件日" in source
+    assert "触发日期数" in source
+    assert "平均破位比例" in source
     assert "市场缩圈" in source
     assert "REGIME_MARKET_SCOPE_PAGE_SIZE_OPTIONS = [10, 15, 30]" in source
     assert "DataTable :rows=\"pagedRegimeMarketScopeRows\"" in source

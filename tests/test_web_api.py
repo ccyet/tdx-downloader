@@ -483,6 +483,60 @@ def test_api_symbol_groups_sorts_picker_groups_by_recent_amount(monkeypatch, tmp
     assert groups["全A股票"] == ["000001.SZ", "000002.SZ"]
 
 
+def test_recent_amount_scores_reads_only_recent_daily_window(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    observed: dict[str, object] = {}
+
+    def fake_query_catalog(**kwargs) -> pd.DataFrame:  # type: ignore[no-untyped-def]
+        observed["catalog_kwargs"] = kwargs
+        return pd.DataFrame(
+            [
+                {
+                    "stock_code": "510300.SH",
+                    "timeframe": "1d",
+                    "adjust": "qfq",
+                    "data_kind": "price",
+                    "indicator": "ohlcv",
+                    "status": "cached",
+                    "end_at": "2026-06-12T00:00:00",
+                }
+            ]
+        )
+
+    def fake_load_daily_bars(**kwargs) -> pd.DataFrame:  # type: ignore[no-untyped-def]
+        observed["daily_kwargs"] = kwargs
+        return pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-06-11", "2026-06-12"]),
+                "stock_code": ["510300.SH", "510300.SH"],
+                "open": [1.0, 1.0],
+                "high": [1.0, 1.0],
+                "low": [1.0, 1.0],
+                "close": [1.0, 1.0],
+                "volume": [100.0, 100.0],
+                "amount": [1000.0, 3000.0],
+            }
+        )
+
+    def fail_load_local_bars(**_: object) -> pd.DataFrame:
+        raise AssertionError("快捷代码成交额排序不应逐文件读取全量本地 K 线。")
+
+    monkeypatch.setattr(config_routes, "query_catalog", fake_query_catalog)
+    monkeypatch.setattr(config_routes, "load_daily_bars", fake_load_daily_bars)
+    monkeypatch.setattr(config_routes, "load_local_bars", fail_load_local_bars)
+
+    scores = config_routes._recent_amount_scores(  # noqa: SLF001
+        data_root="/tmp/data",
+        adjust="qfq",
+        symbols=["510300.SH"],
+    )
+
+    assert scores == {"510300.SH": 2000.0}
+    daily_kwargs = observed["daily_kwargs"]
+    assert daily_kwargs["end"] == "2026-06-12"
+    assert daily_kwargs["start"] != "1900-01-01"
+    assert pd.Timestamp(str(daily_kwargs["start"])) >= pd.Timestamp("2026-04-01")
+
+
 def test_api_symbol_metrics_returns_latest_local_daily_values(tmp_path) -> None:
     write_local_bars(
         data_root=tmp_path,
@@ -890,6 +944,12 @@ def test_api_overview_refresh_imports_symbol_names(monkeypatch, tmp_path) -> Non
         )
 
     monkeypatch.setattr(catalog_routes, "symbol_metadata_with_runtime", fake_symbol_metadata)
+    class ImmediateExecutor:
+        def submit(self, fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+            fn(*args, **kwargs)
+            return None
+
+    monkeypatch.setattr(catalog_routes, "_executor", ImmediateExecutor())
     client = TestClient(create_app())
 
     response = client.get(
@@ -898,9 +958,37 @@ def test_api_overview_refresh_imports_symbol_names(monkeypatch, tmp_path) -> Non
     )
 
     assert response.status_code == 200
-    records = response.json()["records"]
+    data = response.json()
+    assert data["refresh_started"] is True
+    assert data["refresh_task"]["status"] == "succeeded"
+    records = data["records"]
     assert records[0]["stock_code"] == "000750.SZ"
     assert records[0]["stock_name"] == "国海证券"
+
+
+def test_api_overview_refresh_returns_background_task_without_sync_rebuild(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    submitted: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    class DeferredExecutor:
+        def submit(self, fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+            submitted.append((fn, args, kwargs))
+            return None
+
+    def fail_sync_snapshot(*_: object, **__: object) -> None:
+        raise AssertionError("refresh=true 不应在请求线程同步 rebuild catalog。")
+
+    monkeypatch.setattr(catalog_routes, "_executor", DeferredExecutor())
+    monkeypatch.setattr(catalog_routes.DataManagementService, "cache_snapshot", fail_sync_snapshot)
+    client = TestClient(create_app())
+
+    response = client.get("/api/overview", params={"data_root": str(tmp_path), "refresh": "true"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["refresh_started"] is True
+    assert data["refresh_task"]["kind"] == "catalog_refresh"
+    assert data["refresh_task"]["status"] == "queued"
+    assert submitted
 
 
 def test_api_download_requires_symbols() -> None:
@@ -1781,6 +1869,7 @@ def test_api_research_market_regime_reports_risk_appetite_from_local_cache(tmp_p
     assert len({row["date"] for row in data["risk_appetite_series"]}) <= 12
     assert {row["component"] for row in data["risk_appetite_components"]} == {
         "市场宽度",
+        "高波资产",
         "中盘核心资产",
         "高位资产",
         "高流动性资产",
@@ -1798,7 +1887,32 @@ def test_api_research_market_regime_reports_risk_appetite_from_local_cache(tmp_p
     assert data["benchmark_regime"]["stage"] == "上涨后调整"
     assert data["benchmark_regime"]["is_adjustment_stage"] is True
     assert data["benchmark_regime"]["adjustment_sample_count"] > 0
+    assert data["benchmark_regime"]["adjustment_event_count"] == len(data["benchmark_regime"]["adjustment_timeline"])
+    assert data["benchmark_regime"]["adjustment_timeline"]
+    first_adjustment_event = data["benchmark_regime"]["adjustment_timeline"][0]
+    assert {
+        "event_label",
+        "start_date",
+        "end_date",
+        "trade_day_count",
+        "period_return",
+        "max_ret_60",
+        "min_drawdown_20",
+    }.issubset(first_adjustment_event)
     assert data["adjustment_factor_backtest"]
+    assert data["adjustment_factor_timeline_backtest"]
+    first_timeline_backtest = data["adjustment_factor_timeline_backtest"][0]
+    assert first_timeline_backtest["sample_scope"] == "基准回调事件"
+    assert {
+        "event_label",
+        "event_start",
+        "event_end",
+        "event_trade_day_count",
+        "event_min_drawdown_20",
+        "group",
+        "window",
+        "mean_return",
+    }.issubset(first_timeline_backtest)
     assert all(row["sample_scope"] == "基准上涨后调整" for row in data["adjustment_factor_backtest"])
     assert data["adjustment_factor_advantage"]["by_window"]
     assert {"A 回调充分+转强", "B 回调充分+未转强", "D 全市场基准"}.issubset(
@@ -1807,10 +1921,20 @@ def test_api_research_market_regime_reports_risk_appetite_from_local_cache(tmp_p
     assert data["migration_layers"]
     assert data["risk_release_sequence"]["expected_order"] == ["高波资产", "高位资产", "高流动性资产", "现金偏好代理"]
     assert data["risk_release_sequence"]["layers"]
+    first_release_layer = data["risk_release_sequence"]["layers"][0]
+    assert first_release_layer["order_label"] == "第1步"
+    assert first_release_layer["event_label"] == "弹性资产先承压"
+    assert "跌破MA20" in first_release_layer["trigger_rule"]
     assert data["risk_release_timeline"]
     assert {"date", "layer", "stress_score", "stress_level"}.issubset(data["risk_release_timeline"][0])
     assert data["high_liquidity_break_study"]
     assert {row["window"] for row in data["high_liquidity_break_study"]} == {"5日", "10日", "20日"}
+    assert "high_liquidity_break_timeline" in data
+    assert all("triggered_date_count" in row for row in data["high_liquidity_break_study"])
+    assert all(row["event_count"] <= row["triggered_date_count"] for row in data["high_liquidity_break_study"])
+    if data["high_liquidity_break_timeline"]:
+        first_break_event = data["high_liquidity_break_timeline"][0]
+        assert {"date", "break_ratio", "break_threshold", "break_count", "asset_count"}.issubset(first_break_event)
     assert data["market_scope"]["latest"]["asset_count"] == 3
     assert data["market_scope"]["series"]
     assert data["asset_rows"]

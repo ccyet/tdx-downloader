@@ -170,8 +170,39 @@ def test_cache_snapshot_reuses_unchanged_catalog_records_without_opening_parquet
 
     monkeypatch.setattr("tdx_downloader.data.inventory.pq.ParquetFile", fail_parquet_open)
     monkeypatch.setattr("tdx_downloader.data.inventory.pd.read_parquet", fail_parquet_open)
+    monkeypatch.setattr("tdx_downloader.data.inventory.query_market_data_part_symbols", fail_parquet_open)
 
-    snapshot = service.cache_snapshot(timeframes=("1d",), rebuild_catalog=True)
+    snapshot = service.cache_snapshot(timeframes=("1d",), symbols=("000001.SZ",), rebuild_catalog=True)
+
+    assert snapshot.summary["catalog_row_count"] == 1.0
+    assert snapshot.summary["data_inventory_cached_count"] == 1.0
+
+
+def test_cache_snapshot_reuses_catalog_record_with_whole_hour_mtime_shift(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    data_root = tmp_path / "market"
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=_bars())
+    service = DataManagementService(data_root, adjust="qfq")
+    service.cache_snapshot(timeframes=("1d",), rebuild_catalog=True)
+    parquet_path = data_root / "daily" / "qfq" / "000001.SZ.parquet"
+    shifted_modified_at = (pd.Timestamp(parquet_path.stat().st_mtime, unit="s") + pd.Timedelta(hours=8)).isoformat()
+    with sqlite3.connect(catalog_path_for(data_root)) as connection:
+        connection.execute(
+            "UPDATE market_data_files SET modified_at = ? WHERE stock_code = ? AND timeframe = ?",
+            (shifted_modified_at, "000001.SZ", "1d"),
+        )
+        connection.commit()
+
+    def fail_heavy_scan(*_: object, **__: object) -> object:
+        raise AssertionError("whole-hour timezone shift should not trigger parquet or part-index scan")
+
+    monkeypatch.setattr("tdx_downloader.data.inventory.pq.ParquetFile", fail_heavy_scan)
+    monkeypatch.setattr("tdx_downloader.data.inventory.pd.read_parquet", fail_heavy_scan)
+    monkeypatch.setattr("tdx_downloader.data.inventory.query_market_data_part_symbols", fail_heavy_scan)
+
+    snapshot = service.cache_snapshot(timeframes=("1d",), symbols=("000001.SZ",), rebuild_catalog=True)
 
     assert snapshot.summary["catalog_row_count"] == 1.0
     assert snapshot.summary["data_inventory_cached_count"] == 1.0

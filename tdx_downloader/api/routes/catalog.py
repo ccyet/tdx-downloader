@@ -47,22 +47,29 @@ def register_catalog_routes(app: FastAPI) -> None:
         start: str = "",
         end: str = "",
     ) -> dict[str, Any]:
-        service = DataManagementService(data_root, adjust=adjust)
         if refresh:
-            snapshot = service.cache_snapshot(
-                timeframes=tuple(timeframes or SUPPORTED_TIMEFRAMES),
-                symbols=None,
-                tdx_path=tdx_path,
-                symbol_metadata=symbol_metadata_with_runtime(data_root, tdx_path),
-                rebuild_catalog=True,
-                refresh_coverage=False,
+            task = _create_task("catalog_refresh")
+            _executor.submit(
+                _run_catalog_refresh_task,
+                task.id,
+                data_root,
+                adjust,
+                tdx_path,
+                tuple(timeframes or SUPPORTED_TIMEFRAMES),
             )
-            catalog = (
-                annotate_catalog_coverage(snapshot.catalog, data_root=data_root, adjust=adjust, start=start, end=end)
-                if include_records
-                else snapshot.catalog
-            )
-            return _catalog_payload(catalog, data_root=data_root, adjust=adjust, rebuilt=True, include_records=include_records)
+            try:
+                catalog = query_catalog(data_root=data_root)
+                if include_records:
+                    catalog = annotate_catalog_coverage(catalog, data_root=data_root, adjust=adjust, start=start, end=end)
+                payload = _catalog_payload(catalog, data_root=data_root, adjust=adjust, rebuilt=False, include_records=include_records)
+            except CatalogDatabaseBusy:
+                catalog = pd.DataFrame(columns=pd.Index(CATALOG_COLUMNS))
+                payload = _catalog_payload(catalog, data_root=data_root, adjust=adjust, rebuilt=False, include_records=include_records)
+                payload["catalog_locked"] = True
+            payload["refresh_started"] = True
+            payload["refresh_task"] = _task_payload(task)
+            payload["message"] = "缓存扫描已转入后台任务，当前页面先显示已有 SQLite 索引。"
+            return payload
         try:
             catalog = query_catalog(data_root=data_root)
             if include_records:
@@ -364,6 +371,64 @@ def _run_catalog_maintain_task(task_id: str, data_root: str, vacuum: bool) -> No
                 "elapsed_ms": elapsed_ms,
                 "before": result.get("before"),
                 "after": result.get("after"),
+            },
+        )
+        _update_task(task_id, status="succeeded", finished_at=_now_text(), result=result)
+    except Exception as exc:  # noqa: BLE001
+        _append_event(task_id, {"stage": "task_failed", "message": str(exc)})
+        _update_task(task_id, status="failed", finished_at=_now_text(), error=str(exc))
+
+
+def _run_catalog_refresh_task(
+    task_id: str,
+    data_root: str,
+    adjust: str,
+    tdx_path: str,
+    timeframes: tuple[str, ...],
+) -> None:
+    started_at = pd.Timestamp.utcnow()
+    _update_task(task_id, status="running", started_at=_now_text())
+    _append_event(
+        task_id,
+        {
+            "stage": "catalog_refresh_start",
+            "message": "开始后台扫描缓存并刷新 SQLite 索引。",
+            "timeframe_count": len(timeframes),
+        },
+    )
+    try:
+        metadata = symbol_metadata_with_runtime(data_root, tdx_path)
+        _append_event(
+            task_id,
+            {
+                "stage": "catalog_refresh_metadata",
+                "message": f"代码元数据已加载：{len(metadata)} 条。",
+                "metadata_rows": int(len(metadata)),
+            },
+        )
+        service = DataManagementService(data_root, adjust=adjust)
+        snapshot = service.cache_snapshot(
+            timeframes=timeframes,
+            symbols=None,
+            tdx_path=tdx_path,
+            symbol_metadata=metadata,
+            rebuild_catalog=True,
+            refresh_coverage=False,
+        )
+        elapsed_ms = int((pd.Timestamp.utcnow() - started_at).total_seconds() * 1000)
+        result = {
+            "summary": _json_dict(snapshot.summary),
+            "catalog_path": str(snapshot.catalog_path),
+            "record_count": int(len(snapshot.catalog)),
+            "elapsed_ms": elapsed_ms,
+        }
+        _append_event(
+            task_id,
+            {
+                "stage": "catalog_refresh_done",
+                "message": f"缓存扫描完成：{len(snapshot.catalog)} 条索引记录。",
+                "record_count": int(len(snapshot.catalog)),
+                "elapsed_ms": elapsed_ms,
             },
         )
         _update_task(task_id, status="succeeded", finished_at=_now_text(), result=result)
