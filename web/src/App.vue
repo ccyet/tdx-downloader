@@ -362,6 +362,13 @@
                 <strong>{{ taskStatusLabel(latestTask.status) }}</strong>
                 <span>{{ latestTask.id }}</span>
               </div>
+              <div v-if="latestTaskProgress" class="task-progress-strip compact" :aria-label="latestTaskProgress.ariaLabel">
+                <span :class="['task-progress-dot', latestTaskProgress.statusClass]"></span>
+                <div class="task-progress-track slim" aria-hidden="true">
+                  <span :style="{ width: latestTaskProgress.barWidth }"></span>
+                </div>
+                <em>{{ latestTaskProgress.percentText }}</em>
+              </div>
               <div v-if="taskHasControls(latestTask)" class="task-control-actions latest-task-actions" aria-label="最近任务控制">
                 <button
                   class="mini-action"
@@ -2945,7 +2952,20 @@
               <section class="event-window">
                 <div class="task-section-head">
                   <strong>当前进度</strong>
-                  <span>{{ selectedTaskControlText }} · 最新 {{ visibleTaskEvents.length }} / {{ selectedTaskEvents.length }} 条</span>
+                  <span>{{ selectedTaskControlText }} · 主动汇报 {{ visibleTaskEvents.length }} / {{ selectedTaskEvents.length }} 条</span>
+                </div>
+                <div v-if="selectedTaskProgress" class="task-progress-card" :aria-label="selectedTaskProgress.ariaLabel">
+                  <div class="task-progress-card-head">
+                    <strong>{{ selectedTaskProgress.title }}</strong>
+                    <span>{{ selectedTaskProgress.percentText }}</span>
+                  </div>
+                  <div class="task-progress-track" aria-hidden="true">
+                    <span :style="{ width: selectedTaskProgress.barWidth }"></span>
+                  </div>
+                  <div class="task-progress-meta">
+                    <span>{{ selectedTaskProgress.detail }}</span>
+                    <em>{{ selectedTaskProgress.time }}</em>
+                  </div>
                 </div>
                 <div class="event-list compact">
                   <div v-for="event in visibleTaskEvents" :key="event.key" class="event-row">
@@ -4200,6 +4220,27 @@ interface TaskPayload {
   events: Array<Record<string, any>>
   result: { summary: Record<string, any>; records: Array<Record<string, any>> } | null
   error: string | null
+}
+
+interface TaskEventItem {
+  key: string
+  index: number
+  stage: string
+  label: string
+  message: string
+  time: string
+  visible: boolean
+  raw: Record<string, any>
+}
+
+interface TaskProgressState {
+  title: string
+  detail: string
+  time: string
+  percentText: string
+  barWidth: string
+  statusClass: string
+  ariaLabel: string
 }
 
 interface NoticePayload {
@@ -6573,13 +6614,18 @@ const selectedTaskEvents = computed(() =>
   (selectedTask.value?.events || []).map((event: Record<string, any>, index: number) => ({
     key: `${index}-${event.time || event.stage || event.label || ''}`,
     index: index + 1,
+    stage: String(event.stage || ''),
     label: String(event.label || event.stage || '-'),
-    message: String(event.message || event.stage || '-'),
-    time: formatDateTimeText(event.time)
+    message: taskEventMessage(event),
+    time: formatDateTimeText(event.time),
+    visible: event.visible !== false,
+    raw: event
   }))
 )
+const selectedTaskProgress = computed(() => taskProgressState(selectedTask.value))
+const latestTaskProgress = computed(() => taskProgressState(latestTask.value))
 const visibleTaskEvents = computed(() =>
-  selectedTaskEvents.value.slice(Math.max(0, selectedTaskEvents.value.length - TASK_EVENT_WINDOW_SIZE))
+  selectedTaskEvents.value.filter(isVisibleTaskEvent).slice(Math.max(0, selectedTaskEvents.value.filter(isVisibleTaskEvent).length - TASK_EVENT_WINDOW_SIZE))
 )
 const selectedTaskQualityIssues = computed(() => parseQualityGateIssues(selectedTask.value?.error || ''))
 const taskQualityIssueTotalPages = computed(() =>
@@ -6631,6 +6677,69 @@ const taskResultPageEnd = computed(() =>
 const taskResultPageFirst = computed(() => (selectedTaskResultRows.value.length ? taskResultPageStartIndex.value + 1 : 0))
 const pagedTaskResultRows = computed(() => selectedTaskResultRows.value.slice(taskResultPageStartIndex.value, taskResultPageEnd.value))
 const taskResultPageSizeOptions = TASK_RESULT_PAGE_SIZE_OPTIONS
+
+function isVisibleTaskEvent(event: TaskEventItem) {
+  if (!event.visible) return false
+  return true
+}
+
+function taskEventMessage(event: Record<string, any>) {
+  const message = String(event.message || '').trim()
+  if (message) return message
+  const current = Number(event.progress_current || event.step_index || event.window_step_index || 0)
+  const total = Number(event.progress_total || event.step_count || event.window_step_count || 0)
+  const parts: string[] = []
+  if (Number.isFinite(current) && Number.isFinite(total) && current > 0 && total > 0) {
+    parts.push(`进度 ${formatInt(current)} / ${formatInt(total)}`)
+  }
+  if (event.symbol_count) parts.push(`${formatInt(Number(event.symbol_count))} 只标的`)
+  if (event.rows || event.rows_returned) parts.push(`${formatInt(Number(event.rows || event.rows_returned))} 行`)
+  const start = String(event.start || event.window_start || '').trim()
+  const end = String(event.end || event.window_end || '').trim()
+  if (start || end) parts.push(`${start || '-'} 至 ${end || '-'}`)
+  return parts.join(' · ') || String(event.stage || '-')
+}
+
+function taskProgressState(task: TaskPayload | null | undefined): TaskProgressState | null {
+  if (!task) return null
+  const progressEvent = [...(task.events || [])].reverse().find((event) => Number(event.progress_total || 0) > 0)
+  if (!progressEvent && !['succeeded', 'failed', 'cancelled'].includes(task.status)) return null
+  const current = Number(progressEvent?.progress_current || 0)
+  const total = Number(progressEvent?.progress_total || 0)
+  const rawRatio = Number(progressEvent?.progress_ratio)
+  const ratio = task.status === 'succeeded'
+    ? 1
+    : total > 0
+      ? clampRatio(Number.isFinite(rawRatio) ? rawRatio : current / total)
+      : 0
+  const percent = Math.round(ratio * 100)
+  const title = progressEvent
+    ? String(progressEvent.label || progressEvent.stage || '当前进度')
+    : taskStatusLabel(task.status)
+  const detail = progressEvent ? taskEventMessage(progressEvent) : task.error || taskStatusLabel(task.status)
+  const time = formatDateTimeText(progressEvent?.time || task.finished_at || task.started_at || task.created_at)
+  const statusClass = task.status === 'failed'
+    ? 'negative'
+    : task.status === 'cancelled'
+      ? 'warning'
+      : task.status === 'succeeded'
+        ? 'positive'
+        : 'running'
+  return {
+    title,
+    detail,
+    time,
+    percentText: `${percent}%`,
+    barWidth: `${percent}%`,
+    statusClass,
+    ariaLabel: `${title}，${percent}%`
+  }
+}
+
+function clampRatio(value: number) {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(1, Math.max(0, value))
+}
 const parsedSymbols = computed(() => parseSymbols(symbolsText.value))
 const allAssetSymbols = computed(() =>
   uniqueStringsInOrder((config.value?.symbol_groups || []).flatMap((group) => group.symbols))
@@ -7326,16 +7435,20 @@ const timeframeStorageRows = computed(() =>
   }))
 )
 const dashboardKeyStats = computed(() => [
-  { label: '缓存标的', value: formatInt(summary.value.symbol_count), detail: `${formatInt(summary.value.asset_type_count)} 类资产` },
+  {
+    label: '缓存标的',
+    value: formatInt(summary.value.price_cached_symbol_count ?? summary.value.symbol_count),
+    detail: `${formatInt(summary.value.price_asset_type_count ?? summary.value.asset_type_count)} 类资产`
+  },
   {
     label: '可用周期项',
-    value: `${formatInt(summary.value.data_inventory_cached_count)} / ${formatInt(summary.value.data_inventory_row_count)}`,
-    detail: `${formatInt(summary.value.data_inventory_unavailable_count)} 缺口`
+    value: `${formatInt(summary.value.price_data_inventory_cached_count ?? summary.value.data_inventory_cached_count)} / ${formatInt(summary.value.price_data_inventory_row_count ?? summary.value.data_inventory_row_count)}`,
+    detail: `${formatInt(summary.value.price_data_inventory_unavailable_count ?? summary.value.data_inventory_unavailable_count)} 缺口`
   },
   {
     label: 'K线总量',
-    value: formatInt(summary.value.data_inventory_total_rows),
-    detail: formatBytes(summary.value.data_inventory_total_file_size_bytes)
+    value: formatInt(summary.value.price_data_inventory_total_rows ?? summary.value.data_inventory_total_rows),
+    detail: formatBytes(summary.value.price_data_inventory_total_file_size_bytes ?? summary.value.data_inventory_total_file_size_bytes)
   },
   { label: '运行链路', value: runtimeLabel.value, detail: latestTaskText.value === '无' ? '暂无任务' : `最近 ${latestTaskText.value}` }
 ])

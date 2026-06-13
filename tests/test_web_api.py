@@ -1336,6 +1336,31 @@ def test_task_events_keep_recent_fifo_window() -> None:
     assert payload["events"][-1]["message"] == f"第 {constants.TASK_EVENT_LIMIT + 4} 批"
 
 
+def test_task_events_enrich_progress_and_hide_internal_batch_noise() -> None:
+    with task_store._tasks_lock:
+        task_store._tasks.clear()
+
+    task = task_store._create_task("download")
+    task_store._append_event(
+        task.id,
+        {
+            "stage": "tdx_batch_start",
+            "timeframe": "5m",
+            "batch_index": 1,
+            "batch_count": 1,
+            "window_step_index": 7,
+            "window_step_count": 20,
+        },
+    )
+
+    event = task_store._task_payload(task_store._get_task(task.id))["events"][-1]  # type: ignore[index,arg-type]
+    assert event["visible"] is False
+    assert event["progress_current"] == 7
+    assert event["progress_total"] == 20
+    assert event["progress_ratio"] == 0.35
+    assert event["label"] == "批次请求 · 5m · 窗口 7/20"
+
+
 def test_task_control_endpoints_update_download_task_state() -> None:
     with task_store._tasks_lock:
         task_store._tasks.clear()

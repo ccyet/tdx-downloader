@@ -29,6 +29,7 @@ from tdx_downloader.data.inventory import inventory_local_data
 from tdx_downloader.data.manager import (
     DataDownloadConfig,
     DataManagementService,
+    cache_summary,
     shortcut_symbol_groups,
     shortcut_symbols,
 )
@@ -174,6 +175,68 @@ def test_cache_snapshot_reuses_unchanged_catalog_records_without_opening_parquet
 
     assert snapshot.summary["catalog_row_count"] == 1.0
     assert snapshot.summary["data_inventory_cached_count"] == 1.0
+
+
+def test_cache_snapshot_does_not_reuse_stale_catalog_path_from_other_mount(tmp_path: Path) -> None:
+    data_root = tmp_path / "market"
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=_bars())
+    build_catalog(
+        data_root=data_root,
+        inventory=pd.DataFrame(
+            [
+                {
+                    "stock_code": "000001.SZ",
+                    "timeframe": "1d",
+                    "adjust": "qfq",
+                    "path": "/data/tdx-data/daily/qfq/000001.SZ.parquet",
+                    "rows": 0,
+                    "status": "missing_file",
+                    "message": "Docker 路径旧索引。",
+                }
+            ]
+        ),
+    )
+
+    snapshot = DataManagementService(data_root, adjust="qfq").cache_snapshot(timeframes=("1d",), rebuild_catalog=True)
+
+    assert snapshot.summary["data_inventory_cached_count"] == 1.0
+    assert snapshot.summary["data_inventory_missing_file_count"] == 0.0
+    assert snapshot.catalog.loc[0, "path"] == str(data_root / "daily" / "qfq" / "000001.SZ.parquet")
+
+
+def test_cache_summary_exposes_price_only_totals() -> None:
+    catalog = pd.DataFrame(
+        [
+            {
+                "stock_code": "000001.SZ",
+                "asset_type": "stock",
+                "data_kind": "price",
+                "indicator": "ohlcv",
+                "timeframe": "1d",
+                "status": "cached",
+                "rows": 10,
+                "file_size_bytes": 100,
+            },
+            {
+                "stock_code": "000001.SZ",
+                "asset_type": "stock",
+                "data_kind": "indicator",
+                "indicator": "ma5",
+                "timeframe": "1d",
+                "status": "cached",
+                "rows": 10,
+                "file_size_bytes": 50,
+            },
+        ]
+    )
+
+    summary = cache_summary(catalog)
+
+    assert summary["data_inventory_cached_count"] == 2.0
+    assert summary["price_data_inventory_cached_count"] == 1.0
+    assert summary["price_data_inventory_total_rows"] == 10.0
+    assert summary["price_data_inventory_total_file_size_bytes"] == 100.0
+    assert summary["price_cached_symbol_count"] == 1.0
 
 
 def test_query_catalog_read_path_does_not_initialize_schema(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -35,8 +35,13 @@ DEFAULT_WORKER_HOST = "0.0.0.0"
 DEFAULT_WORKER_PORT = 8765
 DEFAULT_WORKER_SCRATCH = r"C:\tdx_jobs" if sys.platform == "win32" else str(Path.home() / "tdx_jobs")
 WORKER_PROTOCOL_VERSION = 1
+WORKER_EVENT_LIMIT = 500
 PART_FILE_NAME = "part-000.parquet"
 MANIFEST_FILE_NAME = "manifest.json"
+
+
+class _WorkerCancelled(RuntimeError):
+    pass
 
 
 @dataclass
@@ -48,6 +53,7 @@ class WorkerJob:
     started_at: str | None = None
     finished_at: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
+    event_next_index: int = 0
     summary: dict[str, Any] | None = None
     records: list[dict[str, Any]] | None = None
     manifest_path: str = ""
@@ -103,18 +109,44 @@ class TdxWorkerStore:
         self._append_event(job_id, {"stage": "worker_job_cancel_requested", "message": "已请求终止 Worker 任务。"})
         return self.get_job(job_id)
 
-    def payload(self, job: WorkerJob) -> dict[str, Any]:
+    def payload(
+        self,
+        job: WorkerJob,
+        *,
+        after_event_index: int | None = None,
+        event_limit: int | None = None,
+        include_records: bool = True,
+    ) -> dict[str, Any]:
+        with self._lock:
+            current = self._jobs.get(job.id, job)
+            events = list(current.events)
+            event_next_index = int(current.event_next_index)
+            records = (current.records or []) if include_records else []
+            payload = {
+                "job_id": current.id,
+                "status": current.status,
+                "created_at": current.created_at,
+                "started_at": current.started_at,
+                "finished_at": current.finished_at,
+                "summary": current.summary or {},
+                "records": records,
+                "manifest_path": current.manifest_path,
+                "error": current.error,
+            }
+        event_start_index = _event_index(events[0]) if events else event_next_index
+        filtered_events = events
+        if after_event_index is not None:
+            filtered_events = [event for event in events if _event_index(event) > after_event_index]
+        if event_limit is not None and event_limit >= 0:
+            filtered_events = filtered_events[: min(int(event_limit), WORKER_EVENT_LIMIT)]
         return {
-            "job_id": job.id,
-            "status": job.status,
-            "created_at": job.created_at,
-            "started_at": job.started_at,
-            "finished_at": job.finished_at,
-            "events": list(job.events),
-            "summary": job.summary or {},
-            "records": job.records or [],
-            "manifest_path": job.manifest_path,
-            "error": job.error,
+            **payload,
+            "events": filtered_events,
+            "event_start_index": event_start_index,
+            "event_next_index": event_next_index,
+            "event_count": event_next_index,
+            "events_returned": len(filtered_events),
+            "events_truncated": bool(after_event_index is not None and after_event_index + 1 < event_start_index),
         }
 
     def manifest_file(self, job_id: str) -> Path:
@@ -155,6 +187,7 @@ class TdxWorkerStore:
                     service=service,
                     config=config,
                     progress_callback=lambda event: self._append_event(job_id, event),
+                    cancel_check=lambda: self._raise_if_cancelled(job_id),
                 )
             elif mode == "fetch-windows":
                 table, parts = _fetch_windows_to_manifest(
@@ -164,6 +197,7 @@ class TdxWorkerStore:
                     payload=payload,
                     config=config,
                     progress_callback=lambda event: self._append_event(job_id, event),
+                    cancel_check=lambda: self._raise_if_cancelled(job_id),
                 )
             else:
                 raise ValueError(f"未知 Worker 下载模式：{mode}")
@@ -178,6 +212,9 @@ class TdxWorkerStore:
                 manifest_path=str(manifest_path),
             )
             self._append_event(job_id, {"stage": "worker_job_done", "message": "Windows Worker 任务完成。"})
+        except _WorkerCancelled as exc:
+            self._update_job(job_id, status="cancelled", finished_at=_now_text(), error=str(exc))
+            self._append_event(job_id, {"stage": "worker_job_cancelled", "message": str(exc)})
         except Exception as exc:  # noqa: BLE001
             self._update_job(job_id, status="failed", finished_at=_now_text(), error=str(exc))
             self._append_event(job_id, {"stage": "worker_job_failed", "message": str(exc)})
@@ -211,9 +248,11 @@ class TdxWorkerStore:
         payload.setdefault("time", _now_text())
         with self._lock:
             job = self._jobs[job_id]
+            payload.setdefault("event_index", job.event_next_index)
+            job.event_next_index += 1
             job.events.append(payload)
-            if len(job.events) > 500:
-                del job.events[: len(job.events) - 500]
+            if len(job.events) > WORKER_EVENT_LIMIT:
+                del job.events[: len(job.events) - WORKER_EVENT_LIMIT]
 
     def _update_job(self, job_id: str, **changes: Any) -> None:
         with self._lock:
@@ -224,7 +263,7 @@ class TdxWorkerStore:
     def _raise_if_cancelled(self, job_id: str) -> None:
         job = self.get_job(job_id)
         if job is not None and job.cancel_requested:
-            raise RuntimeError("Worker 任务已终止。")
+            raise _WorkerCancelled("Worker 任务已终止。")
 
 
 def create_worker_app(*, scratch_root: str | Path | None = None):
@@ -244,11 +283,21 @@ def create_worker_app(*, scratch_root: str | Path | None = None):
         return store.payload(job)
 
     @app.get("/jobs/{job_id}")
-    def get_job(job_id: str) -> dict[str, Any]:
+    def get_job(
+        job_id: str,
+        after_event_index: int | None = None,
+        event_limit: int | None = None,
+        include_records: bool = True,
+    ) -> dict[str, Any]:
         job = store.get_job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
-        return store.payload(job)
+        return store.payload(
+            job,
+            after_event_index=after_event_index,
+            event_limit=event_limit,
+            include_records=include_records,
+        )
 
     @app.post("/jobs/{job_id}/cancel")
     def cancel_job(job_id: str) -> dict[str, Any]:
@@ -308,6 +357,7 @@ def _force_fetch_to_manifest(
     service: DataManagementService,
     config: DataDownloadConfig,
     progress_callback,
+    cancel_check=None,
 ) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
     from tdx_downloader.data.tdx import fetch_tdx_bars
     from tdx_downloader.data.repository import _tdx_fetch_window_for_timeframe
@@ -316,6 +366,7 @@ def _force_fetch_to_manifest(
     frames: list[pd.DataFrame] = []
     parts: list[dict[str, Any]] = []
     for step_index, timeframe in enumerate(config.timeframes, start=1):
+        _raise_if_cancelled(cancel_check)
         fetch_start, fetch_end = _tdx_fetch_window_for_timeframe(timeframe, start=config.start, end=config.end)
         progress_callback(
             {
@@ -334,8 +385,16 @@ def _force_fetch_to_manifest(
             adjust=service.adjust,
             tqcenter_path=config.tqcenter_path,
             batch_size=config.batch_size,
-            progress_callback=progress_callback,
+            progress_callback=_window_progress_callback(
+                progress_callback,
+                timeframe=timeframe,
+                step_index=step_index,
+                step_count=len(config.timeframes),
+                start=fetch_start,
+                end=fetch_end,
+            ),
         )
+        _raise_if_cancelled(cancel_check)
         part = _write_part(
             store=store,
             job_id=job_id,
@@ -356,6 +415,7 @@ def _force_fetch_to_manifest(
                 "part": part["path"],
             }
         )
+        _raise_if_cancelled(cancel_check)
     return (pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()), parts
 
 
@@ -367,6 +427,7 @@ def _fetch_windows_to_manifest(
     payload: dict[str, Any],
     config: DataDownloadConfig,
     progress_callback,
+    cancel_check=None,
 ) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
     from tdx_downloader.data.tdx import fetch_tdx_bars
     from tdx_downloader.data.manager import _force_download_frame
@@ -379,9 +440,11 @@ def _fetch_windows_to_manifest(
     step_count = sum(len(groups or []) for groups in groups_by_timeframe.values())
     step_index = 0
     for timeframe, groups in groups_by_timeframe.items():
+        _raise_if_cancelled(cancel_check)
         if not isinstance(groups, list):
             continue
         for group in groups:
+            _raise_if_cancelled(cancel_check)
             step_index += 1
             symbols = tuple(str(item) for item in (group.get("symbols") or []) if str(item).strip())
             start = str(group.get("start") or config.start)
@@ -405,8 +468,16 @@ def _fetch_windows_to_manifest(
                 adjust=service.adjust,
                 tqcenter_path=config.tqcenter_path,
                 batch_size=config.batch_size,
-                progress_callback=progress_callback,
+                progress_callback=_window_progress_callback(
+                    progress_callback,
+                    timeframe=str(timeframe),
+                    step_index=step_index,
+                    step_count=step_count,
+                    start=start,
+                    end=end,
+                ),
             )
+            _raise_if_cancelled(cancel_check)
             write_started_at = time.perf_counter()
             part = _write_part(
                 store=store,
@@ -433,6 +504,7 @@ def _fetch_windows_to_manifest(
                     "write_ms": write_ms,
                 }
             )
+            _raise_if_cancelled(cancel_check)
     return (pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()), parts
 
 
@@ -1162,7 +1234,7 @@ def _register_delta_parts(
 
 def _dependency_status() -> dict[str, bool]:
     result: dict[str, bool] = {}
-    for name in ("numpy", "pandas", "pyarrow", "dateutil", "pytz"):
+    for name in ("numpy", "pandas", "pyarrow", "dateutil", "pytz", "fastapi", "uvicorn"):
         try:
             __import__(name)
             result[name] = True
@@ -1183,6 +1255,40 @@ def _records(frame: pd.DataFrame) -> list[dict[str, Any]]:
     if frame.empty:
         return []
     return frame.astype(object).where(frame.notna(), None).to_dict("records")
+
+
+def _event_index(event: dict[str, Any]) -> int:
+    try:
+        return int(event.get("event_index", -1))
+    except (TypeError, ValueError):
+        return -1
+
+
+def _window_progress_callback(
+    callback,
+    *,
+    timeframe: str,
+    step_index: int,
+    step_count: int,
+    start: str,
+    end: str,
+):
+    def emit(event: dict[str, object]) -> None:
+        payload = dict(event)
+        payload.setdefault("timeframe", timeframe)
+        payload["window_step_index"] = step_index
+        payload["window_step_count"] = step_count
+        payload["window_start"] = start
+        payload["window_end"] = end
+        callback(payload)
+
+    return emit
+
+
+def _raise_if_cancelled(cancel_check) -> None:
+    if cancel_check is None:
+        return
+    cancel_check()
 
 
 def _now_text() -> str:

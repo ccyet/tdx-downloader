@@ -339,11 +339,9 @@ def _download_smart_with_parallels_fetch(
     这在全市场任务下会卡在覆盖索引阶段。这里保留原 smart 语义，但把元数据审计固定在 Mac 本机执行。
     """
     _raise_if_cancelled(cancel_check)
-    normalized_timeframes = _timeframes_with_daily_dependency(list(config.timeframes))
+    normalized_timeframes = _timeframes_without_implicit_daily(list(config.timeframes))
     normalized_symbols = list(config.symbols)
-    processing_timeframes = (["1d"] if "1d" in normalized_timeframes else []) + [
-        timeframe for timeframe in normalized_timeframes if timeframe != "1d"
-    ]
+    processing_timeframes = _source_timeframe_order(normalized_timeframes)
     derived_targets_by_source = _worker_derivable_targets_by_source(processing_timeframes)
     derived_targets = {target for targets in derived_targets_by_source.values() for target in targets}
     source_timeframes = [timeframe for timeframe in processing_timeframes if timeframe not in derived_targets]
@@ -888,11 +886,9 @@ def _worker_smart_payload(
     *,
     progress_callback=None,
 ) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
-    normalized_timeframes = _timeframes_with_daily_dependency(list(config.timeframes))
+    normalized_timeframes = _timeframes_without_implicit_daily(list(config.timeframes))
     normalized_symbols = list(config.symbols)
-    processing_timeframes = (["1d"] if "1d" in normalized_timeframes else []) + [
-        timeframe for timeframe in normalized_timeframes if timeframe != "1d"
-    ]
+    processing_timeframes = _source_timeframe_order(normalized_timeframes)
     expected_sessions_by_symbol = _fast_expected_sessions_by_symbol(
         data_root=service.data_root,
         adjust=service.adjust,
@@ -1162,6 +1158,15 @@ def _worker_derivable_targets_by_source(timeframes: list[str]) -> dict[str, tupl
         return {}
     targets = tuple(timeframe for timeframe in timeframes if timeframe in {"15m", "30m", "60m"})
     return {"5m": targets} if targets else {}
+
+
+def _timeframes_without_implicit_daily(timeframes: list[str]) -> list[str]:
+    return list(dict.fromkeys(str(timeframe) for timeframe in timeframes if str(timeframe)))
+
+
+def _source_timeframe_order(timeframes: list[str]) -> list[str]:
+    requested = _timeframes_without_implicit_daily(timeframes)
+    return [timeframe for timeframe in requested if timeframe != "1d"] + [timeframe for timeframe in requested if timeframe == "1d"]
 
 
 def _worker_cli_fallback_enabled() -> bool:

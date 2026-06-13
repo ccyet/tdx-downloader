@@ -2136,6 +2136,111 @@ main.ai-main .notice-bar {
   align-items: center;
 }
 
+.task-progress-strip {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(96px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-progress-strip.compact {
+  grid-column: 1 / -1;
+}
+
+.task-progress-strip em {
+  grid-column: auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.task-progress-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--blue);
+}
+
+.task-progress-dot.positive {
+  background: var(--green);
+}
+
+.task-progress-dot.warning {
+  background: #f59e0b;
+}
+
+.task-progress-dot.negative {
+  background: var(--red);
+}
+
+.task-progress-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.task-progress-card-head,
+.task-progress-meta {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-progress-card-head strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.task-progress-card-head span {
+  color: var(--blue);
+  font-size: 13px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.task-progress-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5edf3;
+}
+
+.task-progress-track.slim {
+  height: 6px;
+}
+
+.task-progress-track span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--blue), var(--green));
+  transition: width 180ms ease;
+}
+
+.task-progress-meta span,
+.task-progress-meta em {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.task-progress-meta em {
+  white-space: nowrap;
+}
+
 .recent-task-main {
   min-width: 0;
   display: grid;

@@ -26,7 +26,7 @@ PARALLELS_RUNNER_DIR_NAME = ".tdx-parallels"
 PARALLELS_RUNTIME_CACHE_FILE = "runtime-cache.json"
 WINDOWS_PYTHON_APP_ALIAS_MARKER = r"\Microsoft\WindowsApps\python.exe"
 WINDOWS_PYTHON_RESULT_PREFIX = "__TDX_WINDOWS_PYTHON__="
-WINDOWS_RUNTIME_IMPORT_CHECK = "import numpy, pandas, pyarrow, dateutil, pytz"
+WINDOWS_RUNTIME_IMPORT_CHECK = "import numpy, pandas, pyarrow, dateutil, pytz, fastapi, uvicorn"
 WINDOWS_RUNTIME_PIP_PACKAGES = (
     "numpy",
     "pandas",
@@ -34,6 +34,8 @@ WINDOWS_RUNTIME_PIP_PACKAGES = (
     "python-dateutil",
     "pytz",
     "tzdata",
+    "fastapi",
+    "uvicorn",
 )
 DEFAULT_WINDOWS_PYTHON_CANDIDATES = (
     DEFAULT_WINDOWS_PYTHON,
@@ -260,14 +262,15 @@ def start_parallels_tdx_worker(
         cwd=Path.cwd(),
     )
     log_path = runner_files.command_path.with_suffix(".log")
-    windows_python = subprocess.list2cmdline([resolved.windows_python, mac_path_to_parallels_shared_path(str(runner_files.runner_path))])
+    windows_runner_path = mac_path_to_parallels_shared_path(str(runner_files.runner_path))
     windows_log_path = mac_path_to_parallels_shared_path(str(log_path))
+    worker_command = f'""{resolved.windows_python}" "{windows_runner_path}" 1>>"{windows_log_path}" 2>>&1"'
     runner_files.command_path.write_text(
         "@echo off\r\n"
         "chcp 65001 >nul\r\n"
         "set PYTHONUTF8=1\r\n"
         f'set "{PARALLELS_TDX_WORKER_SCRATCH_ENV_VAR}={resolved.worker_scratch}"\r\n'
-        f'start "tdx-worker" /min cmd.exe /d /s /c "{windows_python} 1>>"{windows_log_path}" 2>>&1"\r\n'
+        f'start "tdx-worker" /min cmd.exe /d /s /c {worker_command}\r\n'
         "exit /b 0\r\n",
         encoding="utf-8",
     )
@@ -284,6 +287,14 @@ def start_parallels_tdx_worker(
             timeout=PARALLELS_WORKER_START_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
+        text = _read_worker_start_log(log_path)
+        if _worker_start_log_has_started(text):
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=0,
+                stdout=_decode_windows_output(exc.stdout),
+                stderr=_decode_windows_output(exc.stderr),
+            )
         return subprocess.CompletedProcess(
             args=command,
             returncode=124,
@@ -292,10 +303,37 @@ def start_parallels_tdx_worker(
         )
     return subprocess.CompletedProcess(
         args=result.args,
-        returncode=result.returncode,
+        returncode=result.returncode if result.returncode != 0 else _worker_start_returncode(log_path),
         stdout=_decode_windows_output(result.stdout),
-        stderr=_decode_windows_output(result.stderr),
+        stderr=_worker_start_stderr(log_path, _decode_windows_output(result.stderr)),
     )
+
+
+def _worker_start_returncode(log_path: Path) -> int:
+    time.sleep(1.0)
+    text = _read_worker_start_log(log_path)
+    if "Traceback (most recent call last)" in text or "ModuleNotFoundError:" in text:
+        return 1
+    return 0
+
+
+def _worker_start_stderr(log_path: Path, stderr: str) -> str:
+    text = _read_worker_start_log(log_path)
+    if "Traceback (most recent call last)" not in text and "ModuleNotFoundError:" not in text:
+        return stderr
+    detail = "\n".join(part for part in (stderr.strip(), text.strip()) if part)
+    return detail or stderr
+
+
+def _read_worker_start_log(log_path: Path) -> str:
+    try:
+        return log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+    except OSError:
+        return ""
+
+
+def _worker_start_log_has_started(text: str) -> bool:
+    return "Uvicorn running on" in text or "Application startup complete" in text
 
 
 def write_parallels_runner(*, config: ParallelsTdxConfig, cli_args: list[str], cwd: Path) -> ParallelsRunnerFiles:
@@ -463,7 +501,8 @@ def resolve_windows_python(config: ParallelsTdxConfig) -> subprocess.CompletedPr
     cached_python = _read_cached_windows_python(config)
     if cached_python:
         cached_check = _ensure_windows_python_exists(config.vm_name, cached_python, explicit=False)
-        if cached_check.returncode == 0:
+        cached_runtime = _check_windows_python_runtime(config.vm_name, cached_python) if cached_check.returncode == 0 else cached_check
+        if cached_runtime.returncode == 0:
             return subprocess.CompletedProcess(args=cached_check.args, returncode=0, stdout=cached_python, stderr="")
     bootstrap_python = _discover_windows_python(config.vm_name, preferred=python_path)
     if bootstrap_python:
@@ -518,6 +557,27 @@ def _ensure_windows_python_exists(
         returncode=result.returncode or 1,
         stdout="",
         stderr=_windows_python_missing_message(python_path, detail=detail),
+    )
+
+
+def _check_windows_python_runtime(vm_name: str, python_path: str) -> subprocess.CompletedProcess[str]:
+    command = [
+        "prlctl",
+        "exec",
+        vm_name,
+        "--current-user",
+        "cmd",
+        "/d",
+        "/s",
+        "/c",
+        f"{_quote_windows_arg(python_path)} -c {_quote_windows_arg(WINDOWS_RUNTIME_IMPORT_CHECK)}",
+    ]
+    result = subprocess.run(command, capture_output=True, check=False)
+    return subprocess.CompletedProcess(
+        args=result.args,
+        returncode=result.returncode,
+        stdout=_decode_windows_output(result.stdout),
+        stderr=_decode_windows_output(result.stderr),
     )
 
 

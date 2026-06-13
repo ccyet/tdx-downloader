@@ -11,6 +11,17 @@ from uuid import uuid4
 from .constants import STAGE_LABELS, TASK_EVENT_LIMIT, TASK_HISTORY_LIMIT
 from .serialization import _json_dict
 
+PROGRESS_ONLY_STAGES = {
+    "tdx_request_start",
+    "tdx_request_done",
+    "tdx_batch_start",
+    "tdx_batch_done",
+    "worker_fetch_window_start",
+    "worker_fetch_window_done",
+    "worker_commit_progress",
+}
+IMPORTANT_EVENT_KEYWORDS = ("failed", "error", "cancel", "waiting", "skipped", "paused", "resumed")
+
 
 @dataclass
 class TaskState:
@@ -56,6 +67,7 @@ def _update_task(task_id: str, **changes: Any) -> None:
 def _append_event(task_id: str, event: dict[str, object]) -> None:
     event_payload = dict(event)
     event_payload["time"] = _now_text()
+    _enrich_progress_event(event_payload)
     event_payload["label"] = _progress_label(event_payload)
     with _tasks_lock:
         task = _tasks[task_id]
@@ -142,13 +154,54 @@ def _progress_label(event: dict[str, object]) -> str:
     stage = str(event.get("stage", ""))
     label = STAGE_LABELS.get(stage, stage)
     timeframe = str(event.get("timeframe") or "")
+    window_index = event.get("window_step_index")
+    window_count = event.get("window_step_count")
     batch_index = event.get("batch_index")
     batch_count = event.get("batch_count")
+    if _positive_number(window_index) and _positive_number(window_count):
+        parts = [label]
+        if timeframe:
+            parts.append(timeframe)
+        parts.append(f"窗口 {int(window_index)}/{int(window_count)}")
+        if (
+            _positive_number(batch_index)
+            and _positive_number(batch_count)
+            and int(batch_count) > 1
+        ):
+            parts.append(f"子批次 {int(batch_index)}/{int(batch_count)}")
+        return " · ".join(parts)
     if batch_index and batch_count:
         return f"{label} · {timeframe} · {batch_index}/{batch_count}"
     if timeframe:
         return f"{label} · {timeframe}"
     return label
+
+
+def _enrich_progress_event(event: dict[str, object]) -> None:
+    stage = str(event.get("stage") or "")
+    current = event.get("step_index") or event.get("window_step_index") or event.get("batch_index")
+    total = event.get("step_count") or event.get("window_step_count") or event.get("batch_count")
+    if _positive_number(current) and _positive_number(total):
+        total_int = max(int(total), 1)
+        current_int = min(max(int(current), 0), total_int)
+        event.setdefault("progress_current", current_int)
+        event.setdefault("progress_total", total_int)
+        event.setdefault("progress_ratio", current_int / total_int)
+    if "visible" not in event:
+        event["visible"] = _event_visible_by_default(stage)
+
+
+def _event_visible_by_default(stage: str) -> bool:
+    if stage not in PROGRESS_ONLY_STAGES:
+        return True
+    return any(keyword in stage for keyword in IMPORTANT_EVENT_KEYWORDS)
+
+
+def _positive_number(value: object) -> bool:
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _now_text() -> str:

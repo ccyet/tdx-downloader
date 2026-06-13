@@ -70,7 +70,7 @@ def inventory_local_data(
     roots = {timeframe: resolve_timeframe_root(data_root, timeframe) / adjust for timeframe in normalized_timeframes}
     rows = [
         _inventory_symbol_file_from_path(
-            path=(Path(str(existing["path"])) if existing and str(existing.get("path", "")) else roots[timeframe] / f"{symbol}.parquet"),
+            path=roots[timeframe] / f"{symbol}.parquet",
             timeframe=timeframe,
             adjust=adjust,
             symbol=symbol,

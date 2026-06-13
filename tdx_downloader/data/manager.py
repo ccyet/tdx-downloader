@@ -471,6 +471,8 @@ def _has_non_catalog_symbol_metadata(metadata: pd.DataFrame) -> bool:
 
 def cache_summary(catalog: pd.DataFrame) -> dict[str, object]:
     summary = summarize_data_inventory(catalog)
+    price_catalog = _price_ohlcv_catalog(catalog)
+    price_summary = summarize_data_inventory(price_catalog)
     symbols = catalog["stock_code"].dropna().astype(str).nunique() if "stock_code" in catalog.columns else 0
     timeframes = catalog["timeframe"].dropna().astype(str).nunique() if "timeframe" in catalog.columns else 0
     asset_types = catalog["asset_type"].dropna().astype(str).nunique() if "asset_type" in catalog.columns else 0
@@ -480,6 +482,12 @@ def cache_summary(catalog: pd.DataFrame) -> dict[str, object]:
         else 0
     )
     latest_modified = catalog["modified_at"].max() if "modified_at" in catalog.columns and not catalog.empty else pd.NaT
+    price_status = (
+        price_catalog["status"].fillna("").astype(str)
+        if "status" in price_catalog.columns
+        else pd.Series([""] * len(price_catalog), index=price_catalog.index)
+    )
+    cached_price = price_catalog.loc[price_status.eq("cached")]
     summary.update(
         {
             "symbol_count": float(symbols),
@@ -488,9 +496,30 @@ def cache_summary(catalog: pd.DataFrame) -> dict[str, object]:
             "dataset_count": float(datasets),
             "catalog_row_count": float(len(catalog)),
             "latest_modified_at": latest_modified,
+            "price_symbol_count": float(
+                price_catalog["stock_code"].dropna().astype(str).nunique() if "stock_code" in price_catalog.columns else 0
+            ),
+            "price_cached_symbol_count": float(
+                cached_price["stock_code"].dropna().astype(str).nunique() if "stock_code" in cached_price.columns else 0
+            ),
+            "price_timeframe_count": float(
+                price_catalog["timeframe"].dropna().astype(str).nunique() if "timeframe" in price_catalog.columns else 0
+            ),
+            "price_asset_type_count": float(
+                price_catalog["asset_type"].dropna().astype(str).nunique() if "asset_type" in price_catalog.columns else 0
+            ),
         }
     )
+    summary.update({f"price_{key}": value for key, value in price_summary.items()})
     return summary
+
+
+def _price_ohlcv_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
+    if catalog.empty:
+        return catalog.copy()
+    data_kind = catalog.get("data_kind", pd.Series(["price"] * len(catalog), index=catalog.index)).fillna("price").astype(str)
+    indicator = catalog.get("indicator", pd.Series(["ohlcv"] * len(catalog), index=catalog.index)).fillna("ohlcv").astype(str)
+    return catalog.loc[data_kind.eq("price") & indicator.eq("ohlcv")].copy()
 
 
 def annotate_catalog_coverage(
@@ -601,6 +630,7 @@ def annotate_catalog_coverage(
 
 def cache_by_timeframe(catalog: pd.DataFrame) -> pd.DataFrame:
     columns = ["timeframe", "cached_count", "unavailable_count", "rows", "file_size_bytes", "latest_modified_at"]
+    catalog = _price_ohlcv_catalog(catalog)
     if catalog.empty:
         return pd.DataFrame(columns=columns)
     frame = catalog.copy()
@@ -842,6 +872,7 @@ def _timeframe_sort_key(value: str) -> int:
 
 def cache_by_status(catalog: pd.DataFrame) -> pd.DataFrame:
     columns = ["status", "count", "rows", "file_size_bytes"]
+    catalog = _price_ohlcv_catalog(catalog)
     if catalog.empty:
         return pd.DataFrame(columns=columns)
     frame = catalog.copy()
@@ -861,6 +892,7 @@ def cache_by_status(catalog: pd.DataFrame) -> pd.DataFrame:
 
 def cache_by_asset_type(catalog: pd.DataFrame) -> pd.DataFrame:
     columns = ["asset_type", "asset_type_label", "cached_count", "unavailable_count", "rows", "file_size_bytes"]
+    catalog = _price_ohlcv_catalog(catalog)
     if catalog.empty:
         return pd.DataFrame(columns=columns)
     frame = catalog.copy()
@@ -915,6 +947,7 @@ def cache_readiness(catalog: pd.DataFrame) -> pd.DataFrame:
         "status",
         "message",
     ]
+    catalog = _price_ohlcv_catalog(catalog)
     if catalog.empty:
         return pd.DataFrame(columns=columns)
 

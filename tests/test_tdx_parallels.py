@@ -904,6 +904,8 @@ def test_resolve_windows_python_reuses_cached_default_runtime(monkeypatch, tmp_p
         calls.append(command)
         if command[:4] == ["prlctl", "exec", "Windows 11", "--current-user"] and "if exist" in command[-1]:
             return _Process(command)
+        if command[:4] == ["prlctl", "exec", "Windows 11", "--current-user"] and "import numpy" in command[-1]:
+            return _Process(command)
         raise AssertionError(command)
 
     monkeypatch.chdir(tmp_path)
@@ -918,9 +920,57 @@ def test_resolve_windows_python_reuses_cached_default_runtime(monkeypatch, tmp_p
 
     assert result.returncode == 0
     assert result.stdout == r"C:\Users\Public\venvs\tdx-downloader\Scripts\python.exe"
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert "tdx_python_probe_" not in calls[0][-1]
     assert "tdx_python_setup_" not in calls[0][-1]
+    assert "import numpy" in calls[1][-1]
+
+
+def test_resolve_windows_python_repairs_cached_runtime_when_dependency_missing(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    cache_dir = tmp_path / PARALLELS_RUNNER_DIR_NAME
+    cache_dir.mkdir()
+    (cache_dir / "runtime-cache.json").write_text(
+        json.dumps(
+            {
+                "vm_name": "Windows 11",
+                "windows_repo": r"\\psf\ccOUT 1\tdx-downloader",
+                "bootstrap_python": r"C:\ProgramData\miniconda3\python.exe",
+                "windows_python": r"C:\Users\Public\venvs\tdx-downloader\Scripts\python.exe",
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_: object) -> object:
+        calls.append(command)
+        if command[:4] == ["prlctl", "exec", "Windows 11", "--current-user"] and "if exist" in command[-1]:
+            return _Process(command)
+        if command[:4] == ["prlctl", "exec", "Windows 11", "--current-user"] and "import numpy" in command[-1]:
+            return _Process(command, returncode=1, stderr=b"ModuleNotFoundError: No module named 'uvicorn'\n")
+        if command[:4] == ["prlctl", "exec", "Windows 11", "--current-user"] and "tdx_python_probe_" in command[-1]:
+            return _Process(command, stdout=b"C:\\ProgramData\\miniconda3\\python.exe\n")
+        if command[:4] == ["prlctl", "exec", "Windows 11", "--current-user"] and "tdx_python_setup_" in command[-1]:
+            return _Process(
+                command,
+                stdout=b"__TDX_WINDOWS_PYTHON__=C:\\Users\\Public\\venvs\\tdx-downloader\\Scripts\\python.exe\n",
+            )
+        raise AssertionError(command)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(tdx_parallels.subprocess, "run", fake_run)
+    config = ParallelsTdxConfig(
+        vm_name="Windows 11",
+        windows_python=r"C:\Users\Public\venvs\tdx-downloader\Scripts\python.exe",
+        windows_repo=r"\\psf\ccOUT 1\tdx-downloader",
+    )
+
+    result = resolve_windows_python(config)
+
+    assert result.returncode == 0
+    assert result.stdout == r"C:\Users\Public\venvs\tdx-downloader\Scripts\python.exe"
+    assert any("tdx_python_probe_" in call[-1] for call in calls)
+    assert any("tdx_python_setup_" in call[-1] for call in calls)
 
 
 def test_resolve_windows_python_keeps_explicit_python_path(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1013,6 +1063,7 @@ def test_start_parallels_tdx_worker_uses_background_cmd(monkeypatch, tmp_path: P
         raise AssertionError(command)
 
     monkeypatch.setattr(tdx_parallels.subprocess, "run", fake_run)
+    monkeypatch.setattr(tdx_parallels.time, "sleep", lambda _: None)
     monkeypatch.chdir(tmp_path)
     config = ParallelsTdxConfig(
         vm_name="Windows 11",
@@ -1030,6 +1081,67 @@ def test_start_parallels_tdx_worker_uses_background_cmd(monkeypatch, tmp_path: P
     assert 'start "tdx-worker" /min cmd.exe' in text
     assert "tdx-worker" in (tmp_path / PARALLELS_RUNNER_DIR_NAME).joinpath(command_files[-1].with_suffix(".json").name).read_text(encoding="utf-8")
     assert calls[-1][:4] == ["prlctl", "exec", "Windows 11", "--current-user"]
+
+
+def test_start_parallels_tdx_worker_reports_background_traceback(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    def fake_run(command: list[str], **_: object) -> object:
+        if command[:2] == ["prlctl", "status"]:
+            return _Process(command, stdout=b"VM 'Windows 11' is running\n")
+        if command[:4] == ["prlctl", "exec", "Windows 11", "--current-user"] and "if exist" in command[-1]:
+            return _Process(command)
+        if command[:2] == ["prlctl", "exec"]:
+            return _Process(command, stdout=b"started\n")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(tdx_parallels.subprocess, "run", fake_run)
+    monkeypatch.setattr(tdx_parallels.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        tdx_parallels,
+        "_read_worker_start_log",
+        lambda _: "Traceback (most recent call last):\nModuleNotFoundError: No module named 'uvicorn'\n",
+    )
+    monkeypatch.chdir(tmp_path)
+    config = ParallelsTdxConfig(
+        vm_name="Windows 11",
+        windows_python=r"D:\Python\python.exe",
+        windows_repo=r"C:\tdx-downloader-app",
+        worker_scratch=r"C:\tdx_jobs",
+    )
+
+    result = start_parallels_tdx_worker(config=config, port=8765)
+
+    assert result.returncode == 1
+    assert "ModuleNotFoundError" in result.stderr
+    assert "uvicorn" in result.stderr
+
+
+def test_start_parallels_tdx_worker_treats_timeout_as_ok_when_log_started(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    def fake_run(command: list[str], **_: object) -> object:
+        if command[:2] == ["prlctl", "status"]:
+            return _Process(command, stdout=b"VM 'Windows 11' is running\n")
+        if command[:4] == ["prlctl", "exec", "Windows 11", "--current-user"] and "if exist" in command[-1]:
+            return _Process(command)
+        if command[:2] == ["prlctl", "exec"]:
+            raise tdx_parallels.subprocess.TimeoutExpired(command, timeout=15, output=b"", stderr=b"")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(tdx_parallels.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        tdx_parallels,
+        "_read_worker_start_log",
+        lambda _: "INFO: Application startup complete.\nINFO: Uvicorn running on http://0.0.0.0:8765\n",
+    )
+    monkeypatch.chdir(tmp_path)
+    config = ParallelsTdxConfig(
+        vm_name="Windows 11",
+        windows_python=r"D:\Python\python.exe",
+        windows_repo=r"C:\tdx-downloader-app",
+        worker_scratch=r"C:\tdx_jobs",
+    )
+
+    result = start_parallels_tdx_worker(config=config, port=8765)
+
+    assert result.returncode == 0
 
 
 def test_home_path_still_maps_to_parallels_home_share() -> None:

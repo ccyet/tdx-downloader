@@ -494,6 +494,44 @@ def test_worker_smart_payload_uses_catalog_boundary_when_minute_coverage_missing
     assert "coverage_bootstrap_done" in [str(event.get("stage")) for event in events]
 
 
+def test_worker_smart_payload_does_not_fetch_implicit_daily_for_minute_request(tmp_path: Path) -> None:
+    data_root = tmp_path / "market"
+    write_local_bars(
+        data_root=data_root,
+        timeframe="5m",
+        adjust="qfq",
+        bars=pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-06-09 14:50:00"]),
+                "stock_code": ["000001.SZ"],
+                "open": [10.0],
+                "high": [10.2],
+                "low": [9.9],
+                "close": [10.1],
+                "volume": [1000.0],
+                "amount": [10100.0],
+            }
+        ),
+        refresh_coverage=False,
+    )
+    service = parallels_runtime.DataManagementService(data_root, adjust="qfq")
+    service.cache_snapshot(timeframes=("5m",), symbols=("000001.SZ",), rebuild_catalog=True, refresh_coverage=False)
+
+    payload, before_audits = parallels_runtime._worker_smart_payload(
+        service,
+        DataDownloadConfig(
+            symbols=("000001.SZ",),
+            timeframes=("5m",),
+            start="2026-06-09 14:50:00",
+            end="2026-06-09 15:00:00",
+        ),
+    )
+
+    assert "1d" not in payload["groups_by_timeframe"]
+    assert "1d" not in before_audits
+    assert list(payload["groups_by_timeframe"]) == ["5m"]
+
+
 def test_worker_smart_payload_derives_high_timeframes_without_worker_fetch_when_5m_cached(tmp_path: Path) -> None:
     data_root = tmp_path / "market"
     write_local_bars(
