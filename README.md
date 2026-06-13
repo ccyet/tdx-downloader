@@ -1,47 +1,236 @@
 # TDX Downloader
 
-独立的 TDX 行情数据下载与缓存管理 Web 应用，从 `TrendingWinning` 当前数据模块抽取而来，不依赖原库的回测、策略或实验模块。
+本项目用于管理本地通达信 K 线缓存、生成下载计划、通过 Parallels Windows Worker 更新数据，并提供 Web 工作台查看和操作。
 
-## 能力
+默认数据目录：
 
-- 批量下载 `1d / 1m / 5m / 15m / 30m / 60m` 行情数据
-- 智能补齐：先审计本地 parquet 缓存，只下载缺失或质量不足的数据
-- 强制刷新：按当前范围重新拉取并覆盖写入缓存
-- 本地缓存分类：按 ETF、个股、指数、其他和周期切换查看
-- SQLite catalog：扫描缓存后生成 `metadata/market_data_catalog.sqlite`
-- 代码来源：内置样例、CSV/TXT 上传、手动输入、当前缓存全部、按资产类型筛选
-- 日期快捷：近 N 天、年初至今、近 N 年、自定义
-
-## 本地运行
-
-```bash
-cd ccOUT/tdx-downloader
-python -m pip install -r requirements.txt
-streamlit run app.py --server.port 8522
+```text
+/Volumes/ccOUT 1/tdx-data
 ```
 
-新的轻量 Web 控制台参考 sub2api 的前后端分离方式，避免 Streamlit 每次交互重跑整页：
+默认 Web/API 地址：
+
+```text
+http://127.0.0.1:8622
+```
+
+## 1. 本地启动 Web 服务
 
 ```bash
+cd "/Volumes/ccOUT 1/tdx-downloader"
+python -m pip install -r requirements.txt
 python -m tdx_downloader.web_api
-cd web
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:8622
+```
+
+如果需要前端开发模式：
+
+```bash
+cd "/Volumes/ccOUT 1/tdx-downloader/web"
 npm install
 npm run dev
 ```
 
-访问 `http://127.0.0.1:5173`。API 服务默认在 `http://127.0.0.1:8622`，Vite 开发服务会把 `/api` 转发到该服务。
+前端开发地址通常是：
 
-常驻运行只启动 API 即可；FastAPI 会挂载 `web/dist` 静态前端：
-
-```bash
-python -m tdx_downloader.web_api
+```text
+http://127.0.0.1:5173
 ```
 
-符号代码表会缓存到数据目录下的 `.tdx_downloader/symbol_metadata/`，重启后默认读缓存；需要更新股票、ETF、指数列表时，在 Web 控制台“系统设置”里点击“更新代码表缓存”。
+## 2. Windows Worker
 
-Docker 全天运行：
+高速下载路径推荐使用 Windows 常驻 Worker。`prlctl exec` 只作为启动、修复或兜底诊断，不作为高频下载通道。
+
+Windows 侧启动：
+
+```powershell
+cd C:\path\to\tdx-downloader
+python -m tdx_downloader.cli tdx-worker --host 0.0.0.0 --port 8765 --scratch-root C:\tdx_jobs
+```
+
+Mac 侧默认访问：
+
+```text
+http://127.0.0.1:18765
+```
+
+需要把 Mac `18765` 转发到 Windows `8765`，或使用 Host-only/Shared Network 下可访问的 Windows IP。
+
+检查 Worker：
 
 ```bash
+curl http://127.0.0.1:18765/health
+```
+
+常用环境变量：
+
+```bash
+export TDX_WORKER_URL="http://127.0.0.1:18765"
+export TDX_TQCENTER_PATH="/Volumes/[C] Windows 11/new_tdx64/PYPlugins"
+export TDX_DATA_ROOT_HOST="/Volumes/ccOUT 1/tdx-data"
+```
+
+## 3. 本地手动更新数据
+
+手动跑一次日常更新：
+
+```bash
+cd "/Volumes/ccOUT 1/tdx-downloader"
+
+PYTHON_BIN=/opt/anaconda3/bin/python \
+TDX_DATA_ROOT_HOST="/Volumes/ccOUT 1/tdx-data" \
+TDX_TQCENTER_PATH="/Volumes/[C] Windows 11/new_tdx64/PYPlugins" \
+TDX_WORKER_URL="http://127.0.0.1:18765" \
+UPDATE_SHARDS=10 \
+TIMEFRAMES="1d,5m" \
+scripts/update-local-data.sh
+```
+
+生成下载计划但不下载：
+
+```bash
+python -m tdx_downloader.cli plan-data \
+  --asset-types stock,etf,index \
+  --timeframes 1d,5m \
+  --start 2026-06-01 \
+  --end 2026-06-10 \
+  --data-root "/Volumes/ccOUT 1/tdx-data" \
+  --output json
+```
+
+只补缺口并写入本地缓存：
+
+```bash
+python -m tdx_downloader.cli prepare-data \
+  --asset-types stock,etf,index \
+  --timeframes 1d,5m \
+  --start 2026-06-01 \
+  --end 2026-06-10 \
+  --data-root "/Volumes/ccOUT 1/tdx-data" \
+  --tdx-path "/Volumes/[C] Windows 11/new_tdx64/PYPlugins" \
+  --runtime auto \
+  --output table
+```
+
+## 4. 每日自动更新
+
+安装 macOS launchd 定时任务，默认每天 17:10 运行：
+
+```bash
+cd "/Volumes/ccOUT 1/tdx-downloader"
+
+PYTHON_BIN=/opt/anaconda3/bin/python \
+TDX_DATA_ROOT_HOST="/Volumes/ccOUT 1/tdx-data" \
+TDX_TQCENTER_PATH="/Volumes/[C] Windows 11/new_tdx64/PYPlugins" \
+TDX_WORKER_URL="http://127.0.0.1:18765" \
+UPDATE_SHARDS=10 \
+TIMEFRAMES="1d,5m" \
+scripts/manage-local-update-launchd.sh install
+```
+
+查看状态：
+
+```bash
+scripts/manage-local-update-launchd.sh status
+```
+
+手动触发一次：
+
+```bash
+scripts/manage-local-update-launchd.sh run-once
+```
+
+验证最近一次自动更新：
+
+```bash
+TDX_WRITE_VERIFY_RESULT=1 scripts/manage-local-update-launchd.sh verify
+```
+
+卸载：
+
+```bash
+scripts/manage-local-update-launchd.sh uninstall
+```
+
+关键日志：
+
+```text
+/Users/a1234/Library/Logs/tdx-downloader/update-local-data/
+/Volumes/ccOUT 1/tdx-data/metadata/update-local-data-status.json
+/Volumes/ccOUT 1/tdx-data/metadata/update-local-data-verify.json
+```
+
+## 5. 交易日历
+
+同步同花顺/扶摇交易日历：
+
+```bash
+python -m tdx_downloader.cli trading-calendar-sync \
+  --data-root "/Volumes/ccOUT 1/tdx-data" \
+  --api-key "$FUYAO_API_KEY" \
+  --output json
+```
+
+没有 API Key 时可使用本机 AkShare fallback：
+
+```bash
+python -m tdx_downloader.cli trading-calendar-sync \
+  --data-root "/Volumes/ccOUT 1/tdx-data" \
+  --skip-without-key \
+  --output json
+```
+
+## 6. 覆盖索引与排障
+
+刷新 K 线覆盖索引：
+
+```bash
+python -m tdx_downloader.cli coverage-refresh \
+  --data-root "/Volumes/ccOUT 1/tdx-data" \
+  --timeframes 1d,5m \
+  --output table
+```
+
+维护 catalog：
+
+```bash
+python -m tdx_downloader.cli catalog-maintain \
+  --data-root "/Volumes/ccOUT 1/tdx-data" \
+  --vacuum \
+  --output table
+```
+
+诊断 TDX 连接：
+
+```bash
+python -m tdx_downloader.cli tdx-doctor \
+  --symbols 000001.SZ \
+  --timeframes 1d,5m \
+  --start 2026-06-01 \
+  --end 2026-06-02 \
+  --tdx-path "/Volumes/[C] Windows 11/new_tdx64/PYPlugins" \
+  --runtime auto \
+  --output table
+```
+
+常见判断：
+
+- Web 能打开但不能下载：先查 `TDX_WORKER_URL` 和 `curl /health`。
+- 预览慢：先查 coverage 是否过期，再运行 `coverage-refresh`。
+- 某些缺口反复存在：如果日志是 `provider_no_data` 或 `provider_partial_gap`，说明真实请求后 provider 未返回完整数据，系统会记录并避免无限重抓。
+- Docker 里不能选择本机 TDX 目录：容器只能看到已挂载路径；通达信和 Parallels Windows C 盘建议由 Mac 本地服务/Worker 处理。
+
+## 7. Docker 全天运行
+
+Docker 适合常驻 Web/API 和读取本地数据缓存；不建议让容器直接挂载 Windows TDX 目录。
+
+```bash
+cd "/Volumes/ccOUT 1/tdx-downloader"
 docker compose up -d --build
 ```
 
@@ -51,130 +240,18 @@ docker compose up -d --build
 /Volumes/ccOUT 1/tdx-data -> /data/tdx-data
 ```
 
-可用环境变量覆盖宿主机路径、端口和跨域来源：`TDX_DATA_ROOT_HOST`、`TDX_API_PORT`、`TDX_CORS_ORIGINS`。
-Docker 默认不挂载通达信目录，避免宿主机路径不存在时容器启动失败；如需在容器内手动刷新代码表缓存，先确认真实通达信目录，再用 compose override 挂载到 `/tdx` 并设置 `TDX_TQCENTER_PATH=/tdx/PYPlugins`。
-
-推荐配置方式：
-
-- Docker 全天运行：`data_root=/data/tdx-data`，`tdx_path` 留空；使用已缓存的股票、ETF、指数列表。
-- Mac + Parallels 取数：在 Mac 侧运行 CLI/API，让任务通过 `prlctl` 调度到 Windows；`tdx_path` 可填 `C:\new_tdx64`、`C:\new_tdx64\PYPlugins` 或 macOS 可见的 TDX 根目录。
-- 容器内目录选择器只能看到 Docker 已挂载的路径；Parallels `.pvm` 在移动硬盘上不等于容器能直接访问 Windows C 盘。
-
-开放 API 示例：
+如果要改端口或数据目录：
 
 ```bash
-# 先分页列出本地可调用的股票/ETF/指数代码
-curl "http://127.0.0.1:8622/api/prices/symbols?asset_types=stock,etf,index&timeframe=1d&limit=5000&offset=0"
-
-# 分页读取本地股票日线，asset_types 可用 stock,etf,index,other
-curl "http://127.0.0.1:8622/api/prices/bars?asset_types=stock&timeframe=1d&start=2026-06-01&end=2026-06-10&limit=5000&offset=0"
-
-# 指定代码批量读取分钟线
-curl -X POST "http://127.0.0.1:8622/api/prices/bars" \
-  -H "Content-Type: application/json" \
-  -d '{"symbols":["000001.SZ","510300.SH"],"timeframe":"5m","start":"2026-06-01","end":"2026-06-10","limit":5000}'
-
-# 使用调用方自己的大模型接口和 Skill 提示词处理本地行情
-curl -X POST "http://127.0.0.1:8622/api/ai/stock-agent" \
-  -H "Content-Type: application/json" \
-  -d '{"base_url":"https://example.com/v1","api_key":"sk-...","model":"your-model","symbols":["000001.SZ"],"prompt":"按我的框架用 Markdown 分析","skill_prompt":"你的 skill markdown","max_charts":3}'
-```
-
-CLI：
-
-```bash
-python -m tdx_downloader.cli inventory-data
-python -m tdx_downloader.cli plan-data \
-  --symbols 000001.SZ,600519.SH \
-  --timeframes 1d,5m,60m \
-  --start 2026-05-01 \
-  --end 2026-06-01
-```
-
-本机 Mac + Parallels 默认数据目录：
-
-```bash
-python -m tdx_downloader.cli prepare-data \
-  --symbols 000001.SZ \
-  --timeframes 5m \
-  --start 2026-06-01 \
-  --end 2026-06-02
-```
-
-本机批量更新全 A / ETF / 指数缓存，适合放到定时任务；对外 Web/API 只读取这个本地缓存：
-
-```bash
-./scripts/update-local-data.sh
-```
-
-可用环境变量覆盖范围和周期：
-
-```bash
-START_DATE=2026-01-01 \
-END_DATE="$(date +%F)" \
-TIMEFRAMES=1d,5m,15m \
-ASSET_TYPES=stock,etf,index \
+TDX_API_PORT=8767 \
 TDX_DATA_ROOT_HOST="/Volumes/ccOUT 1/tdx-data" \
-TDX_TQCENTER_PATH="/Volumes/[C] Windows 11/new_tdx64/PYPlugins" \
-./scripts/update-local-data.sh
+docker compose up -d --build
 ```
 
-默认写入：
-
-```text
-/Volumes/ccOUT 1/tdx-data/daily/qfq/<symbol>.parquet
-/Volumes/ccOUT 1/tdx-data/<timeframe>/qfq/<symbol>.parquet
-```
-
-## Streamlit Cloud 部署
-
-- 入口文件：`app.py`
-- 依赖文件：根目录 `requirements.txt`
-- Python：3.11+
-- 系统依赖：没有必须的 `packages.txt`
-
-`tkinter` 不是 pip 包，也不是云端必须依赖。本地桌面运行时，如果 Python 自带 Tk，就可以点击“选择文件夹”弹出系统窗口；Streamlit Cloud 是无桌面的 Linux 环境，不能弹出用户本机文件夹窗口，因此云端不维护 `python3-tk`。
-
-## TDX 边界
-
-真实 TDX 下载依赖 Windows/Parallels 内的通达信 `tqcenter`。macOS 本机不能直接从通达信取数；在 macOS 上 CLI 默认通过 Parallels 调度到 Windows 侧执行。Streamlit Cloud 不能访问本机 Windows/Parallels 的 `tqcenter`，适合查看和管理已同步到云端的 parquet 缓存。
-
-默认 Parallels 参数：
-
-- VM：`Windows 11`
-- Windows Python：`C:\Users\Public\venvs\tdx-downloader\Scripts\python.exe`
-- Windows 仓库：默认由 macOS 共享路径推导，可用 `TDX_PARALLELS_REPO` 覆盖
-- 外置盘共享：`/Volumes/ccOUT 1` 已配置为 Parallels Host Shared Folder，Windows 侧路径为 `\\psf\ccOUT 1`
-- 通达信默认目录：`C:\new_tdx64`，可用 `TDX_TQCENTER_PATH` 覆盖 TDX 根目录或 `PYPlugins` 路径，可用 `TDX_TERMINAL_PATH` 覆盖 `TdxW.exe`
-- Windows 执行会话：必须通过 `prlctl exec --current-user` 进入当前登录用户会话；普通 `prlctl exec` 会落到 SYSTEM/Session 0，`tqcenter` 无法连接已登录的通达信客户端。
-
-如果重建 VM，需要先加外置盘共享：
+## 8. 验证命令
 
 ```bash
-prlctl set "Windows 11" --shf-host-add "ccOUT 1" --path "/Volumes/ccOUT 1" --mode rw --enable --shf-host-automount on
+python -m compileall -q tdx_downloader
+python -m pytest tests/test_update_scheduler.py tests/test_tdx_worker.py -q
+python -m pytest tests/test_data_manager.py -q -k "coverage or delta or catalog"
 ```
-
-Windows 侧必须启动并登录通达信客户端；程序会尝试在当前用户会话启动 `TdxW.exe`，但不会替用户登录。分钟线取数还依赖 Windows 通达信本地已具备对应分钟缓存；若 `tdx-doctor` 返回 `no_data`，先在 Windows 通达信内补齐对应分钟数据。
-
-诊断：
-
-```bash
-python -m tdx_downloader.cli tdx-doctor \
-  --symbols 000001.SZ \
-  --timeframes 1d,5m \
-  --start 2026-06-01 \
-  --end 2026-06-02 \
-  --runtime parallels
-```
-
-## 数据目录
-
-默认数据目录为 `/Volumes/ccOUT 1/tdx-data`：
-
-```text
-/Volumes/ccOUT 1/tdx-data/daily/<adjust>/<symbol>.parquet
-/Volumes/ccOUT 1/tdx-data/<timeframe>/<adjust>/<symbol>.parquet
-/Volumes/ccOUT 1/tdx-data/metadata/market_data_catalog.sqlite
-```
-
-`1d` 写入 `daily` 目录；分钟周期写入对应周期目录。

@@ -1,5 +1,9 @@
 <template>
-  <article :class="['metric-card', 'resizable-card', tone]" data-resizable-card>
+  <article
+    :class="['metric-card', 'resizable-card', tone]"
+    data-resizable-card
+    :aria-label="`${title}：${value}，${detail}`"
+  >
     <div class="metric-icon"><Icon :name="icon" /></div>
     <div>
       <span>{{ title }}</span>

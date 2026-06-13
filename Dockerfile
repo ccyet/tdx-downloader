@@ -21,7 +21,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY pyproject.toml README.md ./
 COPY tdx_downloader ./tdx_downloader
-COPY app.py ./app.py
 COPY --from=web-build /web/dist ./web/dist
 
 EXPOSE 8622

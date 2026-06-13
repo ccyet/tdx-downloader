@@ -401,7 +401,11 @@ def _fetch_tdx_period_bars(
             batch_count=len(batches),
             symbol_count=len(batch),
         )
+        batch_started_at = time.perf_counter()
+        refresh_started_at = batch_started_at
         _refresh_tdx_kline_cache(tq, batch, period)
+        refresh_ms = int((time.perf_counter() - refresh_started_at) * 1000)
+        tdx_call_started_at = time.perf_counter()
         payload = tq.get_market_data(
             field_list=list(REQUIRED_FIELDS),
             stock_list=batch,
@@ -412,11 +416,15 @@ def _fetch_tdx_period_bars(
             dividend_type=dividend_type,
             fill_data=False,
         )
+        tdx_call_ms = int((time.perf_counter() - tdx_call_started_at) * 1000)
+        normalize_started_at = time.perf_counter()
         batch_frames: list[pd.DataFrame] = []
         for symbol in batch:
             frame = _normalize_tdx_payload(payload, symbol=symbol, start=start, end=end)
             if not frame.empty:
                 batch_frames.append(frame)
+        normalize_ms = int((time.perf_counter() - normalize_started_at) * 1000)
+        rows_returned = sum(len(frame) for frame in batch_frames)
         frames.extend(batch_frames)
         _emit_progress(
             progress_callback,
@@ -426,7 +434,12 @@ def _fetch_tdx_period_bars(
             batch_index=batch_index,
             batch_count=len(batches),
             symbol_count=len(batch),
-            rows=sum(len(frame) for frame in batch_frames),
+            rows=rows_returned,
+            rows_returned=rows_returned,
+            refresh_ms=refresh_ms,
+            tdx_call_ms=tdx_call_ms,
+            normalize_ms=normalize_ms,
+            total_ms=int((time.perf_counter() - batch_started_at) * 1000),
         )
     if not frames:
         return empty_bars()
@@ -521,6 +534,11 @@ def _symbols_missing_bars(symbols: list[str], bars: pd.DataFrame) -> list[str]:
 def _aggregate_5m_bars(bars: pd.DataFrame, *, timeframe: str, start: str, end: str) -> pd.DataFrame:
     """把 TDX 5m K 线聚合成 15/30/60m；只保留组成数量完整的目标 K。"""
     return _aggregate_intraday_bars(bars, timeframe=timeframe, start=start, end=end, base_minutes=5)
+
+
+def aggregate_5m_bars_to_timeframe(bars: pd.DataFrame, *, timeframe: str, start: str, end: str) -> pd.DataFrame:
+    """Public helper for deriving higher intraday periods from local 5m bars."""
+    return _aggregate_5m_bars(bars, timeframe=timeframe, start=start, end=end)
 
 
 def _aggregate_1m_bars(bars: pd.DataFrame, *, timeframe: str, start: str, end: str) -> pd.DataFrame:

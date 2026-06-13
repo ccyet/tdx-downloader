@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
@@ -8,6 +9,7 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
+from tdx_downloader.data.catalog import query_market_data_part_symbols
 from tdx_downloader.data.filters import limit_open_dates
 from tdx_downloader.data.schema import (
     CANONICAL_COLUMNS,
@@ -93,6 +95,7 @@ DAILY_FILTER_AUDIT_MESSAGE_BY_DATA_STATUS = {
 }
 TDX_SECTOR_INDEX_PREFIX = "880"
 DATASET_AUDIT_SYMBOL_THRESHOLD = 200
+CATALOG_QUERY_SYMBOL_CHUNK = 500
 
 
 def audit_local_data(
@@ -109,7 +112,16 @@ def audit_local_data(
     root = resolve_timeframe_root(data_root, timeframe) / adjust
     start_ts, end_ts = _audit_window_for_timeframe(timeframe, start=start, end=end)
     normalized_symbols = unique_symbols(tuple(symbols))
-    if len(normalized_symbols) >= DATASET_AUDIT_SYMBOL_THRESHOLD:
+    shared_delta_index = _shared_delta_index(
+        data_root=data_root,
+        timeframe=timeframe,
+        adjust=adjust,
+        symbols=normalized_symbols,
+        start_ts=start_ts,
+        end_ts=end_ts,
+    )
+    has_deltas = _any_delta_sidecars(root=root, symbols=normalized_symbols) or not shared_delta_index.empty
+    if len(normalized_symbols) >= DATASET_AUDIT_SYMBOL_THRESHOLD and not has_deltas:
         if ensure_supported_timeframe(timeframe) == "1d":
             daily_rows = _audit_daily_symbol_files_dataset(
                 root=root,
@@ -142,6 +154,7 @@ def audit_local_data(
             start_ts=start_ts,
             end_ts=end_ts,
             expected_sessions=(expected_sessions_by_symbol or {}).get(symbol),
+            shared_delta_index=shared_delta_index,
         )
         for symbol in normalized_symbols
     ]
@@ -162,8 +175,17 @@ def data_gap_episodes(
     normalized_timeframe = ensure_supported_timeframe(timeframe)
     root = resolve_timeframe_root(data_root, normalized_timeframe) / adjust
     start_ts, end_ts = _audit_window_for_timeframe(normalized_timeframe, start=start, end=end)
+    normalized_symbols = unique_symbols(tuple(symbols))
+    shared_delta_index = _shared_delta_index(
+        data_root=data_root,
+        timeframe=normalized_timeframe,
+        adjust=adjust,
+        symbols=normalized_symbols,
+        start_ts=start_ts,
+        end_ts=end_ts,
+    )
     rows: list[dict[str, object]] = []
-    for symbol in unique_symbols(tuple(symbols)):
+    for symbol in normalized_symbols:
         rows.extend(
             _symbol_gap_episodes(
                 root=root,
@@ -173,6 +195,7 @@ def data_gap_episodes(
                 start_ts=start_ts,
                 end_ts=end_ts,
                 expected_sessions=(expected_sessions_by_symbol or {}).get(symbol),
+                shared_delta_index=shared_delta_index,
             )
         )
     return pd.DataFrame(rows, columns=DATA_GAP_EPISODE_COLUMNS)
@@ -193,10 +216,12 @@ def daily_sessions_by_symbol(
     if window.empty:
         return {}
     window["session_date"] = window["date"].dt.normalize()
-    return {
-        str(symbol): sorted(group["session_date"].dropna().drop_duplicates().tolist())
-        for symbol, group in window.groupby("stock_code", sort=False)
-    }
+    window = window.loc[window["stock_code"].notna() & window["session_date"].notna(), ["stock_code", "session_date"]]
+    window = window.drop_duplicates(subset=["stock_code", "session_date"]).sort_values(["stock_code", "session_date"])
+    sessions: dict[str, list[pd.Timestamp]] = defaultdict(list)
+    for symbol, session_date in window.itertuples(index=False):
+        sessions[str(symbol)].append(pd.Timestamp(session_date))
+    return dict(sessions)
 
 
 def limit_open_filter_audit(
@@ -266,21 +291,25 @@ def _audit_symbol_file(
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
     expected_sessions: Sequence[pd.Timestamp] | None = None,
+    shared_delta_index: pd.DataFrame | None = None,
 ) -> dict[str, object]:
     path = root / f"{symbol}.parquet"
+    shared_parts = _shared_delta_rows_for_symbol(shared_delta_index, symbol)
     base = {
         "stock_code": symbol,
         "timeframe": timeframe,
         "adjust": adjust,
-        "exists": path.exists(),
+        "exists": path.exists() or not shared_parts.empty,
         "requested_start": start_ts,
         "requested_end": end_ts,
         "path": str(path),
     }
-    if not path.exists():
+    delta_paths = _delta_part_paths(path)
+    if not path.exists() and not delta_paths and shared_parts.empty:
         return _audit_record(base, status="missing_file", message="本地 parquet 不存在。")
+    schema_path = path if path.exists() else (delta_paths[0] if delta_paths else Path(str(shared_parts.iloc[0]["path"])))
     try:
-        parquet_file = pq.ParquetFile(path)
+        parquet_file = pq.ParquetFile(schema_path)
     except Exception as exc:  # noqa: BLE001
         return _audit_record(base, status="read_error", message=f"parquet 元数据读取失败：{exc}")
 
@@ -294,7 +323,13 @@ def _audit_symbol_file(
             message="缺少标准行情字段。",
         )
     try:
-        raw = _read_canonical_window(path, start_ts=start_ts, end_ts=end_ts)
+        raw = _read_canonical_window_with_deltas(
+            path,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            symbol=symbol,
+            shared_delta_rows=shared_parts,
+        )
     except Exception as exc:  # noqa: BLE001
         return _audit_record(base, status="read_error", message=f"parquet 读取失败：{exc}")
 
@@ -306,7 +341,7 @@ def _audit_symbol_file(
         adjust=adjust,
         start_ts=start_ts,
         end_ts=end_ts,
-        rows_total=_parquet_num_rows(parquet_file),
+        rows_total=_parquet_num_rows_with_deltas(path, parquet_file, shared_delta_rows=shared_parts),
         expected_sessions=expected_sessions,
     )
 
@@ -322,7 +357,7 @@ def _audit_symbol_files_dataset(
     expected_sessions_by_symbol: Mapping[str, Sequence[pd.Timestamp]],
 ) -> list[dict[str, object]] | None:
     try:
-        dataset = ds.dataset(root, format="parquet") if root.exists() else None
+        dataset = _symbol_file_dataset(root, symbols)
     except Exception:  # noqa: BLE001
         return None
 
@@ -359,6 +394,7 @@ def _audit_symbol_files_dataset(
     except Exception:  # noqa: BLE001
         return None
 
+    expected_cache: dict[tuple[str, tuple[pd.Timestamp, ...]], list[pd.Timestamp]] = {}
     requested = set(symbols)
     if raw.empty:
         raw_by_symbol: dict[str, pd.DataFrame] = {}
@@ -375,9 +411,23 @@ def _audit_symbol_files_dataset(
         if error is not None:
             rows.append(error)
             continue
+        raw_symbol = raw_by_symbol.get(symbol, empty)
+        if raw_symbol.empty:
+            rows.append(
+                _no_window_data_audit_record(
+                    base,
+                    timeframe=timeframe,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                    rows_total=int(rows_total or 0),
+                    expected_sessions=expected_sessions_by_symbol.get(symbol),
+                    expected_cache=expected_cache,
+                )
+            )
+            continue
         rows.append(
             _audit_symbol_frame(
-                raw_by_symbol.get(symbol, empty),
+                raw_symbol,
                 base=base,
                 symbol=symbol,
                 timeframe=timeframe,
@@ -386,6 +436,7 @@ def _audit_symbol_files_dataset(
                 end_ts=end_ts,
                 rows_total=int(rows_total or 0),
                 expected_sessions=expected_sessions_by_symbol.get(symbol),
+                expected_cache=expected_cache,
             )
         )
     return rows
@@ -402,7 +453,7 @@ def _audit_daily_symbol_files_dataset(
     expected_sessions_by_symbol: Mapping[str, Sequence[pd.Timestamp]],
 ) -> list[dict[str, object]] | None:
     try:
-        dataset = ds.dataset(root, format="parquet") if root.exists() else None
+        dataset = _symbol_file_dataset(root, symbols)
     except Exception:  # noqa: BLE001
         return None
     if dataset is not None and sorted(set(CANONICAL_COLUMNS).difference(dataset.schema.names)):
@@ -424,11 +475,11 @@ def _audit_daily_symbol_files_dataset(
             window[column] = pd.to_numeric(window[column], errors="coerce")
         window = window.loc[window["stock_code"].isin(requested) & window["date"].between(start_ts, end_ts)].copy()
 
-    tradable = _drop_zero_liquidity_bars(window)
-    rows_in_window = _group_size(tradable)
-    start_by_symbol = _group_min(tradable, "date")
-    end_by_symbol = _group_max(tradable, "date")
-    actual_dates = _group_date_sets(tradable)
+    normalized_window = normalize_bars(window)
+    rows_in_window = _group_size(normalized_window)
+    start_by_symbol = _group_min(normalized_window, "date")
+    end_by_symbol = _group_max(normalized_window, "date")
+    actual_dates = _group_date_sets(normalized_window)
     expected_dates = _expected_date_sets_for_symbols(
         symbols,
         expected_sessions_by_symbol,
@@ -551,7 +602,18 @@ def _audit_symbol_frame(
     end_ts: pd.Timestamp,
     rows_total: int,
     expected_sessions: Sequence[pd.Timestamp] | None,
+    expected_cache: dict[tuple[str, tuple[pd.Timestamp, ...]], list[pd.Timestamp]] | None = None,
 ) -> dict[str, object]:
+    if raw.empty:
+        return _no_window_data_audit_record(
+            base,
+            timeframe=timeframe,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            rows_total=rows_total,
+            expected_sessions=expected_sessions,
+            expected_cache=expected_cache,
+        )
     checked = raw.copy()
     checked["stock_code"] = checked["stock_code"].map(normalize_symbol)
     checked["date"] = pd.to_datetime(checked["date"], errors="coerce")
@@ -584,14 +646,32 @@ def _audit_symbol_frame(
 
     normalized = normalize_bars(raw, symbol)
     raw_in_window = normalized.loc[normalized["date"].between(start_ts, end_ts)]
-    in_window = _drop_zero_liquidity_bars(raw_in_window)
     coverage = _intraday_session_coverage(
-        in_window,
+        raw_in_window,
         timeframe,
         start_ts=start_ts,
         end_ts=end_ts,
         expected_sessions=expected_sessions,
+        expected_cache=expected_cache,
     )
+    if _zero_liquidity_intraday_window_is_complete(
+        raw_in_window,
+        timeframe=timeframe,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        expected_sessions=expected_sessions,
+        expected_cache=expected_cache,
+    ):
+        coverage = {
+            **coverage,
+            "missing_rows": 0,
+            "coverage_ratio": 1.0,
+            "max_missing_gap_minutes": 0,
+            "first_missing_at": pd.NaT,
+            "last_missing_at": pd.NaT,
+            "max_missing_gap_start_at": pd.NaT,
+            "max_missing_gap_end_at": pd.NaT,
+        }
     quality_error = bool(quality_issue_messages)
     if quality_error:
         status = "quality_error"
@@ -599,12 +679,12 @@ def _audit_symbol_frame(
             "存在日期或标的代码异常、重复时间、非法价格、OHLC 高低点不一致或量能字段异常。"
             f"首个异常：{quality_issue_messages[0]}"
         )
-    elif in_window.empty:
+    elif raw_in_window.empty:
         status = "no_window_data"
         message = "请求窗口内无数据。"
     elif zero_volume_amount_rows > 0:
         status = "ok"
-        message = "覆盖按可交易 K 计算；存在零流动性 K，已从回测数据包剔除。"
+        message = "覆盖检查已确认 K 线存在；存在零流动性 K，下游回测数据包会按策略剔除。"
     elif is_tdx_sector_index and relaxed_non_positive_price_rows > 0:
         status = "ok"
         message = "非常规板块指数使用通达信统计口径，已标记缓存并跳过价格语义门禁；其他质量检查通过。"
@@ -621,10 +701,10 @@ def _audit_symbol_frame(
         base,
         status=status,
         rows_total=rows_total,
-        rows_in_window=len(in_window),
+        rows_in_window=len(raw_in_window),
         **coverage,
-        start=in_window["date"].min() if not in_window.empty else pd.NaT,
-        end=in_window["date"].max() if not in_window.empty else pd.NaT,
+        start=raw_in_window["date"].min() if not raw_in_window.empty else pd.NaT,
+        end=raw_in_window["date"].max() if not raw_in_window.empty else pd.NaT,
         invalid_date_rows=invalid_date_rows,
         invalid_symbol_rows=invalid_symbol_rows,
         duplicate_rows=duplicate_rows,
@@ -638,6 +718,34 @@ def _audit_symbol_frame(
     )
 
 
+def _no_window_data_audit_record(
+    base: dict[str, object],
+    *,
+    timeframe: str,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    rows_total: int,
+    expected_sessions: Sequence[pd.Timestamp] | None,
+    expected_cache: dict[tuple[str, tuple[pd.Timestamp, ...]], list[pd.Timestamp]] | None = None,
+) -> dict[str, object]:
+    coverage = _intraday_session_coverage(
+        pd.DataFrame(columns=["date"]),
+        timeframe,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        expected_sessions=expected_sessions,
+        expected_cache=expected_cache,
+    )
+    return _audit_record(
+        base,
+        status="no_window_data",
+        rows_total=rows_total,
+        rows_in_window=0,
+        **coverage,
+        message="请求窗口内无数据。",
+    )
+
+
 def _symbol_gap_episodes(
     *,
     root: Path,
@@ -647,8 +755,10 @@ def _symbol_gap_episodes(
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
     expected_sessions: Sequence[pd.Timestamp] | None = None,
+    shared_delta_index: pd.DataFrame | None = None,
 ) -> list[dict[str, object]]:
     path = root / f"{symbol}.parquet"
+    shared_parts = _shared_delta_rows_for_symbol(shared_delta_index, symbol)
     base = {
         "stock_code": symbol,
         "timeframe": timeframe,
@@ -657,7 +767,8 @@ def _symbol_gap_episodes(
         "requested_end": end_ts,
         "path": str(path),
     }
-    if not path.exists():
+    delta_paths = _delta_part_paths(path)
+    if not path.exists() and not delta_paths and shared_parts.empty:
         return _gap_episodes_for_dates(
             pd.DataFrame(columns=["date"]),
             timeframe,
@@ -667,8 +778,9 @@ def _symbol_gap_episodes(
             base=base,
             status="missing_file",
         )
+    schema_path = path if path.exists() else (delta_paths[0] if delta_paths else Path(str(shared_parts.iloc[0]["path"])))
     try:
-        parquet_file = pq.ParquetFile(path)
+        parquet_file = pq.ParquetFile(schema_path)
     except Exception:  # noqa: BLE001
         return []
     if sorted(set(CANONICAL_COLUMNS).difference(parquet_file.schema.names)):
@@ -682,15 +794,28 @@ def _symbol_gap_episodes(
             status="missing_columns",
         )
     try:
-        raw = pd.read_parquet(path, columns=list(CANONICAL_COLUMNS))
+        raw = _read_canonical_window_with_deltas(
+            path,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            symbol=symbol,
+            shared_delta_rows=shared_parts,
+        )
     except Exception:  # noqa: BLE001
         return []
 
     normalized = normalize_bars(raw, symbol)
     raw_in_window = normalized.loc[normalized["date"].between(start_ts, end_ts)]
-    in_window = _drop_zero_liquidity_bars(raw_in_window)
+    if _zero_liquidity_intraday_window_is_complete(
+        raw_in_window,
+        timeframe=timeframe,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        expected_sessions=expected_sessions,
+    ):
+        return []
     return _gap_episodes_for_dates(
-        in_window,
+        raw_in_window,
         timeframe,
         expected_sessions=expected_sessions,
         start_ts=start_ts,
@@ -737,6 +862,18 @@ def _parquet_num_rows(parquet_file: pq.ParquetFile) -> int:
     return int(metadata.num_rows) if metadata is not None else 0
 
 
+def _parquet_num_rows_with_deltas(
+    path: Path,
+    parquet_file: pq.ParquetFile,
+    *,
+    shared_delta_rows: pd.DataFrame | None = None,
+) -> int:
+    base_rows = _parquet_num_rows(parquet_file) if path.exists() else 0
+    old_delta_rows = sum(_parquet_num_rows(pq.ParquetFile(delta)) for delta in _delta_part_paths(path))
+    shared_rows = _shared_delta_symbol_row_count(shared_delta_rows)
+    return int(base_rows + old_delta_rows + shared_rows)
+
+
 def _read_canonical_window(path: Path, *, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DataFrame:
     try:
         return pd.read_parquet(
@@ -750,6 +887,41 @@ def _read_canonical_window(path: Path, *, start_ts: pd.Timestamp, end_ts: pd.Tim
         return pd.read_parquet(path, columns=list(CANONICAL_COLUMNS))
 
 
+def _read_canonical_window_with_deltas(
+    path: Path,
+    *,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    symbol: str | None = None,
+    shared_delta_rows: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    if path.exists():
+        base = _read_canonical_window(path, start_ts=start_ts, end_ts=end_ts)
+        if not base.empty:
+            frames.append(base)
+    for delta_path in _delta_part_paths(path):
+        delta = _read_canonical_window(delta_path, start_ts=start_ts, end_ts=end_ts)
+        if not delta.empty:
+            frames.append(delta)
+    shared = _read_shared_delta_canonical_window(
+        shared_delta_rows,
+        symbol=symbol,
+        start_ts=start_ts,
+        end_ts=end_ts,
+    )
+    if not shared.empty:
+        frames.append(shared)
+    if not frames:
+        return pd.DataFrame(columns=list(CANONICAL_COLUMNS))
+    return (
+        pd.concat(frames, ignore_index=True)
+        .drop_duplicates(subset=["stock_code", "date"], keep="last")
+        .sort_values(["stock_code", "date"])
+        .reset_index(drop=True)
+    )
+
+
 def _read_canonical_dataset_window(dataset: ds.Dataset | None, *, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DataFrame:
     if dataset is None:
         return pd.DataFrame(columns=list(CANONICAL_COLUMNS))
@@ -758,6 +930,121 @@ def _read_canonical_dataset_window(dataset: ds.Dataset | None, *, start_ts: pd.T
         filter=(ds.field("date") >= start_ts) & (ds.field("date") <= end_ts),
     )
     return table.to_pandas()
+
+
+def _symbol_file_dataset(root: Path, symbols: list[str]) -> ds.Dataset | None:
+    if not root.exists():
+        return None
+    paths = [str(root / f"{symbol}.parquet") for symbol in symbols if (root / f"{symbol}.parquet").exists()]
+    if not paths:
+        return None
+    return ds.dataset(paths, format="parquet")
+
+
+def _any_delta_sidecars(*, root: Path, symbols: list[str]) -> bool:
+    return any(_delta_root_for_symbol(root, symbol).exists() for symbol in symbols)
+
+
+def _shared_delta_index(
+    *,
+    data_root: str | Path,
+    timeframe: str,
+    adjust: str,
+    symbols: list[str],
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for chunk in _chunks(tuple(symbols), CATALOG_QUERY_SYMBOL_CHUNK):
+        try:
+            index = query_market_data_part_symbols(
+                data_root=data_root,
+                symbols=chunk,
+                adjust=adjust,
+                timeframes=(timeframe,),
+                start=start_ts,
+                end=end_ts,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        if not index.empty:
+            frames.append(index)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _shared_delta_rows_for_symbol(shared_delta_index: pd.DataFrame | None, symbol: str) -> pd.DataFrame:
+    if shared_delta_index is None or shared_delta_index.empty or "stock_code" not in shared_delta_index.columns:
+        return pd.DataFrame()
+    return shared_delta_index.loc[shared_delta_index["stock_code"].astype(str).eq(symbol)].copy()
+
+
+def _read_shared_delta_canonical_window(
+    shared_delta_rows: pd.DataFrame | None,
+    *,
+    symbol: str | None,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> pd.DataFrame:
+    if shared_delta_rows is None or shared_delta_rows.empty or not symbol:
+        return pd.DataFrame(columns=list(CANONICAL_COLUMNS))
+    frames: list[pd.DataFrame] = []
+    for path_text, group in shared_delta_rows.groupby("path", sort=False):
+        part_path = Path(str(path_text))
+        if not part_path.exists():
+            continue
+        try:
+            frame = pd.read_parquet(
+                part_path,
+                columns=list(CANONICAL_COLUMNS),
+                filters=[
+                    ("stock_code", "=", symbol),
+                    ("date", ">=", start_ts),
+                    ("date", "<=", end_ts),
+                ],
+            )
+        except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
+            frame = pd.read_parquet(part_path, columns=list(CANONICAL_COLUMNS))
+        if frame.empty:
+            continue
+        normalized = normalize_bars(frame, symbol)
+        normalized = normalized.loc[normalized["stock_code"].eq(symbol) & normalized["date"].between(start_ts, end_ts)].copy()
+        if normalized.empty:
+            continue
+        commit_versions = pd.to_numeric(group.get("commit_version", pd.Series(dtype=float)), errors="coerce").dropna()
+        normalized["_commit_version"] = int(commit_versions.max()) if not commit_versions.empty else 0
+        frames.append(normalized)
+    if not frames:
+        return pd.DataFrame(columns=list(CANONICAL_COLUMNS))
+    combined = pd.concat(frames, ignore_index=True)
+    return (
+        combined.sort_values(["stock_code", "date", "_commit_version"], kind="mergesort")
+        .drop_duplicates(subset=["stock_code", "date"], keep="last")
+        .loc[:, CANONICAL_COLUMNS]
+        .reset_index(drop=True)
+    )
+
+
+def _shared_delta_symbol_row_count(shared_delta_rows: pd.DataFrame | None) -> int:
+    if shared_delta_rows is None or shared_delta_rows.empty or "rows" not in shared_delta_rows.columns:
+        return 0
+    return int(pd.to_numeric(shared_delta_rows["rows"], errors="coerce").fillna(0).sum())
+
+
+def _chunks(values: tuple[str, ...], size: int) -> list[tuple[str, ...]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]
+
+
+def _delta_root_for_symbol(root: Path, symbol: str) -> Path:
+    return root / f"{symbol}.delta"
+
+
+def _delta_part_paths(path: Path) -> list[Path]:
+    root = path.with_name(f"{path.stem}.delta")
+    if not root.exists():
+        return []
+    return sorted(part for part in root.glob("*.parquet") if part.is_file())
 
 
 def _dataset_rows_total_by_symbol(dataset: ds.Dataset) -> dict[str, int]:
@@ -800,10 +1087,11 @@ def _group_date_sets(frame: pd.DataFrame) -> dict[str, set[pd.Timestamp]]:
     if valid.empty:
         return {}
     valid["date"] = pd.to_datetime(valid["date"], errors="coerce").dt.normalize()
-    return {
-        str(symbol): {pd.Timestamp(item) for item in group["date"].dropna().drop_duplicates()}
-        for symbol, group in valid.groupby("stock_code", sort=False)
-    }
+    valid = valid.loc[valid["date"].notna()].drop_duplicates(subset=["stock_code", "date"])
+    dates_by_symbol: dict[str, set[pd.Timestamp]] = defaultdict(set)
+    for symbol, date_value in valid.itertuples(index=False):
+        dates_by_symbol[str(symbol)].add(pd.Timestamp(date_value))
+    return dict(dates_by_symbol)
 
 
 def _expected_date_sets_from_mapping(
@@ -885,6 +1173,36 @@ def _daily_fast_quality_error(
 def _is_date_filter_type_mismatch(exc: Exception) -> bool:
     message = str(exc).lower()
     return "timestamp" in message and "string" in message and ("greater_equal" in message or "less_equal" in message)
+
+
+def _zero_liquidity_intraday_window_is_complete(
+    in_window: pd.DataFrame,
+    *,
+    timeframe: str,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    expected_sessions: Sequence[pd.Timestamp] | None,
+    expected_cache: dict[tuple[str, tuple[pd.Timestamp, ...]], list[pd.Timestamp]] | None = None,
+) -> bool:
+    if ensure_supported_timeframe(timeframe) == "1d" or in_window.empty:
+        return False
+    if not {"date", "volume", "amount"}.issubset(in_window.columns):
+        return False
+    if not (pd.to_numeric(in_window["volume"], errors="coerce").fillna(0).eq(0).all()):
+        return False
+    if not (pd.to_numeric(in_window["amount"], errors="coerce").fillna(0).eq(0).all()):
+        return False
+    expected = _expected_timestamps_for_window(
+        timeframe=timeframe,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        expected_sessions=expected_sessions,
+        expected_cache=expected_cache,
+    )
+    if not expected:
+        return False
+    actual_count = pd.to_datetime(in_window["date"], errors="coerce").dropna().dt.floor("min").nunique()
+    return int(actual_count) >= len(expected)
 
 
 def _drop_zero_liquidity_bars(bars: pd.DataFrame) -> pd.DataFrame:
@@ -1028,6 +1346,7 @@ def _intraday_session_coverage(
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
     expected_sessions: Sequence[pd.Timestamp] | None = None,
+    expected_cache: dict[tuple[str, tuple[pd.Timestamp, ...]], list[pd.Timestamp]] | None = None,
 ) -> dict[str, object]:
     if ensure_supported_timeframe(timeframe) == "1d":
         return _daily_session_coverage(
@@ -1035,6 +1354,7 @@ def _intraday_session_coverage(
             start_ts=start_ts,
             end_ts=end_ts,
             expected_sessions=expected_sessions,
+            expected_cache=expected_cache,
         )
     minutes = _timeframe_minutes(timeframe)
     expected, actual_set = _intraday_expected_and_actual(
@@ -1043,6 +1363,7 @@ def _intraday_session_coverage(
         start_ts=start_ts,
         end_ts=end_ts,
         expected_sessions=expected_sessions,
+        expected_cache=expected_cache,
     )
     expected_count = len(expected)
     if expected_count == 0:
@@ -1062,12 +1383,14 @@ def _daily_session_coverage(
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
     expected_sessions: Sequence[pd.Timestamp] | None = None,
+    expected_cache: dict[tuple[str, tuple[pd.Timestamp, ...]], list[pd.Timestamp]] | None = None,
 ) -> dict[str, object]:
     expected, actual_set = _daily_expected_and_actual(
         in_window,
         start_ts=start_ts,
         end_ts=end_ts,
         expected_sessions=expected_sessions,
+        expected_cache=expected_cache,
     )
     expected_count = len(expected)
     if expected_count == 0:
@@ -1131,15 +1454,16 @@ def _intraday_expected_and_actual(
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
     expected_sessions: Sequence[pd.Timestamp] | None,
+    expected_cache: dict[tuple[str, tuple[pd.Timestamp, ...]], list[pd.Timestamp]] | None = None,
 ) -> tuple[list[pd.Timestamp], set[pd.Timestamp]]:
     actual_dates = _actual_minute_dates(in_window)
-    session_dates = _task_trading_sessions(
+    expected = _expected_timestamps_for_window(
+        timeframe=f"{minutes}m",
         start_ts=start_ts,
         end_ts=end_ts,
         expected_sessions=expected_sessions,
+        expected_cache=expected_cache,
     )
-    expected = _expected_intraday_timestamps(session_dates, minutes)
-    expected = [timestamp for timestamp in expected if start_ts <= timestamp <= end_ts]
     return expected, set(actual_dates)
 
 
@@ -1149,17 +1473,61 @@ def _daily_expected_and_actual(
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
     expected_sessions: Sequence[pd.Timestamp] | None,
+    expected_cache: dict[tuple[str, tuple[pd.Timestamp, ...]], list[pd.Timestamp]] | None = None,
 ) -> tuple[list[pd.Timestamp], set[pd.Timestamp]]:
     actual_dates = _actual_minute_dates(in_window).dt.normalize()
+    expected = _expected_timestamps_for_window(
+        timeframe="1d",
+        start_ts=start_ts,
+        end_ts=end_ts,
+        expected_sessions=expected_sessions,
+        expected_cache=expected_cache,
+    )
+    return expected, set(actual_dates)
+
+
+def _expected_timestamps_for_window(
+    *,
+    timeframe: str,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    expected_sessions: Sequence[pd.Timestamp] | None,
+    expected_cache: dict[tuple[str, tuple[pd.Timestamp, ...]], list[pd.Timestamp]] | None = None,
+) -> list[pd.Timestamp]:
+    normalized_timeframe = ensure_supported_timeframe(timeframe)
+    sessions_key = _expected_sessions_key(start_ts=start_ts, end_ts=end_ts, expected_sessions=expected_sessions)
+    cache_key = (normalized_timeframe, sessions_key)
+    if expected_cache is not None and cache_key in expected_cache:
+        return expected_cache[cache_key]
     session_dates = _task_trading_sessions(
         start_ts=start_ts,
         end_ts=end_ts,
         expected_sessions=expected_sessions,
     )
-    start_day = start_ts.normalize()
-    end_day = inclusive_end_timestamp(end_ts).normalize()
-    expected = [pd.Timestamp(item) for item in session_dates if start_day <= pd.Timestamp(item) <= end_day]
-    return expected, set(actual_dates)
+    if normalized_timeframe == "1d":
+        start_day = start_ts.normalize()
+        end_day = inclusive_end_timestamp(end_ts).normalize()
+        expected = [pd.Timestamp(item) for item in session_dates if start_day <= pd.Timestamp(item) <= end_day]
+    else:
+        minutes = _timeframe_minutes(normalized_timeframe)
+        expected = _expected_intraday_timestamps(session_dates, minutes)
+        expected = [timestamp for timestamp in expected if start_ts <= timestamp <= end_ts]
+    if expected_cache is not None:
+        expected_cache[cache_key] = expected
+    return expected
+
+
+def _expected_sessions_key(
+    *,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    expected_sessions: Sequence[pd.Timestamp] | None,
+) -> tuple[pd.Timestamp, ...]:
+    if not expected_sessions:
+        return (pd.Timestamp(start_ts), pd.Timestamp(end_ts))
+    session_dates = pd.to_datetime(list(expected_sessions), errors="coerce")
+    normalized = tuple(pd.Timestamp(item).normalize() for item in session_dates if not pd.isna(item))
+    return (pd.Timestamp(start_ts), pd.Timestamp(end_ts), *normalized)
 
 
 def _task_trading_sessions(

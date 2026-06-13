@@ -12,10 +12,11 @@ from tdx_downloader.api.routes import download as download_routes
 from tdx_downloader.api.routes import native as native_routes
 from tdx_downloader.api.routes import research_market_regime as market_regime_routes
 from tdx_downloader.api.routes import trading_calendar as trading_calendar_routes
-from tdx_downloader.data.catalog import build_catalog, query_catalog
+from tdx_downloader.data.catalog import CatalogDatabaseBusy, build_catalog, query_catalog
 from tdx_downloader.data.inventory import inventory_local_data
 from tdx_downloader.data.manager import DataDownloadResult, download_summary
 from tdx_downloader.data.storage import write_local_bars
+from tdx_downloader.data.trading_calendar import trading_calendar_path_for
 from tdx_downloader.web_api import create_app
 
 
@@ -110,6 +111,46 @@ def test_catalog_payload_can_skip_cache_records(tmp_path) -> None:
     assert payload["record_limit"] == 0
 
 
+def test_api_overview_marks_cached_file_with_missing_requested_window(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    bars = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-02-24 09:35:00", periods=3, freq="5min"),
+            "stock_code": ["000001.SZ"] * 3,
+            "open": [10.0, 10.1, 10.2],
+            "high": [10.2, 10.3, 10.4],
+            "low": [9.9, 10.0, 10.1],
+            "close": [10.1, 10.2, 10.3],
+            "volume": [1000.0, 1100.0, 1200.0],
+            "amount": [10000.0, 11100.0, 12200.0],
+        }
+    )
+    write_local_bars(data_root=data_root, timeframe="5m", adjust="qfq", bars=bars)
+    inventory = inventory_local_data(data_root=data_root, adjust="qfq", timeframes=("5m",))
+    build_catalog(data_root=data_root, inventory=inventory)
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/overview",
+        params={
+            "data_root": str(data_root),
+            "adjust": "qfq",
+            "refresh": "false",
+            "include_records": "true",
+            "start": "2026-06-08",
+            "end": "2026-06-08",
+        },
+    )
+
+    assert response.status_code == 200
+    record = response.json()["records"][0]
+    assert record["status"] == "cached"
+    assert record["coverage_status"] == "coverage_empty"
+    assert record["coverage_expected_rows"] > 0
+    assert record["coverage_missing_rows"] == record["coverage_expected_rows"]
+    assert "没有可用" in record["coverage_message"]
+
+
 def test_api_price_bars_returns_paginated_local_bars(tmp_path) -> None:
     data_root = tmp_path / "market"
     bars = pd.concat(
@@ -156,6 +197,39 @@ def test_api_price_bars_returns_paginated_local_bars(tmp_path) -> None:
     assert data["records"][0]["stock_code"] == "000001.SZ"
     assert data["records"][0]["stock_name"] == "平安银行"
     assert data["records"][0]["close"] == 10.0
+
+
+def test_api_price_bars_can_include_cached_indicators(tmp_path) -> None:
+    data_root = tmp_path / "market"
+    bars = _bars("000001.SZ", [10.0, 11.0, 12.0, 13.0, 14.0], start="2026-01-01")
+    write_local_bars(data_root=data_root, timeframe="1d", adjust="qfq", bars=bars)
+    inventory = inventory_local_data(data_root=data_root, adjust="qfq", timeframes=("1d",))
+    build_catalog(
+        data_root=data_root,
+        inventory=inventory,
+        symbol_metadata=pd.DataFrame([{"stock_code": "000001.SZ", "stock_name": "平安银行", "source": "test", "path": ""}]),
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/prices/bars",
+        json={
+            "data_root": str(data_root),
+            "adjust": "qfq",
+            "timeframe": "1d",
+            "symbols": ["000001.SZ"],
+            "indicators": ["ma5"],
+            "start": "2026-01-01",
+            "end": "2026-01-31",
+            "limit": 10,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "ma5" in data["columns"]
+    assert data["indicators"] == ["ma5"]
+    assert data["records"][-1]["ma5"] == 12.0
 
 
 def test_api_price_bars_can_select_cached_symbols_by_asset_type(tmp_path) -> None:
@@ -409,6 +483,44 @@ def test_api_symbol_groups_sorts_picker_groups_by_recent_amount(monkeypatch, tmp
     assert groups["全A股票"] == ["000001.SZ", "000002.SZ"]
 
 
+def test_api_symbol_metrics_returns_latest_local_daily_values(tmp_path) -> None:
+    write_local_bars(
+        data_root=tmp_path,
+        timeframe="1d",
+        adjust="qfq",
+        bars=pd.concat(
+            [
+                _bars("000001.SZ", [10.0, 11.0], start="2026-06-05").assign(amount=[1000.0, 2000.0]),
+                _bars("000002.SZ", [20.0, 22.0], start="2026-06-05").assign(amount=[3000.0, 4000.0]),
+            ],
+            ignore_index=True,
+        ),
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/symbol-metrics",
+        json={
+            "data_root": str(tmp_path),
+            "adjust": "qfq",
+            "symbols": ["000001.SZ", "000002.SZ", "000003.SZ"],
+            "end": "2026-06-30",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["requested_count"] == 3
+    assert data["record_count"] == 2
+    rows = {row["symbol"]: row for row in data["records"]}
+    assert rows["000001.SZ"]["latest_date"] == "2026-06-08"
+    assert rows["000001.SZ"]["close"] == 11.0
+    assert rows["000001.SZ"]["amount"] == 2000.0
+    assert rows["000001.SZ"]["volume"] == 1001.0
+    assert rows["000001.SZ"]["market_value"] is None
+    assert rows["000001.SZ"]["turnover_rate"] is None
+
+
 def test_api_symbol_metadata_refresh_returns_groups_and_cache_state(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     def fake_refresh_symbol_metadata(data_root: str, tdx_path: str) -> pd.DataFrame:
         return pd.DataFrame(
@@ -580,7 +692,7 @@ def test_fuyao_trading_calendar_normalizes_days() -> None:
     assert payload["timestamp"] == 1780848000000
 
 
-def test_api_trading_calendar_returns_fuyao_days(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_api_trading_calendar_returns_fuyao_days(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     def fake_fetch(api_key: str = "") -> dict[str, object]:
         assert api_key == ""
         return {
@@ -592,6 +704,7 @@ def test_api_trading_calendar_returns_fuyao_days(monkeypatch) -> None:  # type: 
         }
 
     monkeypatch.setattr(trading_calendar_routes, "fetch_trading_days", fake_fetch)
+    monkeypatch.setattr(trading_calendar_routes, "DEFAULT_DATA_ROOT", str(tmp_path))
     client = TestClient(create_app())
 
     response = client.get("/api/trading-calendar")
@@ -601,9 +714,10 @@ def test_api_trading_calendar_returns_fuyao_days(monkeypatch) -> None:  # type: 
     assert data["source"] == "fuyao"
     assert data["days"] == ["2026-06-05", "2026-06-08"]
     assert data["raw_count"] == 2
+    assert trading_calendar_path_for(tmp_path).exists()
 
 
-def test_api_trading_calendar_forwards_local_fuyao_key_header(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_api_trading_calendar_forwards_local_fuyao_key_header(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     received: list[str] = []
 
     def fake_fetch(api_key: str = "") -> dict[str, object]:
@@ -614,6 +728,7 @@ def test_api_trading_calendar_forwards_local_fuyao_key_header(monkeypatch) -> No
         }
 
     monkeypatch.setattr(trading_calendar_routes, "fetch_trading_days", fake_fetch)
+    monkeypatch.setattr(trading_calendar_routes, "DEFAULT_DATA_ROOT", str(tmp_path))
     client = TestClient(create_app())
 
     response = client.get("/api/trading-calendar", headers={"x-fuyao-api-key": "local-secret"})
@@ -820,6 +935,153 @@ def test_api_plan_sorts_requested_timeframes_before_dependencies() -> None:
     assert sorted_table["stock_code"].tolist() == ["000001.SZ", "000001.SZ", "000002.SZ"]
 
 
+def test_api_coverage_refresh_creates_background_task(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[dict[str, object]] = []
+
+    def fake_query_catalog(**kwargs: object) -> pd.DataFrame:
+        calls.append({"query_catalog": kwargs})
+        return pd.DataFrame(
+            {
+                "cache_key": ["key"],
+                "stock_code": ["000001.SZ"],
+                "stock_name": ["平安银行"],
+                "asset_type": ["stock"],
+                "data_kind": ["price"],
+                "indicator": ["ohlcv"],
+                "timeframe": ["1d"],
+                "adjust": ["qfq"],
+                "storage_format": ["parquet"],
+                "status": ["cached"],
+                "rows": [1],
+                "start_at": ["2026-06-01T00:00:00"],
+                "end_at": ["2026-06-01T00:00:00"],
+                "file_size_bytes": [1],
+                "modified_at": ["2026-06-01T00:00:00"],
+                "path": [str(tmp_path / "daily" / "qfq" / "000001.SZ.parquet")],
+                "message": [""],
+            }
+        )
+
+    def fake_refresh_coverage_runs(**kwargs: object) -> pd.DataFrame:
+        calls.append({"refresh": kwargs})
+        return pd.DataFrame({"stock_code": ["000001.SZ"], "timeframe": ["1d"]})
+
+    def fake_query_coverage_runs(**kwargs: object) -> pd.DataFrame:
+        calls.append({"query_coverage": kwargs})
+        return pd.DataFrame({"stock_code": ["000001.SZ"], "timeframe": ["1d"]})
+
+    with task_store._tasks_lock:
+        task_store._tasks.clear()
+    monkeypatch.setattr(catalog_routes, "query_catalog", fake_query_catalog)
+    monkeypatch.setattr(catalog_routes, "refresh_coverage_runs", fake_refresh_coverage_runs)
+    monkeypatch.setattr(catalog_routes, "query_coverage_runs", fake_query_coverage_runs)
+    client = TestClient(create_app())
+
+    response = client.post("/api/coverage/refresh", params={"data_root": str(tmp_path), "timeframes": "1d"})
+
+    assert response.status_code == 200
+    task_id = response.json()["id"]
+    for _ in range(20):
+        task_payload = client.get("/api/tasks").json()["tasks"][0]
+        if task_payload["id"] == task_id and task_payload["status"] == "succeeded":
+            break
+    assert task_payload["status"] == "succeeded"
+    assert any("refresh" in call for call in calls)
+
+
+def test_api_coverage_refresh_supports_limit_and_offset(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    refreshed_symbols: list[tuple[str, ...]] = []
+
+    def fake_query_catalog(**kwargs: object) -> pd.DataFrame:
+        rows = []
+        for index in range(5):
+            symbol = f"00000{index + 1}.SZ"
+            rows.append(
+                {
+                    "cache_key": f"key-{index}",
+                    "stock_code": symbol,
+                    "stock_name": "",
+                    "asset_type": "stock",
+                    "data_kind": "price",
+                    "indicator": "ohlcv",
+                    "timeframe": "5m",
+                    "adjust": "qfq",
+                    "storage_format": "parquet",
+                    "status": "cached",
+                    "rows": 1,
+                    "start_at": "2026-06-01T09:35:00",
+                    "end_at": "2026-06-01T09:35:00",
+                    "file_size_bytes": 1,
+                    "modified_at": "2026-06-01T09:35:00",
+                    "path": str(tmp_path / "5m" / "qfq" / f"{symbol}.parquet"),
+                    "message": "",
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def fake_refresh_coverage_runs(**kwargs: object) -> pd.DataFrame:
+        symbols = tuple(kwargs.get("symbols", ()))  # type: ignore[arg-type]
+        refreshed_symbols.append(symbols)
+        return pd.DataFrame({"stock_code": list(symbols), "timeframe": ["5m"] * len(symbols)})
+
+    def fake_query_coverage_runs(**kwargs: object) -> pd.DataFrame:
+        return pd.DataFrame({"stock_code": ["000002.SZ", "000003.SZ"], "timeframe": ["5m", "5m"]})
+
+    with task_store._tasks_lock:
+        task_store._tasks.clear()
+    monkeypatch.setattr(catalog_routes, "query_catalog", fake_query_catalog)
+    monkeypatch.setattr(catalog_routes, "refresh_coverage_runs", fake_refresh_coverage_runs)
+    monkeypatch.setattr(catalog_routes, "query_coverage_runs", fake_query_coverage_runs)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/coverage/refresh",
+        params={"data_root": str(tmp_path), "timeframes": "5m", "limit": "2", "offset": "1"},
+    )
+
+    assert response.status_code == 200
+    task_id = response.json()["id"]
+    for _ in range(20):
+        task_payload = client.get("/api/tasks").json()["tasks"][0]
+        if task_payload["id"] == task_id and task_payload["status"] == "succeeded":
+            break
+    assert task_payload["status"] == "succeeded"
+    assert refreshed_symbols == [("000002.SZ", "000003.SZ")]
+    assert task_payload["result"]["summary"]["catalog_rows"] == 2
+    assert task_payload["result"]["summary"]["total_catalog_rows"] == 5
+    assert task_payload["result"]["summary"]["remaining_rows"] == 2
+
+
+def test_api_catalog_maintain_creates_background_task(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[dict[str, object]] = []
+
+    def fake_maintain_catalog(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {
+            "path": str(tmp_path / "metadata" / "market_data_catalog.sqlite"),
+            "exists": True,
+            "before": {"file_size_bytes": 100, "freelist_count": 10},
+            "after": {"file_size_bytes": 80, "freelist_count": 0},
+        }
+
+    with task_store._tasks_lock:
+        task_store._tasks.clear()
+    monkeypatch.setattr(catalog_routes, "maintain_catalog", fake_maintain_catalog)
+    client = TestClient(create_app())
+
+    response = client.post("/api/catalog/maintain", params={"data_root": str(tmp_path), "vacuum": "false"})
+
+    assert response.status_code == 200
+    task_id = response.json()["id"]
+    for _ in range(20):
+        task_payload = client.get("/api/tasks").json()["tasks"][0]
+        if task_payload["id"] == task_id and task_payload["status"] == "succeeded":
+            break
+    assert task_payload["status"] == "succeeded"
+    assert calls == [{"data_root": str(tmp_path), "vacuum": False}]
+    assert task_payload["result"]["after"]["freelist_count"] == 0
+
+
 def test_api_plan_prioritizes_intraday_when_daily_is_also_selected() -> None:
     table = pd.DataFrame(
         {
@@ -832,6 +1094,127 @@ def test_api_plan_prioritizes_intraday_when_daily_is_also_selected() -> None:
     sorted_table = download_routes._sort_plan_table(table, ("1d", "5m"))
 
     assert sorted_table["timeframe"].tolist() == ["5m", "1d", "1d"]
+
+
+def test_api_plan_uses_fast_preview_plan(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[str] = []
+
+    def fake_preview(self, config):  # type: ignore[no-untyped-def]
+        calls.append("preview")
+        return pd.DataFrame(
+            {
+                "stock_code": ["000001.SZ"],
+                "timeframe": ["1d"],
+                "adjust": ["qfq"],
+                "action": ["cached"],
+                "reason": ["local_ok"],
+                "catalog_status": ["cached"],
+                "coverage_status": ["coverage_ready"],
+                "before_status": ["ok"],
+                "rows_in_window": [1],
+                "expected_rows": [1],
+                "missing_rows": [0],
+                "coverage_ratio": [1.0],
+                "max_missing_gap_minutes": [0],
+                "first_missing_at": [pd.NaT],
+                "last_missing_at": [pd.NaT],
+                "max_missing_gap_start_at": [pd.NaT],
+                "max_missing_gap_end_at": [pd.NaT],
+                "path": [""],
+                "message": ["metadata-only"],
+            }
+        )
+
+    def fail_strict(self, config):  # type: ignore[no-untyped-def]
+        raise AssertionError("/api/plan should use fast preview plan")
+
+    monkeypatch.setattr(download_routes.DataManagementService, "preview_download_plan", fake_preview)
+    monkeypatch.setattr(download_routes.DataManagementService, "download_plan", fail_strict)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/plan",
+        json={
+            "symbols": ["000001.SZ"],
+            "timeframes": ["1d"],
+            "start": "2026-06-01",
+            "end": "2026-06-01",
+        },
+    )
+
+    assert response.status_code == 200
+    assert calls == ["preview"]
+    assert response.json()["summary"]["cached_count"] == 1
+
+
+def test_api_plan_returns_all_records_for_paged_download_plan(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def fake_preview(self, config):  # type: ignore[no-untyped-def]
+        rows = []
+        for index in range(600):
+            rows.append(
+                {
+                    "stock_code": f"{index:06d}.SZ",
+                    "timeframe": "5m",
+                    "adjust": "qfq",
+                    "action": "fetch",
+                    "reason": "coverage_gap",
+                    "catalog_status": "cached",
+                    "coverage_status": "coverage_partial",
+                    "before_status": "coverage_gap",
+                    "rows_in_window": 0,
+                    "expected_rows": 48,
+                    "missing_rows": 48,
+                    "coverage_ratio": 0.0,
+                    "max_missing_gap_minutes": 240,
+                    "first_missing_at": pd.Timestamp("2026-06-12 09:35:00"),
+                    "last_missing_at": pd.Timestamp("2026-06-12 15:00:00"),
+                    "max_missing_gap_start_at": pd.Timestamp("2026-06-12 09:35:00"),
+                    "max_missing_gap_end_at": pd.Timestamp("2026-06-12 15:00:00"),
+                    "path": "",
+                    "message": "",
+                }
+            )
+        return pd.DataFrame(rows)
+
+    monkeypatch.setattr(download_routes.DataManagementService, "preview_download_plan", fake_preview)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/plan",
+        json={
+            "symbols": ["000001.SZ"],
+            "timeframes": ["5m"],
+            "start": "2026-06-12",
+            "end": "2026-06-12",
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["record_count"] == 600
+    assert payload["returned_count"] == 600
+    assert len(payload["records"]) == 600
+
+
+def test_api_plan_reports_catalog_lock(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def locked_preview(self, config):  # type: ignore[no-untyped-def]
+        raise CatalogDatabaseBusy("locked")
+
+    monkeypatch.setattr(download_routes.DataManagementService, "preview_download_plan", locked_preview)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/plan",
+        json={
+            "symbols": ["000001.SZ"],
+            "timeframes": ["1d"],
+            "start": "2026-06-01",
+            "end": "2026-06-01",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "本地缓存索引正在写入" in response.json()["detail"]
 
 
 def test_api_pick_directory_returns_selected_path(monkeypatch, tmp_path) -> None:
@@ -953,10 +1336,62 @@ def test_task_events_keep_recent_fifo_window() -> None:
     assert payload["events"][-1]["message"] == f"第 {constants.TASK_EVENT_LIMIT + 4} 批"
 
 
+def test_task_control_endpoints_update_download_task_state() -> None:
+    with task_store._tasks_lock:
+        task_store._tasks.clear()
+    task = task_store._create_task("download")
+    task_store._update_task(task.id, status="running", started_at="2026-06-11T00:00:00+00:00")
+    client = TestClient(create_app())
+
+    paused = client.post(f"/api/tasks/{task.id}/pause")
+    resumed = client.post(f"/api/tasks/{task.id}/resume")
+    cancelled = client.post(f"/api/tasks/{task.id}/cancel")
+
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "pausing"
+    assert paused.json()["control"] == "pause"
+    assert resumed.status_code == 200
+    assert resumed.json()["status"] == "running"
+    assert resumed.json()["control"] == "run"
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelling"
+    assert cancelled.json()["control"] == "cancel"
+
+
+def test_download_task_cancel_request_marks_task_cancelled(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    data_root = tmp_path / "market"
+
+    def fake_download_with_runtime(service, config, *, mode, progress_callback, cancel_check=None):  # type: ignore[no-untyped-def]
+        task_store._request_task_control(task.id, "cancel")
+        progress_callback({"stage": "fetch_start", "message": "开始请求测试数据。"})
+        raise AssertionError("cancel should stop through progress callback")
+
+    monkeypatch.setattr(download_routes, "download_with_runtime", fake_download_with_runtime)
+    monkeypatch.setattr(download_routes, "should_use_parallels_runtime", lambda: False)
+    with task_store._tasks_lock:
+        task_store._tasks.clear()
+    payload = schemas.DownloadPayload(
+        data_root=str(data_root),
+        symbols=["000750.SZ"],
+        timeframes=["1d"],
+        start="2026-06-01",
+        end="2026-06-01",
+        mode="force",
+    )
+    task = task_store._create_task("download")
+
+    download_routes._run_download_task(task.id, payload, "force")
+
+    state = task_store._task_payload(task_store._get_task(task.id))  # type: ignore[arg-type]
+    assert state["status"] == "cancelled"
+    assert state["error"] == "任务已终止。"
+    assert state["events"][-1]["stage"] == "task_cancelled"
+
+
 def test_download_task_refreshes_catalog_after_writing_cache(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     data_root = tmp_path / "market"
 
-    def fake_download_with_runtime(service, config, *, mode, progress_callback):  # type: ignore[no-untyped-def]
+    def fake_download_with_runtime(service, config, *, mode, progress_callback, cancel_check=None):  # type: ignore[no-untyped-def]
         bars = pd.DataFrame(
             {
                 "date": pd.to_datetime(["2026-06-01"]),
@@ -1650,6 +2085,197 @@ def test_api_ai_command_selects_chinext_symbols_and_sets_risk_parameters(tmp_pat
     assert patches["regimeForm.cash_preference_proxy_threshold"] == 65
 
 
+def test_api_ai_command_selects_top_chinext_symbols_by_daily_amount(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        "tdx_downloader.api.routes.ai._command_default_year",
+        lambda: 2026,
+    )
+    metadata = tmp_path / "metadata"
+    metadata.mkdir(parents=True)
+    (metadata / "symbols.csv").write_text(
+        "stock_code,stock_name\n"
+        "300001.SZ,创业样例A\n"
+        "300002.SZ,创业样例B\n"
+        "300003.SZ,创业样例C\n"
+        "300004.SZ,创业样例D\n"
+        "300005.SZ,创业样例E\n"
+        "300006.SZ,创业样例F\n"
+        "000001.SZ,主板样例\n",
+        encoding="utf-8",
+    )
+    bars = pd.concat(
+        [
+            _bars("300001.SZ", [10.0], start="2026-06-09").assign(amount=[5000.0]),
+            _bars("300002.SZ", [10.0], start="2026-06-09").assign(amount=[9000.0]),
+            _bars("300003.SZ", [10.0], start="2026-06-09").assign(amount=[7000.0]),
+            _bars("300004.SZ", [10.0], start="2026-06-09").assign(amount=[3000.0]),
+            _bars("300005.SZ", [10.0], start="2026-06-09").assign(amount=[11000.0]),
+            _bars("300006.SZ", [10.0], start="2026-06-09").assign(amount=[1000.0]),
+            _bars("000001.SZ", [10.0], start="2026-06-09").assign(amount=[20000.0]),
+        ],
+        ignore_index=True,
+    )
+    write_local_bars(data_root=tmp_path, timeframe="1d", adjust="qfq", bars=bars)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/command",
+        json={
+            "data_root": str(tmp_path),
+            "adjust": "qfq",
+            "current_view": "settings",
+            "text": "帮我选择创业板6月9日成交额最高的5个股票",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["selected_symbol_count"] == 5
+    assert data["selected_symbols"] == ["300005.SZ", "300002.SZ", "300003.SZ", "300001.SZ", "300004.SZ"]
+    patches = {row["target"]: row for row in data["patches"]}
+    assert patches["symbolsText"]["value"] == "\n".join(data["selected_symbols"])
+    assert patches["symbolsText"]["summary"] == "已选择 5 个标的。"
+    assert "已选择 5 个标的" in data["summary"]
+
+
+def test_api_ai_command_filters_chinext_symbols_by_daily_return(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        "tdx_downloader.api.routes.ai._command_default_year",
+        lambda: 2026,
+    )
+    metadata = tmp_path / "metadata"
+    metadata.mkdir(parents=True)
+    (metadata / "symbols.csv").write_text(
+        "stock_code,stock_name\n"
+        "300001.SZ,创业样例A\n"
+        "300002.SZ,创业样例B\n"
+        "300003.SZ,创业样例C\n"
+        "300004.SZ,创业样例D\n"
+        "000001.SZ,主板样例\n",
+        encoding="utf-8",
+    )
+    bars = pd.concat(
+        [
+            _bars("300001.SZ", [10.0, 10.6], start="2026-06-08"),
+            _bars("300002.SZ", [10.0, 10.4], start="2026-06-08"),
+            _bars("300003.SZ", [20.0, 21.4], start="2026-06-08"),
+            _bars("300004.SZ", [20.0, 19.0], start="2026-06-08"),
+            _bars("000001.SZ", [10.0, 11.0], start="2026-06-08"),
+        ],
+        ignore_index=True,
+    )
+    write_local_bars(data_root=tmp_path, timeframe="1d", adjust="qfq", bars=bars)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/command",
+        json={
+            "data_root": str(tmp_path),
+            "adjust": "qfq",
+            "current_view": "ai",
+            "end": "2026-06-10",
+            "text": "帮我填入创业板今天涨幅大于5%的股票",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["selected_symbol_count"] == 2
+    assert data["selected_symbols"] == ["300003.SZ", "300001.SZ"]
+    patches = {row["target"]: row for row in data["patches"]}
+    assert patches["aiWorkbenchForm.symbols"]["value"] == "300003.SZ\n300001.SZ"
+    assert "已选择 2 个标的" in data["summary"]
+    assert any("当日涨幅大于5%" in warning for warning in data["warnings"])
+
+
+def test_api_ai_command_keeps_local_indexed_symbol_query_when_model_returns_broad_patch(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        "tdx_downloader.api.routes.ai._command_default_year",
+        lambda: 2026,
+    )
+    metadata = tmp_path / "metadata"
+    metadata.mkdir(parents=True)
+    (metadata / "symbols.csv").write_text(
+        "stock_code,stock_name\n"
+        + "".join(f"300{index:03d}.SZ,创业样例{index}\n" for index in range(1, 10))
+        + "300010.SZ,创业样例10\n"
+        + "000001.SZ,主板样例\n",
+        encoding="utf-8",
+    )
+    bars = pd.concat(
+        [
+            _bars(f"300{index:03d}.SZ", [10.0], start="2026-06-09").assign(amount=[float(index * 1000)])
+            for index in range(1, 10)
+        ]
+        + [
+            _bars("300010.SZ", [10.0], start="2026-06-09").assign(amount=[500.0]),
+            _bars("000001.SZ", [10.0], start="2026-06-09").assign(amount=[50000.0]),
+        ],
+        ignore_index=True,
+    )
+    write_local_bars(data_root=tmp_path, timeframe="1d", adjust="qfq", bars=bars)
+    model_content = json.dumps(
+        {
+            "patches": [
+                {
+                    "target": "symbolsText",
+                    "value": "\n".join([f"300{index:03d}.SZ" for index in range(1, 10)] + ["300010.SZ"]),
+                    "summary": "模型错误选择了全部创业板",
+                }
+            ],
+            "warnings": ["模型尝试返回宽泛标的池"],
+        },
+        ensure_ascii=False,
+    )
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": model_content}}]}).encode("utf-8")
+
+    monkeypatch.setattr(ai_client.urllib.request, "urlopen", lambda *_args, **_kwargs: _Response())
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/command",
+        json={
+            "data_root": str(tmp_path),
+            "adjust": "qfq",
+            "current_view": "download",
+            "text": "帮我选择创业板6月9日成交额最高的9个票",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret",
+            "model": "compatible-model",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["parser"] == "model"
+    assert data["selected_symbol_count"] == 9
+    assert data["selected_symbols"] == [
+        "300009.SZ",
+        "300008.SZ",
+        "300007.SZ",
+        "300006.SZ",
+        "300005.SZ",
+        "300004.SZ",
+        "300003.SZ",
+        "300002.SZ",
+        "300001.SZ",
+    ]
+    patches = {row["target"]: row for row in data["patches"]}
+    assert patches["symbolsText"]["value"] == "\n".join(data["selected_symbols"])
+    assert "模型错误选择了全部创业板" not in data["summary"]
+    assert any("AI 行情索引" in warning for warning in data["warnings"])
+    assert (tmp_path / "metadata" / "ai_market_index.sqlite").exists()
+
+
 def test_api_ai_command_plans_common_module_parameters() -> None:
     client = TestClient(create_app())
 
@@ -1742,15 +2368,23 @@ def test_api_ai_command_can_use_model_parser_with_allowed_patches(monkeypatch) -
     assert "unsupported.secret" not in patches
     assert "sk-secret" not in response.text
     assert "allowed_targets" in captured["body"]["messages"][1]["content"]
+    assert "内置股票数据 skill" in captured["body"]["messages"][0]["content"]
+    assert "不要直接输出任何 *.symbols 或 symbolsText patch" in captured["body"]["messages"][0]["content"]
 
 
-def test_api_ai_stock_agent_opens_bounded_local_stock_data_to_model(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_api_ai_stock_agent_opens_local_stock_data_to_model_without_default_row_or_symbol_limit(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     data_root = tmp_path / "market"
     write_local_bars(
         data_root=data_root,
         timeframe="1d",
         adjust="qfq",
-        bars=_bars("000001.SZ", [10, 11, 12]),
+        bars=pd.concat(
+            [
+                _bars("000001.SZ", [10, 11, 12]),
+                _bars("300750.SZ", [20, 21, 22]),
+            ],
+            ignore_index=True,
+        ),
     )
     captured: dict[str, object] = {}
 
@@ -1781,10 +2415,9 @@ def test_api_ai_stock_agent_opens_bounded_local_stock_data_to_model(tmp_path, mo
             "model": "compatible-model",
             "prompt": "按我的skill分析这些股票",
             "skill_prompt": "只看收盘价变化",
-            "symbols": ["000001.SZ"],
+            "symbols": ["000001.SZ", "300750.SZ"],
             "start": "2026-01-01",
             "end": "2026-01-06",
-            "max_rows": 50,
             "max_charts": 1,
             "timeout_seconds": 9,
         },
@@ -1793,7 +2426,12 @@ def test_api_ai_stock_agent_opens_bounded_local_stock_data_to_model(tmp_path, mo
     assert response.status_code == 200
     data = response.json()
     assert data["content"] == "基于本地行情的AI分析"
-    assert data["data_context"]["row_count"] == 3
+    assert data["data_context"]["row_count"] == 6
+    assert len(data["data_context"]["records"]) == 6
+    assert data["data_context"]["record_limit"] is None
+    assert data["data_context"]["symbols"] == ["000001.SZ", "300750.SZ"]
+    assert data["data_context"]["local_index"]["type"] == "sqlite"
+    assert data["data_context"]["local_index"]["tables"] == ["ai_price_bars"]
     assert data["data_context"]["latest"][0]["symbol"] == "000001.SZ"
     assert data["data_context"]["chart_limit"] == 1
     assert data["chart_items"][0]["symbol"] == "000001.SZ"
@@ -1801,6 +2439,75 @@ def test_api_ai_stock_agent_opens_bounded_local_stock_data_to_model(tmp_path, mo
     body = captured["body"]
     assert captured["timeout"] == 9
     assert body["model"] == "compatible-model"
+    assert "内置股票数据 skill" in body["messages"][0]["content"]
+    assert "local_index" in body["messages"][1]["content"]
     assert "000001.SZ" in body["messages"][1]["content"]
     assert "chart_items" not in body["messages"][1]["content"]
     assert "sk-secret" not in response.text
+
+
+def test_api_ai_stock_agent_stream_returns_context_delta_and_done(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    data_root = tmp_path / "market"
+    write_local_bars(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        bars=_bars("000001.SZ", [10, 11, 12]),
+    )
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            chunks = [
+                {"choices": [{"delta": {"content": "第一段"}}]},
+                {"choices": [{"delta": {"content": "第二段"}}]},
+            ]
+            for chunk in chunks:
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+            yield b"data: [DONE]\n\n"
+
+    def fake_urlopen(request, timeout: int):  # type: ignore[no-untyped-def]
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(ai_client.urllib.request, "urlopen", fake_urlopen)
+    client = TestClient(create_app())
+
+    with client.stream(
+        "POST",
+        "/api/ai/stock-agent-stream",
+        json={
+            "data_root": str(data_root),
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret",
+            "model": "compatible-model",
+            "prompt": "按我的skill分析这些股票",
+            "skill_prompt": "只看收盘价变化",
+            "symbols": ["000001.SZ"],
+            "start": "2026-01-01",
+            "end": "2026-01-06",
+            "max_rows": 50,
+            "max_charts": 1,
+            "timeout_seconds": 9,
+        },
+    ) as response:
+        assert response.status_code == 200
+        text = "".join(response.iter_text())
+
+    assert "event: context" in text
+    assert "event: delta" in text
+    assert "第一段" in text
+    assert "第二段" in text
+    assert "event: done" in text
+    assert "\"content\": \"第一段第二段\"" in text
+    assert captured["timeout"] == 9
+    body = captured["body"]
+    assert body["stream"] is True
+    assert "sk-secret" not in text

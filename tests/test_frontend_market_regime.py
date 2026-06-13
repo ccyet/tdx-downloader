@@ -4,10 +4,12 @@ from pathlib import Path
 
 
 APP_VUE = Path(__file__).resolve().parents[1] / "web" / "src" / "App.vue"
+STYLES = APP_VUE.parent / "styles.css"
 
 
 def test_market_regime_research_tab_is_wired_to_api_snapshot_and_export() -> None:
     source = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES.read_text(encoding="utf-8")
 
     assert "'regime'" in source
     assert "市场风险偏好" in source
@@ -20,6 +22,10 @@ def test_market_regime_research_tab_is_wired_to_api_snapshot_and_export() -> Non
     assert "regimeUniverseOptions" in source
     assert "activeRegimeUniverseGroups" in source
     assert "高级参数" in source
+    assert "REGIME_ADVANCED_PARAMETERS" in source
+    assert "hint-popover-trigger" in source
+    assert "现金压力分" in source
+    assert "时间线交易日数" in source
     assert "liquidity_high_percentile" in source
     assert "volatility_high_percentile" in source
     assert "high_position_drawdown_threshold" in source
@@ -29,6 +35,18 @@ def test_market_regime_research_tab_is_wired_to_api_snapshot_and_export() -> Non
     assert "percent-input" in source
     assert "参数预设" in source
     assert "REGIME_PARAMETER_PRESETS" in source
+    assert "pendingRegimePresetKey" in source
+    assert "regimePresetConfirmText" in source
+    assert "requestRegimeParameterPreset" in source
+    assert "cancelRegimeParameterPreset" in source
+    assert "confirmRegimeParameterPreset" in source
+    assert "应用参数预设前需要确认" in source
+    assert ':aria-pressed="regimeActivePresetKey === preset.key"' in source
+    assert "确认后将用“" in source
+    assert "当前高级参数未修改" in source
+    assert "@click=\"applyRegimeParameterPreset(preset.key)\"" not in source
+    assert ".regime-preset-confirm" in styles
+    assert ".regime-preset-button.pending" in styles
     assert "百分比直接填" in source
     assert "percentOrDefault(regimeForm.stress_return_5d_threshold, 0)" in source
     assert "stress_ma20_break_threshold" in source
@@ -39,7 +57,46 @@ def test_market_regime_research_tab_is_wired_to_api_snapshot_and_export() -> Non
     assert "risk_timeline_days" in source
     assert "regimeResult" in source
     assert "downloadMarketRegimeJson" in source
+    assert "confirmingRunRegimeResearch" in source
+    assert "regimeResearchConfirmText" in source
+    assert "requestRunMarketRegimeResearch" in source
+    assert "cancelRunMarketRegimeResearch" in source
+    assert "confirmRunMarketRegimeResearch" in source
+    assert "运行市场风险偏好研究前需要确认" in source
+    assert "确认后将按" in source
+    assert "市场风偏研究未运行" in source
+    assert "当前市场风险偏好结果未修改" in source
+    assert '@submit.prevent="requestRunMarketRegimeResearch"' in source
+    assert '@submit.prevent="runMarketRegimeResearch"' not in source
     assert "saveActiveResearchSnapshot" in source
+    assert "activeResearchSnapshotDisabledReason" in source
+    assert "activeResearchSnapshotDisabled" in source
+    assert '保存当前工作台结果到本机快照' in source
+    assert "resultActionDisabledReason" in source
+    assert "regimeExportDisabledReason" in source
+    assert "先运行市场风险偏好研究，生成结果后才能导出 JSON" in source
+    assert "confirmingRegimeExport" in source
+    assert "regimeExportFilename" in source
+    assert "regimeExportConfirmText" in source
+    assert "requestMarketRegimeJsonExport" in source
+    assert "cancelMarketRegimeJsonExport" in source
+    assert "confirmMarketRegimeJsonExport" in source
+    assert "导出当前市场风险偏好研究 JSON 前需要确认" in source
+    assert "确认导出市场风偏 JSON" in source
+    assert "市场风偏 JSON 未导出" in source
+    assert "市场风偏 JSON 已导出" in source
+    assert "@click=\"downloadMarketRegimeJson\"" not in source
+    assert "@click=\"requestMarketRegimeJsonExport\"" in source
+    assert "regimeManualSymbols" in source
+    assert "regimeManualSymbolsClearDisabledReason" in source
+    assert "confirmingClearRegimeManualSymbols" in source
+    assert "requestClearRegimeManualSymbols" in source
+    assert "cancelClearRegimeManualSymbols" in source
+    assert "confirmClearRegimeManualSymbols" in source
+    assert "清空手动补充标的前需要确认" in source
+    assert "市场风偏手动补充标的未修改" in source
+    assert "@click=\"regimeForm.symbols = ''\"" not in source
+    assert ".regime-universe-summary" in styles
     assert "Risk Appetite Index" in source
 
 
@@ -112,6 +169,8 @@ def test_market_regime_view_exposes_decoupled_result_surfaces() -> None:
     assert "越低代表现金偏好与风险释放越强" in source
     assert "setActiveRegimeRaiPoint(point)" in source
     assert "@pointerenter=\"setActiveRegimeRaiPoint(point)\"" in source
+    assert ':aria-label="point.title"' in source
+    assert ':aria-pressed="activeRegimeRaiPoint?.key === point.key"' in source
     assert ":r=\"activeRegimeRaiPoint?.key === point.key ? 3.1 : 1.8\"" in source
     assert "regime-rai-active-card" in source
     assert "regime-rai-driver-list" in source

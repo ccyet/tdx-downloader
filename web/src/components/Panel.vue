@@ -1,7 +1,7 @@
 <template>
-  <section class="panel resizable-card" data-resizable-card>
+  <section class="panel resizable-card" data-resizable-card :aria-labelledby="titleId">
     <div class="panel-title">
-      <strong>{{ title }}</strong>
+      <strong :id="titleId">{{ title }}</strong>
       <span>{{ subtitle }}</span>
     </div>
     <slot />
@@ -9,8 +9,12 @@
 </template>
 
 <script setup lang="ts">
+import { getCurrentInstance } from 'vue'
+
 defineProps<{
   title: string
   subtitle: string
 }>()
+
+const titleId = `panel-${getCurrentInstance()?.uid ?? 'section'}-title`
 </script>

@@ -9,7 +9,18 @@
       <b :class="returnClass">{{ formatPercent(periodReturn) }}</b>
     </header>
 
-    <div ref="chartRoot" class="plotly-kline" role="img" :aria-label="`${displayName}窗口期K线图`"></div>
+    <EmptyState
+      v-if="!hasCandles"
+      title="暂无K线"
+      body="当前标的没有可绘制的窗口行情，请检查日期、周期或本地缓存。"
+    />
+    <div
+      v-else
+      ref="chartRoot"
+      class="plotly-kline"
+      role="img"
+      :aria-label="`${displayName}窗口期K线图，共 ${candleCount} 根K线`"
+    ></div>
 
     <footer>
       <span>收盘 {{ formatPrice(lastClose) }}</span>
@@ -22,6 +33,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import EmptyState from './EmptyState.vue'
 
 interface RawCandle {
   date?: string
@@ -76,6 +88,7 @@ const chartRoot = ref<HTMLDivElement | null>(null)
 let resizeObserver: ResizeObserver | null = null
 let plotlyModule: any | null = null
 let plotlyPromise: Promise<any> | null = null
+let renderedRoot: HTMLDivElement | null = null
 
 const itemSymbol = computed(() => props.item.symbol || '-')
 const normalizedCandles = computed<Candle[]>(() =>
@@ -111,6 +124,7 @@ const normalizedSegments = computed<Segment[]>(() =>
 )
 
 const candleCount = computed(() => normalizedCandles.value.length)
+const hasCandles = computed(() => candleCount.value > 0)
 const displayName = computed(() => props.item.name || itemSymbol.value)
 const rankLabel = computed(() => {
   if (props.item.label) return props.item.label
@@ -215,27 +229,30 @@ watch(
   { deep: true }
 )
 
+watch(hasCandles, () => {
+  void renderChart()
+})
+
 onMounted(() => {
   void renderChart()
-  if (chartRoot.value && 'ResizeObserver' in window) {
-    resizeObserver = new ResizeObserver(() => {
-      if (!chartRoot.value || !plotlyModule) return
-      plotlyModule.Plots.resize(chartRoot.value)
-    })
-    resizeObserver.observe(chartRoot.value)
-  }
 })
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
-  if (chartRoot.value && plotlyModule) plotlyModule.purge(chartRoot.value)
+  purgeRenderedChart()
 })
 
 async function renderChart() {
   await nextTick()
+  if (!hasCandles.value) {
+    purgeRenderedChart()
+    return
+  }
   if (!chartRoot.value) return
   const Plotly = await loadPlotly()
   await Plotly.react(chartRoot.value, plotData.value as any, plotLayout.value as any, plotConfig as any)
+  renderedRoot = chartRoot.value
+  observeChartRoot(chartRoot.value)
 }
 
 async function loadPlotly() {
@@ -245,6 +262,24 @@ async function loadPlotly() {
   }
   plotlyModule = await plotlyPromise
   return plotlyModule
+}
+
+function observeChartRoot(root: HTMLDivElement) {
+  if (!('ResizeObserver' in window)) return
+  if (!resizeObserver) {
+    resizeObserver = new ResizeObserver(() => {
+      if (!renderedRoot || !plotlyModule) return
+      plotlyModule.Plots.resize(renderedRoot)
+    })
+  }
+  resizeObserver.disconnect()
+  resizeObserver.observe(root)
+}
+
+function purgeRenderedChart() {
+  resizeObserver?.disconnect()
+  if (renderedRoot && plotlyModule) plotlyModule.purge(renderedRoot)
+  renderedRoot = null
 }
 
 function segmentShapes() {

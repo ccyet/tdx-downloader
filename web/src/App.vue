@@ -14,7 +14,9 @@
           v-for="item in navItems"
           :key="item.key"
           :class="['nav-button', { active: activeView === item.key }]"
+          type="button"
           :aria-label="item.label"
+          :aria-current="activeView === item.key ? 'page' : undefined"
           :title="item.label"
           @click="activeView = item.key"
         >
@@ -59,18 +61,66 @@
             <em>{{ activeResearchSnapshots.length }} 个</em>
           </summary>
           <div class="side-snapshot-tools">
-            <button class="btn secondary" type="button" :disabled="!activeResearchResult" @click="saveActiveResearchSnapshot">
+            <button
+              class="btn secondary"
+              type="button"
+              :disabled="activeResearchSnapshotDisabled"
+              :title="activeResearchSnapshotDisabledReason || '保存当前工作台结果到本机快照'"
+              @click="saveActiveResearchSnapshot"
+            >
               <Icon name="save" />
               保存当前结果
             </button>
+            <span
+              v-if="activeResearchSnapshotDisabledReason"
+              class="action-status inline warning side-action-status"
+            >
+              <i></i>
+              {{ activeResearchSnapshotDisabledReason }}
+            </span>
           </div>
           <div v-if="activeResearchSnapshots.length" class="side-snapshot-list">
-            <article v-for="snapshot in activeResearchSnapshots" :key="snapshot.id" class="side-snapshot-row">
-              <button type="button" @click="loadResearchSnapshot(snapshot)">
+            <article
+              v-for="snapshot in activeResearchSnapshots"
+              :key="snapshot.id"
+              :class="[
+                'side-snapshot-row',
+                { confirming: confirmingResearchSnapshotDeleteId === snapshot.id || confirmingResearchSnapshotLoadId === snapshot.id }
+              ]"
+            >
+              <button
+                type="button"
+                :disabled="confirmingResearchSnapshotDeleteId === snapshot.id || confirmingResearchSnapshotLoadId === snapshot.id"
+                :title="confirmingResearchSnapshotDeleteId === snapshot.id ? '请先确认或取消删除' : confirmingResearchSnapshotLoadId === snapshot.id ? '请先确认或取消载入' : '载入快照前需要确认'"
+                @click="requestLoadResearchSnapshot(snapshot)"
+              >
                 <strong>{{ snapshot.title }}</strong>
                 <span>{{ snapshot.summary }}</span>
               </button>
-              <button class="icon-button danger" type="button" title="删除快照" @click="deleteResearchSnapshot(snapshot.id)">
+              <div v-if="confirmingResearchSnapshotLoadId === snapshot.id" class="side-snapshot-confirm">
+                <button class="mini-action" type="button" title="取消载入快照" @click="cancelLoadResearchSnapshot">
+                  取消
+                </button>
+                <button class="mini-action danger" type="button" title="确认载入该研究快照" @click="confirmLoadResearchSnapshot(snapshot)">
+                  载入
+                </button>
+              </div>
+              <div v-else-if="confirmingResearchSnapshotDeleteId === snapshot.id" class="side-snapshot-confirm">
+                <button class="mini-action" type="button" title="取消删除快照" @click="cancelDeleteResearchSnapshot">
+                  取消
+                </button>
+                <button class="mini-action danger" type="button" title="确认删除该本地快照" @click="confirmDeleteResearchSnapshot(snapshot.id)">
+                  删除
+                </button>
+              </div>
+              <button
+                v-else
+                class="icon-button danger"
+                type="button"
+                title="删除快照前需要确认"
+                aria-label="删除快照前需要确认"
+                @click="requestDeleteResearchSnapshot(snapshot.id)"
+              >
                 <Icon name="trash" />
               </button>
             </article>
@@ -80,7 +130,13 @@
       </div>
 
       <div class="sidebar-footer">
-        <button class="nav-button" @click="sidebarCollapsed = !sidebarCollapsed">
+        <button
+          class="nav-button"
+          type="button"
+          :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
+          :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
+          @click="sidebarCollapsed = !sidebarCollapsed"
+        >
           <Icon :name="sidebarCollapsed ? 'expand' : 'collapse'" />
           <span v-if="!sidebarCollapsed">收起侧栏</span>
         </button>
@@ -96,27 +152,60 @@
         <div class="topbar-actions">
           <span class="runtime-pill">{{ runtimeLabel }}</span>
           <span class="path-pill" :title="settings.data_root">{{ compactPath(settings.data_root) }}</span>
-          <button class="resize-reset-button" type="button" title="还原卡片尺寸" @click="resetResizableCards">
-            还原卡片尺寸
-          </button>
+          <div class="resize-reset-actions" :class="{ confirming: confirmingResetResizableCards }">
+            <template v-if="confirmingResetResizableCards">
+              <button class="resize-reset-button" type="button" title="取消还原卡片尺寸" @click="cancelResetResizableCards">
+                取消
+              </button>
+              <button class="resize-reset-button danger" type="button" title="确认还原全部卡片尺寸" @click="confirmResetResizableCards">
+                确认还原
+              </button>
+            </template>
+            <button v-else class="resize-reset-button" type="button" title="还原前需要确认" @click="requestResetResizableCards">
+              还原卡片尺寸
+            </button>
+          </div>
+          <template v-if="confirmingTopbarRefresh">
+            <button class="resize-reset-button" type="button" title="取消刷新当前页面" @click="cancelTopbarRefresh">
+              取消
+            </button>
+            <button class="resize-reset-button danger" type="button" :title="topbarRefreshConfirmText" @click="confirmTopbarRefresh">
+              确认刷新
+            </button>
+          </template>
           <button
+            v-else
             class="icon-button"
+            type="button"
             :disabled="topbarRefreshing"
-            :title="topbarRefreshTitle"
-            :aria-label="topbarRefreshTitle"
-            @click="refreshActiveView"
+            :title="`${topbarRefreshTitle}前需要确认`"
+            :aria-label="`${topbarRefreshTitle}前需要确认`"
+            @click="requestTopbarRefresh"
           >
             <Icon name="refresh" />
           </button>
+          <span v-if="topbarRefreshing" class="action-status inline busy">
+            <i></i>
+            {{ topbarRefreshStatusText }}
+          </span>
+          <span v-else-if="confirmingTopbarRefresh" class="action-status inline warning">
+            <i></i>
+            {{ topbarRefreshConfirmText }}
+          </span>
           <div class="avatar">TD</div>
         </div>
       </header>
 
-      <main>
-        <div v-if="notice" :class="['notice-bar', notice.type]">
+      <main :class="{ 'ai-main': activeView === 'ai' }">
+        <div
+          v-if="notice"
+          :class="['notice-bar', notice.type]"
+          :role="noticeRole(notice)"
+          :aria-live="noticeAriaLive(notice)"
+        >
           <strong>{{ notice.title }}</strong>
           <span>{{ notice.body }}</span>
-          <button @click="notice = null">关闭</button>
+          <button type="button" title="关闭当前提示" @click="notice = null">关闭</button>
         </div>
 
         <section v-if="activeView !== 'ai'" class="ai-command-shell" aria-label="大模型命令框">
@@ -127,34 +216,103 @@
             </div>
             <em>{{ aiConfigReady ? `模型 ${aiSettings.model}` : '未配置模型时使用本地规则规划' }}</em>
           </div>
-          <form class="ai-command-form" @submit.prevent="runAiCommand">
+          <form class="ai-command-form" @submit.prevent="requestRunAiCommand">
             <textarea
               v-model="aiCommandForm.text"
               rows="2"
+              aria-label="大模型命令内容"
               placeholder="例如：帮我选择所有创业板股票；把风险参数调保守；基准60日涨幅设为12%"
+              @input="handleAiCommandInput"
             ></textarea>
-            <button class="btn primary" type="submit" :disabled="runningAiCommand || !aiCommandForm.text.trim()">
+            <button
+              v-if="!confirmingRunAiCommand"
+              class="btn primary"
+              type="submit"
+              :disabled="aiCommandDisabled"
+              :title="aiCommandDisabledReason || '解析命令前需要确认'"
+            >
               <Icon name="sparkles" />
-              {{ runningAiCommand ? '解析中' : '解析并应用' }}
+              {{ runningAiCommand ? '解析中' : '解析命令' }}
             </button>
+            <template v-else>
+              <button class="btn secondary" type="button" title="取消解析当前 AI 命令" @click="cancelRunAiCommand">
+                取消
+              </button>
+              <button
+                class="btn danger"
+                type="button"
+                :disabled="aiCommandDisabled"
+                :title="aiCommandDisabledReason || aiCommandRunConfirmText"
+                @click="confirmRunAiCommand"
+              >
+                确认解析
+              </button>
+            </template>
           </form>
-          <div v-if="aiCommandResult" class="ai-command-result">
+          <div class="action-status" :class="{ busy: runningAiCommand, warning: confirmingRunAiCommand, muted: !runningAiCommand && !aiCommandResult && !confirmingRunAiCommand }">
+            <i></i>
+            <span>{{ aiCommandStatusText }}</span>
+          </div>
+          <div v-if="aiCommandResult" class="ai-command-result" :class="{ warning: aiCommandHasWarnings || aiCommandResultState === 'pending' }">
             <strong>{{ aiCommandResult.summary }}</strong>
             <span v-for="item in aiCommandResult.patches || []" :key="`${item.target}-${item.label}`">{{ item.summary || item.label }}</span>
             <em v-for="item in aiCommandResult.warnings || []" :key="item">{{ item }}</em>
+          </div>
+          <div v-if="aiCommandResultState === 'pending'" class="ai-command-actions">
+            <button class="mini-action" type="button" title="取消应用当前 AI 命令结果" @click="cancelAiCommandApply">
+              取消
+            </button>
+            <button
+              class="mini-action danger"
+              type="button"
+              :disabled="aiCommandApplyDisabled"
+              :title="aiCommandApplyDisabledReason || aiCommandApplyConfirmText"
+              @click="confirmAiCommandApply"
+            >
+              确认应用
+            </button>
           </div>
         </section>
 
         <section v-if="activeView === 'dashboard'" class="view-stack">
           <div class="toolbar-row">
-            <button class="btn primary" :disabled="loadingOverview" @click="loadOverview(true)">
+            <button
+              v-if="!confirmingOverviewRefresh"
+              class="btn primary"
+              type="button"
+              :disabled="overviewRefreshDisabled"
+              :title="overviewRefreshDisabledReason || '扫描缓存前需要确认'"
+              @click="requestOverviewRefresh"
+            >
               <Icon name="database" />
-              扫描缓存
+              {{ loadingOverview ? '扫描中' : '扫描缓存' }}
             </button>
-            <button class="btn secondary" @click="activeView = 'download'">
+            <template v-else>
+              <button class="btn secondary" type="button" title="取消扫描缓存" @click="cancelOverviewRefresh">
+                取消
+              </button>
+              <button
+                class="btn danger"
+                type="button"
+                :disabled="overviewRefreshDisabled"
+                :title="overviewRefreshDisabledReason || overviewRefreshConfirmText"
+                @click="confirmOverviewRefresh"
+              >
+                确认扫描
+              </button>
+            </template>
+            <button class="btn secondary" type="button" @click="activeView = 'download'">
               <Icon name="download" />
               新建下载
             </button>
+            <span v-if="confirmingOverviewRefresh" class="action-status inline warning">
+              <i></i>
+              {{ overviewRefreshConfirmText }}
+            </span>
+            <span v-else-if="overviewRefreshDisabledReason" class="action-status inline busy">
+              <i></i>
+              {{ overviewRefreshDisabledReason }}
+            </span>
             <span v-if="overview && !overview.catalog_exists" class="hint-text">还没有 SQLite 索引，先扫描缓存。</span>
           </div>
 
@@ -200,8 +358,39 @@
 
           <Panel title="最近执行" subtitle="任务">
             <div v-if="latestTask" class="recent-task-card compact" data-resizable-card>
-              <strong>{{ latestTask.status }}</strong>
-              <span>{{ latestTask.id }}</span>
+              <div class="recent-task-main">
+                <strong>{{ taskStatusLabel(latestTask.status) }}</strong>
+                <span>{{ latestTask.id }}</span>
+              </div>
+              <div v-if="taskHasControls(latestTask)" class="task-control-actions latest-task-actions" aria-label="最近任务控制">
+                <button
+                  class="mini-action"
+                  type="button"
+                  :disabled="!taskCanPause(latestTask) || taskControlBusy(latestTask)"
+                  :title="taskPauseTitle(latestTask)"
+                  @click="controlTask(latestTask, 'pause')"
+                >
+                  暂停
+                </button>
+                <button
+                  class="mini-action"
+                  type="button"
+                  :disabled="!taskCanResume(latestTask) || taskControlBusy(latestTask)"
+                  :title="taskResumeTitle(latestTask)"
+                  @click="controlTask(latestTask, 'resume')"
+                >
+                  继续
+                </button>
+                <button
+                  class="mini-action danger"
+                  type="button"
+                  :disabled="!taskCanCancel(latestTask) || taskControlBusy(latestTask)"
+                  :title="taskCancelTitle(latestTask)"
+                  @click="controlTask(latestTask, 'cancel')"
+                >
+                  终止
+                </button>
+              </div>
               <em>{{ latestTask.error || latestTask.finished_at || latestTask.started_at || latestTask.created_at }}</em>
             </div>
             <EmptyState v-else title="暂无任务" body="执行下载后这里展示最近一次任务状态。" />
@@ -210,37 +399,79 @@
 
         <section v-else-if="activeView === 'download'" class="content-grid form-grid">
           <Panel title="下载参数" subtitle="任务配置">
-            <form class="task-form" @submit.prevent="previewPlan">
+            <form class="task-form" @submit.prevent="requestPreviewPlan">
               <label class="span-full symbol-source-field">
                 <div class="field-head">
                   <span>代码来源</span>
                   <div class="field-actions">
-                    <button
-                      class="mini-action"
-                      type="button"
-                      :disabled="loadingSymbolGroups"
-                      @click="refreshShortcutGroup('index')"
-                    >
-                      <Icon name="refresh" />
-                      {{ refreshingSymbolGroup === 'index' ? '刷新中' : '刷新指数' }}
-                    </button>
-                    <button
-                      class="mini-action"
-                      type="button"
-                      :disabled="loadingSymbolGroups"
-                      @click="refreshShortcutGroup('etf')"
-                    >
-                      <Icon name="refresh" />
-                      {{ refreshingSymbolGroup === 'etf' ? '刷新中' : '刷新ETF' }}
-                    </button>
+                    <template v-if="pendingSymbolRefreshTarget === 'index' || pendingSymbolRefreshTarget === 'etf'">
+                      <button class="mini-action" type="button" title="取消刷新代码表" @click="cancelSymbolGroupRefresh">取消</button>
+                      <button
+                        class="mini-action danger"
+                        type="button"
+                        :disabled="pendingSymbolRefreshDisabled"
+                        :title="pendingSymbolRefreshDisabledReason || pendingSymbolRefreshConfirmText"
+                        @click="confirmSymbolGroupRefresh"
+                      >
+                        确认刷新
+                      </button>
+                    </template>
+                    <template v-else>
+                      <button
+                        class="mini-action"
+                        type="button"
+                        :disabled="symbolGroupRefreshDisabled"
+                        :title="symbolGroupRefreshDisabledReason || '刷新指数前需要确认'"
+                        @click="requestSymbolGroupRefresh('index')"
+                      >
+                        <Icon name="refresh" />
+                        {{ refreshingSymbolGroup === 'index' ? '刷新中' : '刷新指数' }}
+                      </button>
+                      <button
+                        class="mini-action"
+                        type="button"
+                        :disabled="symbolGroupRefreshDisabled"
+                        :title="symbolGroupRefreshDisabledReason || '刷新 ETF 前需要确认'"
+                        @click="requestSymbolGroupRefresh('etf')"
+                      >
+                        <Icon name="refresh" />
+                        {{ refreshingSymbolGroup === 'etf' ? '刷新中' : '刷新ETF' }}
+                      </button>
+                    </template>
                   </div>
                 </div>
-                <select v-model="selectedGroup" :disabled="loadingSymbolGroups" @change="applySymbolGroup">
+                <span v-if="pendingSymbolRefreshTarget === 'index' || pendingSymbolRefreshTarget === 'etf'" class="action-status inline warning symbol-refresh-status">
+                  <i></i>
+                  {{ pendingSymbolRefreshConfirmText }}
+                </span>
+                <select
+                  :value="pendingDownloadSymbolGroup || selectedGroup"
+                  :disabled="loadingSymbolGroups || Boolean(pendingDownloadSymbolGroup)"
+                  @change="requestApplySymbolGroup"
+                >
                   <option value="custom">自定义</option>
                   <option v-for="group in config?.symbol_groups || []" :key="group.name" :value="group.name">
                     {{ group.name }} · {{ group.symbols.length }}只
                   </option>
                 </select>
+                <div v-if="pendingDownloadSymbolGroup" class="symbol-group-confirm-row">
+                  <span class="action-status inline warning">
+                    <i></i>
+                    {{ downloadSymbolGroupConfirmText }}
+                  </span>
+                  <button class="mini-action" type="button" title="取消应用代码来源" @click="cancelApplySymbolGroup">
+                    取消
+                  </button>
+                  <button
+                    class="mini-action danger"
+                    type="button"
+                    :disabled="downloadSymbolGroupConfirmDisabled"
+                    :title="downloadSymbolGroupConfirmDisabledReason || downloadSymbolGroupConfirmText"
+                    @click="confirmApplySymbolGroup"
+                  >
+                    确认应用
+                  </button>
+                </div>
               </label>
 
               <div class="quick-update span-full">
@@ -250,27 +481,78 @@
                 </div>
                 <label>
                   <span>近 N 交易日</span>
-                  <input v-model.number="allAssetsLookbackDays" type="number" min="1" step="1" />
+                  <input
+                    v-model.number="allAssetsLookbackDays"
+                    type="number"
+                    min="1"
+                    step="1"
+                    :disabled="confirmingAllAssetsUpdate"
+                  />
                 </label>
-                <button
-                  class="btn secondary"
-                  type="button"
-                  :disabled="!allAssetSymbols.length"
-                  @click="applyAllAssetsRecentUpdate"
-                >
-                  <Icon name="refresh" />
-                  应用全资产
-                </button>
+                <div class="quick-update-actions">
+                  <button
+                    v-show="!confirmingAllAssetsUpdate"
+                    class="btn secondary quick-update-primary"
+                    type="button"
+                    :disabled="allAssetsUpdateDisabled"
+                    :title="allAssetsUpdateDisabledReason || '应用全资产前需要确认'"
+                    @click="requestAllAssetsRecentUpdate"
+                  >
+                    <Icon name="refresh" />
+                    应用全资产
+                  </button>
+                  <button
+                    v-show="confirmingAllAssetsUpdate"
+                    class="btn secondary"
+                    type="button"
+                    title="取消应用全资产"
+                    @click="cancelAllAssetsRecentUpdate"
+                  >
+                    取消
+                  </button>
+                  <button
+                    v-show="confirmingAllAssetsUpdate"
+                    class="btn danger"
+                    type="button"
+                    :disabled="allAssetsUpdateDisabled"
+                    :title="allAssetsUpdateDisabledReason || allAssetsUpdateConfirmText"
+                    @click="confirmAllAssetsRecentUpdate"
+                  >
+                    确认应用
+                  </button>
+                </div>
+                <span v-if="confirmingAllAssetsUpdate" class="action-status inline warning quick-update-status">
+                  <i></i>
+                  {{ allAssetsUpdateConfirmText }}
+                </span>
               </div>
 
               <div class="span-full timeframe-picker">
                 <div class="field-head">
                   <span>周期</span>
                   <div class="field-actions">
-                    <button class="mini-action" type="button" @click="selectAllDownloadTimeframes">全周期</button>
-                    <button class="mini-action" type="button" @click="selectDefaultDownloadTimeframe">默认</button>
+                    <template v-if="pendingDownloadTimeframeAction">
+                      <button class="mini-action" type="button" title="取消下载周期快捷修改" @click="cancelDownloadTimeframeAction">取消</button>
+                      <button
+                        class="mini-action danger"
+                        type="button"
+                        :disabled="downloadTimeframePendingDisabled"
+                        :title="downloadTimeframePendingDisabledReason || downloadTimeframePendingText"
+                        @click="confirmDownloadTimeframeAction"
+                      >
+                        确认应用
+                      </button>
+                    </template>
+                    <template v-else>
+                      <button class="mini-action" type="button" title="选择全周期前需要确认" @click="requestDownloadTimeframeAction('all')">全周期</button>
+                      <button class="mini-action" type="button" title="恢复默认周期前需要确认" @click="requestDownloadTimeframeAction('default')">默认</button>
+                    </template>
                   </div>
                 </div>
+                <span v-if="pendingDownloadTimeframeAction" class="action-status inline warning timeframe-confirm-status">
+                  <i></i>
+                  {{ downloadTimeframePendingText }}
+                </span>
                 <div class="timeframe-options">
                   <label
                     v-for="timeframe in downloadTimeframeOptions"
@@ -289,7 +571,7 @@
 
               <label class="span-full">
                 <span>标的代码</span>
-                <textarea v-model="symbolsText" rows="5" placeholder="000001.SZ, 600519.SH"></textarea>
+                <textarea v-model="symbolsText" rows="5" placeholder="000001.SZ, 600519.SH" @input="handleDownloadSymbolsInput"></textarea>
               </label>
 
               <div class="inline-fields span-full">
@@ -304,15 +586,35 @@
               </div>
               <div class="date-shortcuts span-full" aria-label="日期快捷选项">
                 <span>快捷</span>
-                <button
-                  v-for="shortcut in DATE_RANGE_SHORTCUTS"
-                  :key="shortcut.key"
-                  type="button"
-                  :class="['date-shortcut', { active: isDateShortcutActive(settings, shortcut.key) }]"
-                  @click="applyDateShortcut(settings, shortcut.key)"
-                >
-                  {{ shortcut.label }}
-                </button>
+                <template v-if="pendingDownloadDateShortcut">
+                  <button class="date-shortcut" type="button" title="取消日期快捷修改" @click="cancelDownloadDateShortcut">取消</button>
+                  <button
+                    class="date-shortcut danger"
+                    type="button"
+                    :disabled="downloadDateShortcutPendingDisabled"
+                    :title="downloadDateShortcutPendingDisabledReason || downloadDateShortcutPendingText"
+                    @click="confirmDownloadDateShortcut"
+                  >
+                    确认应用
+                  </button>
+                </template>
+                <template v-else>
+                  <button
+                    v-for="shortcut in DATE_RANGE_SHORTCUTS"
+                    :key="shortcut.key"
+                    type="button"
+                    :class="['date-shortcut', { active: isDateShortcutActive(settings, shortcut.key) }]"
+                    :aria-pressed="isDateShortcutActive(settings, shortcut.key)"
+                    title="应用日期快捷前需要确认"
+                    @click="requestDownloadDateShortcut(shortcut.key)"
+                  >
+                    {{ shortcut.label }}
+                  </button>
+                </template>
+                <span v-if="pendingDownloadDateShortcut" class="action-status inline warning download-date-shortcut-status">
+                  <i></i>
+                  {{ downloadDateShortcutPendingText }}
+                </span>
               </div>
 
               <label>
@@ -337,7 +639,13 @@
                 <span>行情根目录</span>
                 <div class="path-control">
                   <input v-model="settings.data_root" type="text" />
-                  <button class="btn secondary" type="button" :disabled="pickingDirectory !== ''" @click="pickDirectory('data_root')">
+                  <button
+                    class="btn secondary"
+                    type="button"
+                    :disabled="directoryPickDisabled"
+                    :title="directoryPickTitle('data_root')"
+                    @click="pickDirectory('data_root')"
+                  >
                     <Icon name="folder" />
                     {{ pickingDirectory === 'data_root' ? '选择中' : '选择文件夹' }}
                   </button>
@@ -348,22 +656,72 @@
                 <span>TDX PYPlugins 或根目录</span>
                 <div class="path-control">
                   <input v-model="settings.tdx_path" type="text" />
-                  <button class="btn secondary" type="button" :disabled="pickingDirectory !== ''" @click="pickDirectory('tdx_path')">
+                  <button
+                    class="btn secondary"
+                    type="button"
+                    :disabled="directoryPickDisabled"
+                    :title="directoryPickTitle('tdx_path')"
+                    @click="pickDirectory('tdx_path')"
+                  >
                     <Icon name="folder" />
                     {{ pickingDirectory === 'tdx_path' ? '选择中' : '选择文件夹' }}
                   </button>
                 </div>
               </label>
 
+              <div class="action-readiness span-full" :class="{ warning: Boolean(downloadActionWarning) }">
+                <strong>{{ downloadActionReady ? '可预览下载计划' : '请先补齐参数' }}</strong>
+                <span>{{ downloadActionStatusText }}</span>
+              </div>
+
               <div class="form-actions span-full">
-                <button class="btn secondary" type="submit" :disabled="planning">
+                <template v-if="confirmingPreviewPlan">
+                  <button class="btn secondary" type="button" title="取消预览下载计划" @click="cancelPreviewPlan">取消</button>
+                  <button
+                    class="btn danger"
+                    type="button"
+                    :disabled="previewPlanDisabled"
+                    :title="previewPlanDisabledReason || previewPlanConfirmText"
+                    @click="confirmPreviewPlan"
+                  >
+                    确认预览
+                  </button>
+                </template>
+                <button
+                  v-else
+                  class="btn secondary"
+                  type="submit"
+                  :disabled="previewPlanDisabled"
+                  :title="previewPlanDisabledReason || '预览下载计划前需要确认'"
+                >
                   <Icon name="clipboard" />
-                  预览计划
+                  {{ planning ? '生成计划中' : '预览计划' }}
                 </button>
-                <button class="btn danger" type="button" :disabled="downloading" @click="startDownload">
+                <template v-if="confirmingStartDownload">
+                  <button class="btn secondary" type="button" :disabled="downloading" title="取消执行下载" @click="cancelStartDownload">
+                    取消
+                  </button>
+                  <button class="btn danger" type="button" :disabled="startDownloadDisabled" :title="startDownloadDisabledReason || startDownloadConfirmTitle" @click="confirmStartDownload">
+                    <Icon name="download" />
+                    {{ downloading ? '提交中' : '确认执行' }}
+                  </button>
+                </template>
+                <button v-else class="btn danger" type="button" :disabled="startDownloadDisabled" :title="startDownloadDisabledReason || startDownloadRequestTitle" @click="requestStartDownload">
                   <Icon name="download" />
                   执行下载
                 </button>
+                <span v-if="planning || downloading" class="action-status inline busy">
+                  <i></i>
+                  {{ downloadBusyStatusText }}
+                </span>
+                <span v-else-if="confirmingPreviewPlan" class="action-status inline warning">
+                  <i></i>
+                  {{ previewPlanConfirmText }}
+                </span>
+                <span v-else-if="confirmingStartDownload" class="action-status inline warning download-confirm-status">
+                  <i></i>
+                  {{ startDownloadConfirmStatusText }}
+                </span>
               </div>
             </form>
           </Panel>
@@ -389,26 +747,234 @@
                       :key="size"
                       type="button"
                       :class="['page-size-button', { active: planPagination.pageSize === size }]"
+                      :aria-pressed="planPagination.pageSize === size"
+                      :title="pageSizeButtonTitle(size, planPagination.pageSize, '下载计划')"
                       @click="setPlanPageSize(size)"
                     >
                       {{ size }}
                     </button>
                   </div>
                   <div class="pagination-controls">
-                    <button type="button" :disabled="planPagination.page <= 1" @click="goPlanPage(1)">首页</button>
-                    <button type="button" :disabled="planPagination.page <= 1" @click="goPlanPage(planPagination.page - 1)">上一页</button>
-                    <span>{{ planPagination.page }} / {{ planTotalPages }}</span>
-                    <button type="button" :disabled="planPagination.page >= planTotalPages" @click="goPlanPage(planPagination.page + 1)">下一页</button>
-                    <button type="button" :disabled="planPagination.page >= planTotalPages" @click="goPlanPage(planTotalPages)">末页</button>
+                    <button
+                      type="button"
+                      :disabled="paginationActionDisabled('first', planPagination.page, planTotalPages)"
+                      :aria-disabled="paginationActionDisabled('first', planPagination.page, planTotalPages)"
+                      :aria-label="paginationActionTitle('first', planPagination.page, planTotalPages, '下载计划')"
+                      :title="paginationActionTitle('first', planPagination.page, planTotalPages, '下载计划')"
+                      @click="goPlanPage(1)"
+                    >
+                      首页
+                    </button>
+                    <button
+                      type="button"
+                      :disabled="paginationActionDisabled('prev', planPagination.page, planTotalPages)"
+                      :aria-disabled="paginationActionDisabled('prev', planPagination.page, planTotalPages)"
+                      :aria-label="paginationActionTitle('prev', planPagination.page, planTotalPages, '下载计划')"
+                      :title="paginationActionTitle('prev', planPagination.page, planTotalPages, '下载计划')"
+                      @click="goPlanPage(planPagination.page - 1)"
+                    >
+                      上一页
+                    </button>
+                    <span class="pagination-status" aria-live="polite">{{ planPagination.page }} / {{ planTotalPages }}</span>
+                    <button
+                      type="button"
+                      :disabled="paginationActionDisabled('next', planPagination.page, planTotalPages)"
+                      :aria-disabled="paginationActionDisabled('next', planPagination.page, planTotalPages)"
+                      :aria-label="paginationActionTitle('next', planPagination.page, planTotalPages, '下载计划')"
+                      :title="paginationActionTitle('next', planPagination.page, planTotalPages, '下载计划')"
+                      @click="goPlanPage(planPagination.page + 1)"
+                    >
+                      下一页
+                    </button>
+                    <button
+                      type="button"
+                      :disabled="paginationActionDisabled('last', planPagination.page, planTotalPages)"
+                      :aria-disabled="paginationActionDisabled('last', planPagination.page, planTotalPages)"
+                      :aria-label="paginationActionTitle('last', planPagination.page, planTotalPages, '下载计划')"
+                      :title="paginationActionTitle('last', planPagination.page, planTotalPages, '下载计划')"
+                      @click="goPlanPage(planTotalPages)"
+                    >
+                      末页
+                    </button>
                   </div>
                 </div>
               </div>
-              <DataTable :rows="displayPlanRows" :columns="planColumns" empty="点击“预览计划”后显示。" />
+              <DataTable
+                :rows="displayPlanRows"
+                :columns="planColumns"
+                aria-label="下载计划"
+                empty="点击“预览计划”后显示。"
+                empty-body="系统会按当前标的、周期和交易日窗口计算本地数据缺口。"
+                :loading="planning"
+                loading-title="正在生成下载计划"
+                loading-text="正在比较任务交易日和本地缓存交易日，请稍候。"
+              />
             </Panel>
           </div>
         </section>
 
         <section v-else-if="activeView === 'cache'" class="view-stack">
+          <section class="content-grid two">
+            <Panel title="股票数据表" subtitle="K线 + 指标列">
+              <form class="task-form" @submit.prevent="requestLoadPriceTable">
+                <label>
+                  <span>股票代码</span>
+                  <input v-model="priceTableForm.symbols" type="text" placeholder="000001.SZ,300750.SZ" />
+                </label>
+                <label>
+                  <span>周期</span>
+                  <select v-model="priceTableForm.timeframe">
+                    <option v-for="timeframe in config?.timeframes || ['1d']" :key="timeframe" :value="timeframe">{{ timeframe }}</option>
+                  </select>
+                </label>
+                <label>
+                  <span>开始</span>
+                  <input v-model="priceTableForm.start" type="date" />
+                </label>
+                <label>
+                  <span>结束</span>
+                  <input v-model="priceTableForm.end" type="date" />
+                </label>
+                <label class="span-full">
+                  <span>指标列</span>
+                  <div class="indicator-chip-row">
+                    <button
+                      v-for="formula in indicatorFormulaRows"
+                      :key="formula.formula_id"
+                      type="button"
+                      :class="['indicator-chip', { active: isIndicatorSelected(formula.formula_id) }]"
+                      @click="togglePriceIndicator(formula.formula_id)"
+                    >
+                      {{ formula.name || formula.formula_id }}
+                    </button>
+                  </div>
+                </label>
+                <div class="form-actions span-full">
+                  <template v-if="confirmingLoadPriceTable">
+                    <button class="btn secondary" type="button" title="取消读取股票数据表" @click="cancelLoadPriceTable">取消</button>
+                    <button
+                      class="btn danger"
+                      type="button"
+                      :disabled="priceTableActionDisabled"
+                      :title="priceTableActionDisabledReason || priceTableLoadConfirmText"
+                      @click="confirmLoadPriceTable"
+                    >
+                      确认读取
+                    </button>
+                  </template>
+                  <button
+                    v-else
+                    class="btn primary"
+                    type="submit"
+                    :disabled="priceTableActionDisabled"
+                    :title="priceTableActionDisabledReason || '读取股票数据表前需要确认'"
+                  >
+                    <Icon name="database" />
+                    {{ loadingPriceTable ? '读取中' : '读取数据表' }}
+                  </button>
+                  <template v-if="confirmingPriceTableCommonIndicators">
+                    <button class="btn secondary" type="button" title="取消应用常用均线" @click="cancelPriceTableCommonIndicators">取消</button>
+                    <button class="btn danger" type="button" :title="priceTableCommonIndicatorsConfirmText" @click="confirmPriceTableCommonIndicators">
+                      确认均线
+                    </button>
+                  </template>
+                  <button v-else class="btn secondary" type="button" title="应用常用均线前需要确认" @click="requestPriceTableCommonIndicators">
+                    常用均线
+                  </button>
+                </div>
+                <div class="action-readiness span-full" :class="{ warning: Boolean((priceTableActionDisabledReason && !loadingPriceTable) || confirmingLoadPriceTable || confirmingPriceTableCommonIndicators) }">
+                  <strong>{{ loadingPriceTable ? '读取中' : confirmingLoadPriceTable ? '待确认' : confirmingPriceTableCommonIndicators ? '待确认' : priceTableActionDisabledReason ? '待补充' : '可读取' }}</strong>
+                  <span>{{ confirmingLoadPriceTable ? priceTableLoadConfirmText : confirmingPriceTableCommonIndicators ? priceTableCommonIndicatorsConfirmText : priceTableActionStatusText }}</span>
+                </div>
+              </form>
+            </Panel>
+
+            <Panel title="指标公式" subtitle="导入 / 映射 / 计算">
+              <form class="task-form" @submit.prevent="requestImportIndicatorFormula">
+                <label>
+                  <span>公式前缀</span>
+                  <input v-model="indicatorImportForm.formula_id_prefix" type="text" placeholder="可选" :disabled="confirmingImportIndicatorFormula" />
+                </label>
+                <label>
+                  <span>映射资产</span>
+                  <select v-model="indicatorMappingForm.asset_type" :disabled="confirmingImportIndicatorFormula">
+                    <option value="">全部资产</option>
+                    <option value="stock">个股</option>
+                    <option value="etf">ETF</option>
+                    <option value="index">指数</option>
+                  </select>
+                </label>
+                <label class="span-full">
+                  <span>通达信公式文本</span>
+                  <textarea v-model="indicatorImportForm.text" rows="5" placeholder="例如：M20:MA(CLOSE,20);" :disabled="confirmingImportIndicatorFormula"></textarea>
+                </label>
+                <div class="form-actions span-full">
+                  <template v-if="confirmingImportIndicatorFormula">
+                    <button class="btn secondary" type="button" title="取消导入指标公式" @click="cancelImportIndicatorFormula">取消</button>
+                    <button class="btn danger" type="button" :disabled="indicatorImportDisabled" :title="indicatorImportDisabledReason || indicatorImportConfirmText" @click="confirmImportIndicatorFormula">
+                      确认导入
+                    </button>
+                  </template>
+                  <template v-else-if="confirmingMapSelectedIndicators">
+                    <button class="btn secondary" type="button" title="取消绑定选中指标" @click="cancelMapSelectedIndicators">取消</button>
+                    <button class="btn danger" type="button" :disabled="indicatorMappingDisabled" :title="indicatorMappingDisabledReason || indicatorMappingConfirmText" @click="confirmMapSelectedIndicators">
+                      确认绑定
+                    </button>
+                  </template>
+                  <template v-else-if="confirmingComputeSelectedIndicators">
+                    <button class="btn secondary" type="button" title="取消计算选中指标" @click="cancelComputeSelectedIndicators">取消</button>
+                    <button class="btn danger" type="button" :disabled="indicatorComputeDisabled" :title="indicatorComputeDisabledReason || indicatorComputeConfirmText" @click="confirmComputeSelectedIndicators">
+                      确认计算
+                    </button>
+                  </template>
+                  <button v-else class="btn primary" type="submit" :disabled="indicatorImportDisabled" :title="indicatorImportDisabledReason || '导入公式前需要确认'">
+                    <Icon name="download" />
+                    {{ importingIndicatorFormula ? '导入中' : '导入公式' }}
+                  </button>
+                  <button
+                    v-if="!indicatorConfirmingAction"
+                    class="btn secondary"
+                    type="button"
+                    :disabled="indicatorMappingDisabled"
+                    :title="indicatorMappingDisabledReason || '绑定选中指标前需要确认'"
+                    @click="requestMapSelectedIndicators"
+                  >
+                    <Icon name="layers" />
+                    {{ mappingIndicators ? '绑定中' : '绑定选中指标' }}
+                  </button>
+                  <button
+                    v-if="!indicatorConfirmingAction"
+                    class="btn secondary"
+                    type="button"
+                    :disabled="indicatorComputeDisabled"
+                    :title="indicatorComputeDisabledReason || '计算选中指标前需要确认'"
+                    @click="requestComputeSelectedIndicators"
+                  >
+                    <Icon name="activity" />
+                    {{ computingIndicators ? '计算中' : '计算选中指标' }}
+                  </button>
+                </div>
+                <div class="action-readiness span-full" :class="{ warning: Boolean(indicatorActionWarning) || Boolean(indicatorConfirmingAction) }">
+                  <strong>{{ indicatorActionStateLabel }}</strong>
+                  <span>{{ indicatorConfirmingActionText || indicatorActionStatusText }}</span>
+                </div>
+              </form>
+            </Panel>
+          </section>
+
+          <Panel title="股票数据明细" :subtitle="priceTableSummary">
+            <DataTable
+              :rows="displayPriceTableRows"
+              :columns="priceTableColumns"
+              aria-label="股票数据明细"
+              empty="读取股票数据表后显示。"
+              empty-body="填写代码与日期后读取；如选择指标，会同步展示指标列。"
+              :loading="loadingPriceTable"
+              loading-title="正在读取股票数据表"
+              loading-text="正在读取 K 线、补算缺失指标并刷新表格。"
+            />
+          </Panel>
+
           <Panel title="本地缓存" subtitle="SQLite catalog">
             <div class="filter-row">
               <label>
@@ -449,25 +1015,51 @@
                     :key="size"
                     type="button"
                     :class="['page-size-button', { active: cachePagination.pageSize === size }]"
+                    :aria-pressed="cachePagination.pageSize === size"
+                    :title="pageSizeButtonTitle(size, cachePagination.pageSize, '缓存资产')"
                     @click="setCachePageSize(size)"
                   >
                     {{ size }}
                   </button>
                 </div>
                 <div class="pagination-controls">
-                  <button type="button" :disabled="cachePagination.page <= 1" @click="goCachePage(1)">首页</button>
-                  <button type="button" :disabled="cachePagination.page <= 1" @click="goCachePage(cachePagination.page - 1)">上一页</button>
-                  <span>{{ cachePagination.page }} / {{ cacheTotalPages }}</span>
                   <button
                     type="button"
-                    :disabled="cachePagination.page >= cacheTotalPages"
+                    :disabled="paginationActionDisabled('first', cachePagination.page, cacheTotalPages)"
+                    :aria-disabled="paginationActionDisabled('first', cachePagination.page, cacheTotalPages)"
+                    :aria-label="paginationActionTitle('first', cachePagination.page, cacheTotalPages, '缓存资产')"
+                    :title="paginationActionTitle('first', cachePagination.page, cacheTotalPages, '缓存资产')"
+                    @click="goCachePage(1)"
+                  >
+                    首页
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="paginationActionDisabled('prev', cachePagination.page, cacheTotalPages)"
+                    :aria-disabled="paginationActionDisabled('prev', cachePagination.page, cacheTotalPages)"
+                    :aria-label="paginationActionTitle('prev', cachePagination.page, cacheTotalPages, '缓存资产')"
+                    :title="paginationActionTitle('prev', cachePagination.page, cacheTotalPages, '缓存资产')"
+                    @click="goCachePage(cachePagination.page - 1)"
+                  >
+                    上一页
+                  </button>
+                  <span class="pagination-status" aria-live="polite">{{ cachePagination.page }} / {{ cacheTotalPages }}</span>
+                  <button
+                    type="button"
+                    :disabled="paginationActionDisabled('next', cachePagination.page, cacheTotalPages)"
+                    :aria-disabled="paginationActionDisabled('next', cachePagination.page, cacheTotalPages)"
+                    :aria-label="paginationActionTitle('next', cachePagination.page, cacheTotalPages, '缓存资产')"
+                    :title="paginationActionTitle('next', cachePagination.page, cacheTotalPages, '缓存资产')"
                     @click="goCachePage(cachePagination.page + 1)"
                   >
                     下一页
                   </button>
                   <button
                     type="button"
-                    :disabled="cachePagination.page >= cacheTotalPages"
+                    :disabled="paginationActionDisabled('last', cachePagination.page, cacheTotalPages)"
+                    :aria-disabled="paginationActionDisabled('last', cachePagination.page, cacheTotalPages)"
+                    :aria-label="paginationActionTitle('last', cachePagination.page, cacheTotalPages, '缓存资产')"
+                    :title="paginationActionTitle('last', cachePagination.page, cacheTotalPages, '缓存资产')"
                     @click="goCachePage(cacheTotalPages)"
                   >
                     末页
@@ -475,26 +1067,40 @@
                 </div>
               </div>
             </div>
-            <DataTable :rows="displayCacheRows" :columns="cacheColumns" empty="暂无匹配缓存记录。" />
+            <DataTable :rows="displayCacheRows" :columns="cacheColumns" aria-label="本地缓存资产" empty="暂无匹配缓存记录。" />
           </Panel>
         </section>
 
         <section v-else-if="activeView === 'research'" class="view-stack">
-          <div class="research-tabs">
+          <div class="research-tabs" role="tablist" aria-label="研究工具页签">
             <button
               v-for="tab in researchTabs"
               :key="tab.key"
+              type="button"
               :class="['research-tab', { active: activeResearchTab === tab.key }]"
+              role="tab"
+              :id="researchTabId(tab.key)"
+              :aria-selected="activeResearchTab === tab.key"
+              :aria-controls="researchPanelId(tab.key)"
+              :tabindex="activeResearchTab === tab.key ? 0 : -1"
+              :title="`切换到${tab.label}`"
               @click="activeResearchTab = tab.key"
+              @keydown="handleResearchTabKeydown($event, tab.key)"
             >
               <Icon :name="tab.icon" />
               <span>{{ tab.label }}</span>
             </button>
           </div>
 
-          <section v-if="activeResearchTab === 'history'" class="content-grid two">
+          <section
+            v-if="activeResearchTab === 'history'"
+            :id="researchPanelId('history')"
+            class="content-grid two"
+            role="tabpanel"
+            :aria-labelledby="researchTabId('history')"
+          >
             <Panel title="历史时序相似" subtitle="单标的">
-              <form class="task-form" @submit.prevent="runHistorySearch">
+              <form class="task-form" @submit.prevent="requestRunHistorySearch">
                 <label>
                   <span>标的代码</span>
                   <input v-model="historyForm.symbol" type="text" />
@@ -511,15 +1117,29 @@
                 </div>
                 <div class="date-shortcuts span-full" aria-label="历史相似日期快捷选项">
                   <span>快捷</span>
-                  <button
-                    v-for="shortcut in DATE_RANGE_SHORTCUTS"
-                    :key="shortcut.key"
-                    type="button"
-                    :class="['date-shortcut', { active: isHistoryDateShortcutActive(shortcut.key) }]"
-                    @click="applyHistoryDateShortcut(shortcut.key)"
-                  >
-                    {{ shortcut.label }}
-                  </button>
+                  <template v-if="pendingResearchDateShortcut?.target === 'history'">
+                    <button class="date-shortcut" type="button" title="取消历史相似日期快捷修改" @click="cancelResearchDateShortcut">取消</button>
+                    <button class="date-shortcut danger" type="button" :title="researchDateShortcutPendingText" @click="confirmResearchDateShortcut">
+                      确认应用
+                    </button>
+                  </template>
+                  <template v-else>
+                    <button
+                      v-for="shortcut in DATE_RANGE_SHORTCUTS"
+                      :key="shortcut.key"
+                      type="button"
+                      :class="['date-shortcut', { active: isHistoryDateShortcutActive(shortcut.key) }]"
+                      :aria-pressed="isHistoryDateShortcutActive(shortcut.key)"
+                      title="应用历史相似日期快捷前需要确认"
+                      @click="requestResearchDateShortcut('history', shortcut.key)"
+                    >
+                      {{ shortcut.label }}
+                    </button>
+                  </template>
+                  <span v-if="pendingResearchDateShortcut?.target === 'history'" class="action-status inline warning research-date-shortcut-status">
+                    <i></i>
+                    {{ researchDateShortcutPendingText }}
+                  </span>
                 </div>
                 <label>
                   <span>窗口K数备用</span>
@@ -546,14 +1166,46 @@
                   <input v-model="historyForm.forward_windows" type="text" />
                 </label>
                 <div class="form-actions span-full">
-                  <button class="btn primary" type="submit" :disabled="runningResearch === 'history'">
+                  <template v-if="confirmingRunHistorySearch">
+                    <button class="btn secondary" type="button" title="取消历史相似搜索" @click="cancelRunHistorySearch">
+                      取消
+                    </button>
+                    <button
+                      class="btn danger"
+                      type="button"
+                      :disabled="researchActionDisabled('history')"
+                      :title="researchActionDisabledReason('history') || historySearchConfirmText"
+                      @click="confirmRunHistorySearch"
+                    >
+                      确认搜索
+                    </button>
+                  </template>
+                  <button
+                    v-else
+                    class="btn primary"
+                    type="submit"
+                    :disabled="researchActionDisabled('history')"
+                    :title="researchActionDisabledReason('history') || '开始历史相似搜索前需要确认'"
+                  >
                     <Icon name="activity" />
-                    开始搜索
+                    {{ runningResearch === 'history' ? '搜索中' : '开始搜索' }}
                   </button>
-                  <button class="btn secondary" type="button" :disabled="!historyResult" @click="saveResearchSnapshot('history')">
+                  <button class="btn secondary" type="button" :disabled="resultActionDisabled('history')" :title="resultActionDisabledReason('history') || '保存当前历史相似结果到本机快照'" @click="saveResearchSnapshot('history')">
                     <Icon name="save" />
                     保存快照
                   </button>
+                  <span v-if="runningResearch === 'history'" class="action-status inline busy">
+                    <i></i>
+                    {{ researchBusyStatusText }}
+                  </span>
+                  <span v-else-if="confirmingRunHistorySearch" class="action-status inline warning">
+                    <i></i>
+                    {{ historySearchConfirmText }}
+                  </span>
+                  <span v-else-if="resultActionDisabledReason('history')" class="action-status inline warning">
+                    <i></i>
+                    {{ resultActionDisabledReason('history') }}
+                  </span>
                 </div>
               </form>
               <div v-if="historyChartItems.length" class="research-kline-section">
@@ -568,7 +1220,7 @@
             </Panel>
 
             <Panel title="历史匹配结果" subtitle="按综合相似度排序">
-              <DataTable :rows="displayHistoryRows" :columns="historyColumns" empty="暂无历史匹配结果。" />
+              <DataTable :rows="displayHistoryRows" :columns="historyColumns" aria-label="历史匹配结果" empty="暂无历史匹配结果。" />
               <div v-if="historyStatsRows.length" class="history-stats-block">
                 <div class="history-stat-strip">
                   <div v-for="row in historyStatsRows" :key="row.label">
@@ -581,15 +1233,22 @@
                   v-if="historyForwardStats.length"
                   :rows="historyForwardStats"
                   :columns="historyForwardStatColumns"
+                  aria-label="历史前瞻统计"
                   empty="暂无前瞻统计。"
                 />
               </div>
             </Panel>
           </section>
 
-          <section v-else-if="activeResearchTab === 'cross'" class="content-grid two">
+          <section
+            v-else-if="activeResearchTab === 'cross'"
+            :id="researchPanelId('cross')"
+            class="content-grid two"
+            role="tabpanel"
+            :aria-labelledby="researchTabId('cross')"
+          >
             <Panel title="横截面相似" :subtitle="crossSearchModeLabel">
-              <form class="task-form" @submit.prevent="runCrossSectionSearch">
+              <form class="task-form" @submit.prevent="requestRunCrossSectionSearch">
                 <label>
                   <span>目标标的</span>
                   <input v-model="crossForm.target_symbol" type="text" />
@@ -622,15 +1281,29 @@
                   </div>
                   <div class="date-shortcuts" aria-label="目标日期快捷选项">
                     <span>目标快捷</span>
-                    <button
-                      v-for="shortcut in DATE_RANGE_SHORTCUTS"
-                      :key="shortcut.key"
-                      type="button"
-                      :class="['date-shortcut', { active: isDateShortcutActive(crossForm, shortcut.key) }]"
-                      @click="applyDateShortcut(crossForm, shortcut.key)"
-                    >
-                      {{ shortcut.label }}
-                    </button>
+                    <template v-if="pendingResearchDateShortcut?.target === 'crossTarget'">
+                      <button class="date-shortcut" type="button" title="取消目标日期快捷修改" @click="cancelResearchDateShortcut">取消</button>
+                      <button class="date-shortcut danger" type="button" :title="researchDateShortcutPendingText" @click="confirmResearchDateShortcut">
+                        确认应用
+                      </button>
+                    </template>
+                    <template v-else>
+                      <button
+                        v-for="shortcut in DATE_RANGE_SHORTCUTS"
+                        :key="shortcut.key"
+                        type="button"
+                        :class="['date-shortcut', { active: isDateShortcutActive(crossForm, shortcut.key) }]"
+                        :aria-pressed="isDateShortcutActive(crossForm, shortcut.key)"
+                        title="应用目标日期快捷前需要确认"
+                        @click="requestResearchDateShortcut('crossTarget', shortcut.key)"
+                      >
+                        {{ shortcut.label }}
+                      </button>
+                    </template>
+                    <span v-if="pendingResearchDateShortcut?.target === 'crossTarget'" class="action-status inline warning research-date-shortcut-status">
+                      <i></i>
+                      {{ researchDateShortcutPendingText }}
+                    </span>
                   </div>
                 </div>
                 <div class="field-cluster span-full" :class="{ muted: crossForm.search_mode !== 'traversal' }">
@@ -641,25 +1314,53 @@
                   <div class="inline-fields">
                     <label>
                       <span>候选开始</span>
-                      <input v-model="crossForm.traversal_start" type="date" :disabled="crossForm.search_mode !== 'traversal'" />
+                      <input
+                        v-model="crossForm.traversal_start"
+                        type="date"
+                        :disabled="Boolean(crossCandidateRangeDisabledReason)"
+                        :title="crossCandidateRangeDisabledReason || '设置候选搜索起始日期'"
+                      />
                     </label>
                     <label>
                       <span>候选结束</span>
-                      <input v-model="crossForm.traversal_end" type="date" :disabled="crossForm.search_mode !== 'traversal'" />
+                      <input
+                        v-model="crossForm.traversal_end"
+                        type="date"
+                        :disabled="Boolean(crossCandidateRangeDisabledReason)"
+                        :title="crossCandidateRangeDisabledReason || '设置候选搜索结束日期'"
+                      />
                     </label>
                   </div>
                   <div class="date-shortcuts" aria-label="候选日期快捷选项">
                     <span>候选快捷</span>
-                    <button
-                      v-for="shortcut in DATE_RANGE_SHORTCUTS"
-                      :key="shortcut.key"
-                      type="button"
-                      :disabled="crossForm.search_mode !== 'traversal'"
-                      :class="['date-shortcut', { active: isCandidateDateShortcutActive(shortcut.key) }]"
-                      @click="applyCandidateDateShortcut(shortcut.key)"
-                    >
-                      {{ shortcut.label }}
-                    </button>
+                    <template v-if="pendingResearchDateShortcut?.target === 'crossCandidate'">
+                      <button class="date-shortcut" type="button" title="取消候选日期快捷修改" @click="cancelResearchDateShortcut">取消</button>
+                      <button class="date-shortcut danger" type="button" :title="researchDateShortcutPendingText" @click="confirmResearchDateShortcut">
+                        确认应用
+                      </button>
+                    </template>
+                    <template v-else>
+                      <button
+                        v-for="shortcut in DATE_RANGE_SHORTCUTS"
+                        :key="shortcut.key"
+                        type="button"
+                        :disabled="Boolean(crossCandidateRangeDisabledReason)"
+                        :class="['date-shortcut', { active: isCandidateDateShortcutActive(shortcut.key) }]"
+                        :aria-pressed="isCandidateDateShortcutActive(shortcut.key)"
+                        :title="crossCandidateRangeDisabledReason || '应用候选日期快捷前需要确认'"
+                        @click="requestResearchDateShortcut('crossCandidate', shortcut.key)"
+                      >
+                        {{ shortcut.label }}
+                      </button>
+                    </template>
+                    <span v-if="crossCandidateRangeDisabledReason" class="action-status inline muted research-date-shortcut-status">
+                      <i></i>
+                      {{ crossCandidateRangeDisabledReason }}
+                    </span>
+                    <span v-if="pendingResearchDateShortcut?.target === 'crossCandidate'" class="action-status inline warning research-date-shortcut-status">
+                      <i></i>
+                      {{ researchDateShortcutPendingText }}
+                    </span>
                   </div>
                 </div>
                 <label v-if="crossForm.search_mode === 'same_date'">
@@ -677,32 +1378,84 @@
                 <label class="span-full">
                   <div class="field-head">
                     <span>候选标的</span>
-                    <div class="field-actions">
-                      <button class="mini-action" type="button" @click="setCrossUniverseFromAssetType('etf')">
-                        <Icon name="archive" />
-                        所有ETF
-                      </button>
-                      <button class="mini-action" type="button" @click="setCrossUniverseFromAssetType('stock')">
-                        <Icon name="key" />
-                        所有个股
-                      </button>
-                      <button class="mini-action" type="button" @click="setCrossUniverseFromAssetType('index')">
-                        <Icon name="layers" />
-                        所有指数
-                      </button>
+                    <div class="field-actions" :class="{ confirming: Boolean(pendingCrossUniverseAction) }">
+                      <template v-if="pendingCrossUniverseAction">
+                        <button class="mini-action" type="button" title="取消候选标的覆盖" @click="cancelCrossUniverseAction">
+                          取消
+                        </button>
+                        <button
+                          class="mini-action danger"
+                          type="button"
+                          :disabled="crossUniversePendingDisabled"
+                          :title="crossUniversePendingDisabledReason || crossUniversePendingStatusText"
+                          @click="confirmCrossUniverseAction"
+                        >
+                          确认{{ crossUniversePendingActionLabel }}
+                        </button>
+                      </template>
+                      <template v-else>
+                        <button class="mini-action" type="button" title="填入所有 ETF 前需要确认" @click="requestCrossUniverseFromAssetType('etf')">
+                          <Icon name="archive" />
+                          所有ETF
+                        </button>
+                        <button class="mini-action" type="button" title="填入所有个股前需要确认" @click="requestCrossUniverseFromAssetType('stock')">
+                          <Icon name="key" />
+                          所有个股
+                        </button>
+                        <button class="mini-action" type="button" title="填入所有指数前需要确认" @click="requestCrossUniverseFromAssetType('index')">
+                          <Icon name="layers" />
+                          所有指数
+                        </button>
+                      </template>
                     </div>
                   </div>
-                  <textarea v-model="crossForm.universe_symbols" rows="5"></textarea>
+                  <span v-if="pendingCrossUniverseAction" class="action-status inline warning cross-universe-status">
+                    <i></i>
+                    {{ crossUniversePendingStatusText }}
+                  </span>
+                  <textarea v-model="crossForm.universe_symbols" rows="5" @input="cancelCrossUniverseAction"></textarea>
                 </label>
                 <div class="form-actions span-full">
-                  <button class="btn primary" type="submit" :disabled="runningResearch === 'cross'">
+                  <template v-if="confirmingRunCrossSearch">
+                    <button class="btn secondary" type="button" title="取消横截面相似搜索" @click="cancelRunCrossSectionSearch">
+                      取消
+                    </button>
+                    <button
+                      class="btn danger"
+                      type="button"
+                      :disabled="researchActionDisabled('cross')"
+                      :title="researchActionDisabledReason('cross') || crossSearchConfirmText"
+                      @click="confirmRunCrossSectionSearch"
+                    >
+                      确认搜索
+                    </button>
+                  </template>
+                  <button
+                    v-else
+                    class="btn primary"
+                    type="submit"
+                    :disabled="researchActionDisabled('cross')"
+                    :title="researchActionDisabledReason('cross') || '开始横截面相似搜索前需要确认'"
+                  >
                     <Icon name="layers" />
-                    开始搜索
+                    {{ runningResearch === 'cross' ? '搜索中' : '开始搜索' }}
                   </button>
-                  <button class="btn secondary" type="button" :disabled="!crossResult" @click="saveResearchSnapshot('cross')">
+                  <button class="btn secondary" type="button" :disabled="resultActionDisabled('cross')" :title="resultActionDisabledReason('cross') || '保存当前横截面搜索结果到本机快照'" @click="saveResearchSnapshot('cross')">
                     <Icon name="save" />
                     保存快照
                   </button>
+                  <span v-if="runningResearch === 'cross'" class="action-status inline busy">
+                    <i></i>
+                    {{ researchBusyStatusText }}
+                  </span>
+                  <span v-else-if="confirmingRunCrossSearch" class="action-status inline warning">
+                    <i></i>
+                    {{ crossSearchConfirmText }}
+                  </span>
+                  <span v-else-if="resultActionDisabledReason('cross')" class="action-status inline warning">
+                    <i></i>
+                    {{ resultActionDisabledReason('cross') }}
+                  </span>
                 </div>
               </form>
               <div v-if="crossChartItems.length" class="research-kline-section">
@@ -717,13 +1470,19 @@
             </Panel>
 
             <Panel title="横截面匹配结果" subtitle="日期容忍后择优">
-              <DataTable :rows="displayCrossRows" :columns="crossColumns" empty="暂无横截面匹配结果。" />
+              <DataTable :rows="displayCrossRows" :columns="crossColumns" aria-label="横截面匹配结果" empty="暂无横截面匹配结果。" />
             </Panel>
           </section>
 
-          <section v-else-if="activeResearchTab === 'etf'" class="view-stack etf-tracker-view">
+          <section
+            v-else-if="activeResearchTab === 'etf'"
+            :id="researchPanelId('etf')"
+            class="view-stack etf-tracker-view"
+            role="tabpanel"
+            :aria-labelledby="researchTabId('etf')"
+          >
             <Panel class="etf-control-surface" title="场内 ETF 跟踪" subtitle="分类行情 / 同类合并">
-              <form class="task-form etf-tracker-form" @submit.prevent="runEtfTrackerReview">
+              <form class="task-form etf-tracker-form" @submit.prevent="requestRunEtfTrackerReview">
                 <label>
                   <span>类别</span>
                   <select v-model="etfTrackerForm.category">
@@ -778,15 +1537,29 @@
                 </div>
                 <div class="date-shortcuts span-full" aria-label="ETF日期快捷选项">
                   <span>快捷</span>
-                  <button
-                    v-for="shortcut in DATE_RANGE_SHORTCUTS"
-                    :key="shortcut.key"
-                    type="button"
-                    :class="['date-shortcut', { active: isDateShortcutActive(etfTrackerForm, shortcut.key) }]"
-                    @click="applyDateShortcut(etfTrackerForm, shortcut.key)"
-                  >
-                    {{ shortcut.label }}
-                  </button>
+                  <template v-if="pendingResearchDateShortcut?.target === 'etf'">
+                    <button class="date-shortcut" type="button" title="取消 ETF 日期快捷修改" @click="cancelResearchDateShortcut">取消</button>
+                    <button class="date-shortcut danger" type="button" :title="researchDateShortcutPendingText" @click="confirmResearchDateShortcut">
+                      确认应用
+                    </button>
+                  </template>
+                  <template v-else>
+                    <button
+                      v-for="shortcut in DATE_RANGE_SHORTCUTS"
+                      :key="shortcut.key"
+                      type="button"
+                      :class="['date-shortcut', { active: isDateShortcutActive(etfTrackerForm, shortcut.key) }]"
+                      :aria-pressed="isDateShortcutActive(etfTrackerForm, shortcut.key)"
+                      title="应用 ETF 日期快捷前需要确认"
+                      @click="requestResearchDateShortcut('etf', shortcut.key)"
+                    >
+                      {{ shortcut.label }}
+                    </button>
+                  </template>
+                  <span v-if="pendingResearchDateShortcut?.target === 'etf'" class="action-status inline warning research-date-shortcut-status">
+                    <i></i>
+                    {{ researchDateShortcutPendingText }}
+                  </span>
                 </div>
                 <div class="etf-cache-strip span-full" aria-label="ETF缓存状态">
                   <span class="etf-cache-title">缓存状态</span>
@@ -799,7 +1572,14 @@
                     <em>{{ item.detail }}</em>
                     <b>{{ item.value }}</b>
                   </div>
-                  <button class="mini-action" type="button" @click="clearEtfClientCache">清理ETF缓存</button>
+                  <div class="etf-cache-actions" :class="{ confirming: confirmingClearEtfCache }">
+                    <template v-if="confirmingClearEtfCache">
+                      <span class="etf-cache-confirm-text">清理后下次刷新会重新读取 ETF 接口与收益缓存。</span>
+                      <button class="mini-action" type="button" title="取消清理 ETF 缓存" @click="cancelClearEtfClientCache">取消</button>
+                      <button class="mini-action danger" type="button" title="确认清理浏览器本地 ETF 缓存" @click="confirmClearEtfClientCache">确认清理</button>
+                    </template>
+                    <button v-else class="mini-action" type="button" title="清理前需要确认" @click="requestClearEtfClientCache">清理ETF缓存</button>
+                  </div>
                 </div>
                 <label>
                   <span>最小波段幅度</span>
@@ -810,22 +1590,109 @@
                   <input v-model.number="etfTrackerForm.min_segment_bars" type="number" min="1" />
 	                </label>
 	                <div class="form-actions span-full">
-	                  <button class="btn secondary" type="button" :disabled="loadingEtfTracking" @click="loadEtfTracking(true)">
-	                    <Icon name="refresh" />
-	                    {{ loadingEtfTracking ? '读取中' : '刷新TDX ETF接口' }}
-	                  </button>
-                    <button class="btn secondary" type="button" :disabled="loadingEtfReturns" @click="loadEtfReturns(true)">
-                      <Icon name="refresh" />
-                      {{ loadingEtfReturns ? '计算中' : '刷新收益率' }}
+                  <template v-if="pendingEtfRefreshAction">
+                    <button class="btn secondary" type="button" title="取消刷新 ETF 数据" @click="cancelEtfRefreshAction">
+                      取消
                     </button>
-	                  <button class="btn primary" type="submit" :disabled="runningResearch === 'etf' || !etfTrackerReviewSymbols.length">
+                    <button
+                      class="btn danger"
+                      type="button"
+                      :disabled="pendingEtfRefreshDisabled"
+                      :title="pendingEtfRefreshDisabledReason || pendingEtfRefreshConfirmText"
+                      @click="confirmEtfRefreshAction"
+                    >
+                      确认刷新
+                    </button>
+                  </template>
+	                  <template v-else>
+                    <button
+                        class="btn secondary"
+                        type="button"
+                        :disabled="etfTrackingRefreshDisabled"
+                        :title="etfTrackingRefreshDisabledReason || '刷新 TDX ETF 接口前需要确认'"
+                        @click="requestEtfRefreshAction('tracking')"
+                      >
+	                      <Icon name="refresh" />
+	                      {{ loadingEtfTracking ? '读取中' : '刷新TDX ETF接口' }}
+	                    </button>
+                      <button
+                        class="btn secondary"
+                        type="button"
+                        :disabled="etfReturnsRefreshDisabled"
+                        :title="etfReturnsRefreshDisabledReason || '刷新 ETF 收益率前需要确认'"
+                        @click="requestEtfRefreshAction('returns')"
+                      >
+                        <Icon name="refresh" />
+                        {{ loadingEtfReturns ? '计算中' : '刷新收益率' }}
+                      </button>
+                    </template>
+                  <template v-if="confirmingRunEtfTrackerReview">
+                    <button class="btn secondary" type="button" title="取消生成 ETF 趋势对比" @click="cancelRunEtfTrackerReview">
+                      取消
+                    </button>
+                    <button
+                      class="btn danger"
+                      type="button"
+                      :disabled="etfTrackerActionDisabled"
+                      :title="etfTrackerActionDisabledReason || etfTrackerReviewConfirmText"
+                      @click="confirmRunEtfTrackerReview"
+                    >
+                      确认生成
+                    </button>
+                  </template>
+	                  <button
+                    v-else
+                    class="btn primary"
+                    type="submit"
+                    :disabled="etfTrackerActionDisabled"
+                    :title="etfTrackerActionDisabledReason || '生成 ETF 趋势对比前需要确认'"
+                  >
 	                    <Icon name="activity" />
-	                    生成 ETF 趋势对比
+	                    {{ runningResearch === 'etf' ? '生成中' : '生成 ETF 趋势对比' }}
                   </button>
-                  <button class="btn secondary" type="button" :disabled="!etfTrackerReviewSymbols.length" @click="loadEtfTrackerSymbolsToReview">
+                  <template v-if="confirmingLoadEtfReview">
+                    <button class="btn secondary" type="button" title="取消载入多股复盘" @click="cancelLoadEtfTrackerSymbolsToReview">取消</button>
+                    <button
+                      class="btn danger"
+                      type="button"
+                      :disabled="etfLoadReviewDisabled"
+                      :title="etfLoadReviewDisabledReason || etfLoadReviewConfirmText"
+                      @click="confirmLoadEtfTrackerSymbolsToReview"
+                    >
+                      确认载入
+                    </button>
+                  </template>
+                  <button
+                    v-else
+                    class="btn secondary"
+                    type="button"
+                    :disabled="etfLoadReviewDisabled"
+                    :title="etfLoadReviewDisabledReason || '载入多股复盘前需要确认'"
+                    @click="requestLoadEtfTrackerSymbolsToReview"
+                  >
                     <Icon name="clipboard" />
                     载入多股复盘
                   </button>
+                  <span v-if="runningResearch === 'etf'" class="action-status inline busy">
+                    <i></i>
+                    {{ researchBusyStatusText }}
+                  </span>
+                  <span v-else-if="pendingEtfRefreshAction" class="action-status inline warning">
+                    <i></i>
+                    {{ pendingEtfRefreshConfirmText }}
+                  </span>
+                  <span v-else-if="confirmingRunEtfTrackerReview" class="action-status inline warning">
+                    <i></i>
+                    {{ etfTrackerReviewConfirmText }}
+                  </span>
+                  <span v-else-if="confirmingLoadEtfReview" class="action-status inline warning">
+                    <i></i>
+                    {{ etfLoadReviewConfirmText }}
+                  </span>
+                  <span v-else-if="etfLoadReviewDisabledReason" class="action-status inline warning">
+                    <i></i>
+                    {{ etfLoadReviewDisabledReason }}
+                  </span>
                 </div>
               </form>
             </Panel>
@@ -852,21 +1719,59 @@
                         :key="size"
                         type="button"
                         :class="['page-size-button', { active: etfTrackerPagination.pageSize === size }]"
+                        :aria-pressed="etfTrackerPagination.pageSize === size"
+                        :title="pageSizeButtonTitle(size, etfTrackerPagination.pageSize, 'ETF候选池')"
                         @click="setEtfTrackerPageSize(size)"
                       >
                         {{ size }}
                       </button>
                     </div>
                     <div class="pagination-controls">
-                      <button type="button" :disabled="etfTrackerPagination.page <= 1" @click="goEtfTrackerPage(1)">首页</button>
-                      <button type="button" :disabled="etfTrackerPagination.page <= 1" @click="goEtfTrackerPage(etfTrackerPagination.page - 1)">上一页</button>
-                      <span>{{ etfTrackerPagination.page }} / {{ etfTrackerTotalPages }}</span>
-                      <button type="button" :disabled="etfTrackerPagination.page >= etfTrackerTotalPages" @click="goEtfTrackerPage(etfTrackerPagination.page + 1)">下一页</button>
-                      <button type="button" :disabled="etfTrackerPagination.page >= etfTrackerTotalPages" @click="goEtfTrackerPage(etfTrackerTotalPages)">末页</button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('first', etfTrackerPagination.page, etfTrackerTotalPages)"
+                        :aria-disabled="paginationActionDisabled('first', etfTrackerPagination.page, etfTrackerTotalPages)"
+                        :aria-label="paginationActionTitle('first', etfTrackerPagination.page, etfTrackerTotalPages, 'ETF候选池')"
+                        :title="paginationActionTitle('first', etfTrackerPagination.page, etfTrackerTotalPages, 'ETF候选池')"
+                        @click="goEtfTrackerPage(1)"
+                      >
+                        首页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('prev', etfTrackerPagination.page, etfTrackerTotalPages)"
+                        :aria-disabled="paginationActionDisabled('prev', etfTrackerPagination.page, etfTrackerTotalPages)"
+                        :aria-label="paginationActionTitle('prev', etfTrackerPagination.page, etfTrackerTotalPages, 'ETF候选池')"
+                        :title="paginationActionTitle('prev', etfTrackerPagination.page, etfTrackerTotalPages, 'ETF候选池')"
+                        @click="goEtfTrackerPage(etfTrackerPagination.page - 1)"
+                      >
+                        上一页
+                      </button>
+                      <span class="pagination-status" aria-live="polite">{{ etfTrackerPagination.page }} / {{ etfTrackerTotalPages }}</span>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('next', etfTrackerPagination.page, etfTrackerTotalPages)"
+                        :aria-disabled="paginationActionDisabled('next', etfTrackerPagination.page, etfTrackerTotalPages)"
+                        :aria-label="paginationActionTitle('next', etfTrackerPagination.page, etfTrackerTotalPages, 'ETF候选池')"
+                        :title="paginationActionTitle('next', etfTrackerPagination.page, etfTrackerTotalPages, 'ETF候选池')"
+                        @click="goEtfTrackerPage(etfTrackerPagination.page + 1)"
+                      >
+                        下一页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('last', etfTrackerPagination.page, etfTrackerTotalPages)"
+                        :aria-disabled="paginationActionDisabled('last', etfTrackerPagination.page, etfTrackerTotalPages)"
+                        :aria-label="paginationActionTitle('last', etfTrackerPagination.page, etfTrackerTotalPages, 'ETF候选池')"
+                        :title="paginationActionTitle('last', etfTrackerPagination.page, etfTrackerTotalPages, 'ETF候选池')"
+                        @click="goEtfTrackerPage(etfTrackerTotalPages)"
+                      >
+                        末页
+                      </button>
                     </div>
                   </div>
                 </div>
-                <DataTable :rows="displayEtfTrackerRows" :columns="etfTrackerColumns" empty="暂无匹配 ETF。" />
+                <DataTable :rows="displayEtfTrackerRows" :columns="etfTrackerColumns" aria-label="ETF候选池" empty="暂无匹配 ETF。" />
               </Panel>
             </section>
 
@@ -890,7 +1795,7 @@
             </section>
 
             <Panel title="ETF 排序明细" subtitle="强化比较与筛选">
-              <DataTable :rows="etfTrackerReviewRows" :columns="etfTrackerReviewColumns" empty="生成 ETF 趋势对比后显示排序。" />
+              <DataTable :rows="etfTrackerReviewRows" :columns="etfTrackerReviewColumns" aria-label="ETF排序明细" empty="生成 ETF 趋势对比后显示排序。" />
             </Panel>
 
             <div v-if="etfTrackerResultActive && reviewChartItems.length" class="research-kline-section">
@@ -904,10 +1809,16 @@
             </div>
           </section>
 
-          <section v-else-if="activeResearchTab === 'regime'" class="view-stack market-regime-view">
+          <section
+            v-else-if="activeResearchTab === 'regime'"
+            :id="researchPanelId('regime')"
+            class="view-stack market-regime-view"
+            role="tabpanel"
+            :aria-labelledby="researchTabId('regime')"
+          >
             <section class="content-grid two market-regime-grid">
               <Panel title="市场风险偏好" subtitle="Market Regime Research">
-                <form class="task-form" @submit.prevent="runMarketRegimeResearch">
+                <form class="task-form" @submit.prevent="requestRunMarketRegimeResearch">
                   <label>
                     <span>基准指数</span>
                     <input v-model="regimeForm.benchmark_symbol" type="text" />
@@ -928,15 +1839,29 @@
                   </div>
                   <div class="date-shortcuts span-full" aria-label="市场风险偏好日期快捷选项">
                     <span>快捷</span>
-                    <button
-                      v-for="shortcut in DATE_RANGE_SHORTCUTS"
-                      :key="shortcut.key"
-                      type="button"
-                      :class="['date-shortcut', { active: isDateShortcutActive(regimeForm, shortcut.key) }]"
-                      @click="applyDateShortcut(regimeForm, shortcut.key)"
-                    >
-                      {{ shortcut.label }}
-                    </button>
+                    <template v-if="pendingResearchDateShortcut?.target === 'regime'">
+                      <button class="date-shortcut" type="button" title="取消市场风偏日期快捷修改" @click="cancelResearchDateShortcut">取消</button>
+                      <button class="date-shortcut danger" type="button" :title="researchDateShortcutPendingText" @click="confirmResearchDateShortcut">
+                        确认应用
+                      </button>
+                    </template>
+                    <template v-else>
+                      <button
+                        v-for="shortcut in DATE_RANGE_SHORTCUTS"
+                        :key="shortcut.key"
+                        type="button"
+                        :class="['date-shortcut', { active: isDateShortcutActive(regimeForm, shortcut.key) }]"
+                        :aria-pressed="isDateShortcutActive(regimeForm, shortcut.key)"
+                        title="应用市场风偏日期快捷前需要确认"
+                        @click="requestResearchDateShortcut('regime', shortcut.key)"
+                      >
+                        {{ shortcut.label }}
+                      </button>
+                    </template>
+                    <span v-if="pendingResearchDateShortcut?.target === 'regime'" class="action-status inline warning research-date-shortcut-status">
+                      <i></i>
+                      {{ researchDateShortcutPendingText }}
+                    </span>
                   </div>
                   <div class="regime-method-note span-full">
                     <strong>参数口径</strong>
@@ -953,13 +1878,37 @@
                           v-for="preset in REGIME_PARAMETER_PRESETS"
                           :key="preset.key"
                           type="button"
-                          :class="['regime-preset-button', { active: regimeActivePresetKey === preset.key }]"
-                          @click="applyRegimeParameterPreset(preset.key)"
+                          :class="[
+                            'regime-preset-button',
+                            { active: regimeActivePresetKey === preset.key, pending: pendingRegimePresetKey === preset.key }
+                          ]"
+                          :aria-pressed="regimeActivePresetKey === preset.key"
+                          :disabled="Boolean(pendingRegimePresetKey)"
+                          :title="pendingRegimePresetKey ? '请先确认或取消当前参数预设' : '应用参数预设前需要确认'"
+                          @click="requestRegimeParameterPreset(preset.key)"
                         >
                           <span>{{ preset.label }}</span>
                           <em>{{ preset.detail }}</em>
                         </button>
                       </div>
+                    </div>
+                    <div v-if="pendingRegimePresetKey" class="regime-preset-confirm">
+                      <span class="action-status inline warning">
+                        <i></i>
+                        {{ regimePresetConfirmText }}
+                      </span>
+                      <button class="mini-action" type="button" title="取消应用风险偏好参数预设" @click="cancelRegimeParameterPreset">
+                        取消
+                      </button>
+                      <button
+                        class="mini-action danger"
+                        type="button"
+                        :disabled="regimePresetConfirmDisabled"
+                        :title="regimePresetConfirmDisabledReason || regimePresetConfirmText"
+                        @click="confirmRegimeParameterPreset"
+                      >
+                        确认应用
+                      </button>
                     </div>
                     <div class="regime-guide-grid">
                       <span v-for="item in regimeParameterGuideCards" :key="item.label">
@@ -1006,139 +1955,27 @@
                       <span>分层、压力信号与阶段阈值，百分比参数直接填百分数</span>
                     </summary>
                     <div class="regime-param-grid">
-                      <label>
-                        <span>高流动性分位</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.liquidity_high_percentile" type="number" min="0" max="100" step="5" />
+                      <label v-for="item in REGIME_ADVANCED_PARAMETERS" :key="item.key" class="regime-param-item">
+                        <span class="regime-param-label">
+                          <span>{{ item.label }}</span>
+                          <button class="hint-popover-trigger" type="button" :aria-label="`${item.label}说明`">
+                            ?
+                            <span class="hint-popover" role="tooltip">{{ item.hint }}</span>
+                          </button>
+                        </span>
+                        <div v-if="item.unit === '%'" class="percent-input compact">
+                          <input v-model.number="regimeForm[item.key]" type="number" :min="item.min" :max="item.max" :step="item.step" />
                           <b>%</b>
                         </div>
-                        <em class="field-hint">成交额分位高于该值，归入高流动性层。</em>
-                      </label>
-                      <label>
-                        <span>中盘起始分位</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.liquidity_mid_percentile" type="number" min="0" max="100" step="5" />
-                          <b>%</b>
-                        </div>
-                      </label>
-                      <label>
-                        <span>低流动性分位</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.liquidity_low_percentile" type="number" min="0" max="100" step="5" />
-                          <b>%</b>
-                        </div>
-                      </label>
-                      <label>
-                        <span>高波动分位</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.volatility_high_percentile" type="number" min="0" max="100" step="5" />
-                          <b>%</b>
-                        </div>
-                        <em class="field-hint">HV20 分位高于该值，归入高波资产。</em>
-                      </label>
-                      <label>
-                        <span>低波动分位</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.volatility_low_percentile" type="number" min="0" max="100" step="5" />
-                          <b>%</b>
-                        </div>
-                      </label>
-                      <label>
-                        <span>高位回撤阈值</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.high_position_drawdown_threshold" type="number" max="0" step="0.5" />
-                          <b>%</b>
-                        </div>
-                        <em class="field-hint">距离250日高点回撤小于该值，仍视为高位。</em>
-                      </label>
-                      <label>
-                        <span>高位涨幅分位</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.high_position_return_percentile" type="number" min="0" max="100" step="5" />
-                          <b>%</b>
-                        </div>
-                      </label>
-                      <label>
-                        <span>领涨5日阈值</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.leader_return_5d_threshold" type="number" step="0.5" />
-                          <b>%</b>
-                        </div>
-                      </label>
-                      <label>
-                        <span>压力破位阈值</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.stress_ma20_break_threshold" type="number" min="0" max="100" step="5" />
-                          <b>%</b>
-                        </div>
-                        <em class="field-hint">层内跌破 MA20 的资产占比达到该值，压力上升。</em>
-                      </label>
-                      <label>
-                        <span>压力收益阈值</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.stress_return_5d_threshold" type="number" step="0.5" />
-                          <b>%</b>
-                        </div>
-                      </label>
-                      <label>
-                        <span>现金压力分</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.cash_stress_score_threshold" type="number" min="0" max="100" step="1" />
-                          <b>%</b>
-                        </div>
-                      </label>
-                      <label>
-                        <span>现金偏好阈值</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.cash_preference_proxy_threshold" type="number" min="0" max="100" step="5" />
-                          <b>%</b>
-                        </div>
-                        <em class="field-hint">现金偏好代理达到该值，判为明显防守。</em>
-                      </label>
-                      <label>
-                        <span>扩张宽度</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.risk_expansion_breadth_threshold" type="number" min="0" max="100" step="5" />
-                          <b>%</b>
-                        </div>
-                      </label>
-                      <label>
-                        <span>收缩宽度</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.risk_contraction_breadth_threshold" type="number" min="0" max="100" step="5" />
-                          <b>%</b>
-                        </div>
-                      </label>
-                      <label>
-                        <span>释放后段宽度</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.risk_release_breadth_threshold" type="number" min="0" max="100" step="5" />
-                          <b>%</b>
-                        </div>
-                        <em class="field-hint">市场宽度低于该值且高流动性破位，进入释放后段。</em>
-                      </label>
-                      <label>
-                        <span>高流动性抛售</span>
-                        <div class="percent-input">
-                          <input v-model.number="regimeForm.high_liquidity_selloff_threshold" type="number" min="0" max="100" step="5" />
-                          <b>%</b>
-                        </div>
-                      </label>
-                      <label>
-                        <span>集中度TopN</span>
-                        <input v-model.number="regimeForm.concentration_top_n" type="number" min="1" max="500" step="1" />
-                      </label>
-                      <label>
-                        <span>日报交易日数</span>
-                        <input v-model.number="regimeForm.daily_report_days" type="number" min="1" max="120" step="1" />
-                      </label>
-                      <label>
-                        <span>回流候选数</span>
-                        <input v-model.number="regimeForm.flow_candidate_limit" type="number" min="1" max="200" step="1" />
-                      </label>
-                      <label>
-                        <span>时间线交易日数</span>
-                        <input v-model.number="regimeForm.risk_timeline_days" type="number" min="5" max="180" step="1" />
+                        <input
+                          v-else
+                          v-model.number="regimeForm[item.key]"
+                          class="compact-number-input"
+                          type="number"
+                          :min="item.min"
+                          :max="item.max"
+                          :step="item.step"
+                        />
                       </label>
                     </div>
                   </details>
@@ -1159,7 +1996,21 @@
                     </div>
                     <div class="regime-universe-summary">
                       <span>当前候选约 {{ formatInt(selectedRegimeUniverseCount) }} 只</span>
-                      <button class="mini-action" type="button" @click="regimeForm.symbols = ''">清空手动标的</button>
+                      <template v-if="confirmingClearRegimeManualSymbols">
+                        <em>{{ regimeManualSymbolsClearConfirmText }}</em>
+                        <button class="mini-action" type="button" title="取消清空手动标的" @click="cancelClearRegimeManualSymbols">取消</button>
+                        <button class="mini-action danger" type="button" :title="regimeManualSymbolsClearConfirmText" @click="confirmClearRegimeManualSymbols">确认清空</button>
+                      </template>
+                      <button
+                        v-else
+                        class="mini-action"
+                        type="button"
+                        :disabled="regimeManualSymbolsClearDisabled"
+                        :title="regimeManualSymbolsClearDisabledReason || '清空手动补充标的前需要确认'"
+                        @click="requestClearRegimeManualSymbols"
+                      >
+                        清空手动标的
+                      </button>
                     </div>
                   </div>
                   <label class="span-full">
@@ -1167,18 +2018,63 @@
                     <textarea v-model="regimeForm.symbols" rows="5" placeholder="可补充行业、ETF、板块或个股代码；留空则只使用所选研究宇宙"></textarea>
                   </label>
                   <div class="form-actions span-full">
-                    <button class="btn primary" type="submit" :disabled="runningResearch === 'regime'">
+                    <template v-if="confirmingRunRegimeResearch">
+                      <button class="btn secondary" type="button" title="取消运行市场风险偏好研究" @click="cancelRunMarketRegimeResearch">
+                        取消
+                      </button>
+                      <button
+                        class="btn danger"
+                        type="button"
+                        :disabled="researchActionDisabled('regime')"
+                        :title="researchActionDisabledReason('regime') || regimeResearchConfirmText"
+                        @click="confirmRunMarketRegimeResearch"
+                      >
+                        确认运行
+                      </button>
+                    </template>
+                    <button
+                      v-else
+                      class="btn primary"
+                      type="submit"
+                      :disabled="researchActionDisabled('regime')"
+                      :title="researchActionDisabledReason('regime') || '运行市场风险偏好研究前需要确认'"
+                    >
                       <Icon name="activity" />
-                      运行研究
+                      {{ runningResearch === 'regime' ? '研究中' : '运行研究' }}
                     </button>
-                    <button class="btn secondary" type="button" :disabled="!regimeResult" @click="saveActiveResearchSnapshot">
+                    <button class="btn secondary" type="button" :disabled="resultActionDisabled('regime')" :title="resultActionDisabledReason('regime') || '保存当前市场风险偏好结果到本机快照'" @click="saveActiveResearchSnapshot">
                       <Icon name="save" />
                       保存快照
                     </button>
-                    <button class="btn secondary" type="button" :disabled="!regimeResult" @click="downloadMarketRegimeJson">
+                    <template v-if="confirmingRegimeExport">
+                      <button class="btn secondary" type="button" title="取消导出市场风偏 JSON" @click="cancelMarketRegimeJsonExport">
+                        取消
+                      </button>
+                      <button class="btn danger" type="button" :disabled="regimeExportDisabled" :title="regimeExportDisabledReason || regimeExportConfirmText" @click="confirmMarketRegimeJsonExport">
+                        <Icon name="download" />
+                        确认导出
+                      </button>
+                    </template>
+                    <button v-else class="btn secondary" type="button" :disabled="regimeExportDisabled" :title="regimeExportDisabledReason || '导出当前市场风险偏好研究 JSON 前需要确认'" @click="requestMarketRegimeJsonExport">
                       <Icon name="download" />
                       导出JSON
                     </button>
+                    <span v-if="runningResearch === 'regime'" class="action-status inline busy">
+                      <i></i>
+                      {{ researchBusyStatusText }}
+                    </span>
+                    <span v-else-if="confirmingRunRegimeResearch" class="action-status inline warning">
+                      <i></i>
+                      {{ regimeResearchConfirmText }}
+                    </span>
+                    <span v-else-if="confirmingRegimeExport" class="action-status inline warning">
+                      <i></i>
+                      {{ regimeExportConfirmText }}
+                    </span>
+                    <span v-else-if="resultActionDisabledReason('regime')" class="action-status inline warning">
+                      <i></i>
+                      {{ resultActionDisabledReason('regime') }}
+                    </span>
                   </div>
                 </form>
               </Panel>
@@ -1217,20 +2113,33 @@
               <EmptyState v-else title="等待研究" body="运行后显示核心问题答案。" />
             </Panel>
 
-            <div class="research-tabs regime-section-tabs" aria-label="市场风险偏好功能页签">
+            <div class="research-tabs regime-section-tabs" role="tablist" aria-label="市场风险偏好功能页签">
               <button
                 v-for="tab in regimeSectionTabs"
                 :key="tab.key"
                 type="button"
                 :class="['research-tab', { active: activeRegimeSectionTab === tab.key }]"
+                role="tab"
+                :id="regimeSectionTabId(tab.key)"
+                :aria-selected="activeRegimeSectionTab === tab.key"
+                :aria-controls="regimeSectionPanelId(tab.key)"
+                :tabindex="activeRegimeSectionTab === tab.key ? 0 : -1"
+                :title="`切换到${tab.label}`"
                 @click="activeRegimeSectionTab = tab.key"
+                @keydown="handleRegimeSectionTabKeydown($event, tab.key)"
               >
                 <Icon :name="tab.icon" />
                 {{ tab.label }}
               </button>
             </div>
 
-            <section v-if="activeRegimeSectionTab === 'overview'" class="content-grid two market-regime-result-grid regime-visual-grid">
+            <section
+              v-if="activeRegimeSectionTab === 'overview'"
+              :id="regimeSectionPanelId('overview')"
+              class="content-grid two market-regime-result-grid regime-visual-grid"
+              role="tabpanel"
+              :aria-labelledby="regimeSectionTabId('overview')"
+            >
               <Panel title="RAI 趋势" subtitle="0-100 风险偏好综合分">
                 <div v-if="regimeRaiChartPoints.length" class="regime-rai-chart" aria-label="风险偏好指数趋势">
                   <div class="regime-rai-meaning">
@@ -1293,6 +2202,8 @@
                       :r="activeRegimeRaiPoint?.key === point.key ? 3.1 : 1.8"
                       role="button"
                       tabindex="0"
+                      :aria-label="point.title"
+                      :aria-pressed="activeRegimeRaiPoint?.key === point.key"
                       @click="setActiveRegimeRaiPoint(point)"
                       @focus="setActiveRegimeRaiPoint(point)"
                       @pointerenter="setActiveRegimeRaiPoint(point)"
@@ -1386,7 +2297,13 @@
               </Panel>
             </section>
 
-            <section v-else-if="activeRegimeSectionTab === 'daily'" class="view-stack market-regime-tab-panel">
+            <section
+              v-else-if="activeRegimeSectionTab === 'daily'"
+              :id="regimeSectionPanelId('daily')"
+              class="view-stack market-regime-tab-panel"
+              role="tabpanel"
+              :aria-labelledby="regimeSectionTabId('daily')"
+            >
               <Panel class="market-regime-daily-panel" title="每日市场状态报告" subtitle="风险阶段与资金迁移">
                 <div v-if="regimeResult" class="regime-daily-stack">
                   <div class="regime-daily-grid">
@@ -1443,7 +2360,13 @@
               </Panel>
             </section>
 
-            <section v-else-if="activeRegimeSectionTab === 'flow'" class="content-grid two market-regime-result-grid">
+            <section
+              v-else-if="activeRegimeSectionTab === 'flow'"
+              :id="regimeSectionPanelId('flow')"
+              class="content-grid two market-regime-result-grid"
+              role="tabpanel"
+              :aria-labelledby="regimeSectionTabId('flow')"
+            >
               <Panel title="RAI 组成拆解" subtitle="高位、中盘、高流动性与市场宽度">
                 <PaginatedDataTable
                   :rows="displayRegimeComponentRows"
@@ -1489,31 +2412,51 @@
                         :key="size"
                         type="button"
                         :class="['page-size-button', { active: regimeMarketScopePagination.pageSize === size }]"
+                        :aria-pressed="regimeMarketScopePagination.pageSize === size"
+                        :title="pageSizeButtonTitle(size, regimeMarketScopePagination.pageSize, '市场缩圈')"
                         @click="setRegimeMarketScopePageSize(size)"
                       >
                         {{ size }}
                       </button>
                     </div>
                     <div class="pagination-controls">
-                      <button type="button" :disabled="regimeMarketScopePagination.page <= 1" @click="goRegimeMarketScopePage(1)">首页</button>
                       <button
                         type="button"
-                        :disabled="regimeMarketScopePagination.page <= 1"
+                        :disabled="paginationActionDisabled('first', regimeMarketScopePagination.page, regimeMarketScopeTotalPages)"
+                        :aria-disabled="paginationActionDisabled('first', regimeMarketScopePagination.page, regimeMarketScopeTotalPages)"
+                        :aria-label="paginationActionTitle('first', regimeMarketScopePagination.page, regimeMarketScopeTotalPages, '市场缩圈')"
+                        :title="paginationActionTitle('first', regimeMarketScopePagination.page, regimeMarketScopeTotalPages, '市场缩圈')"
+                        @click="goRegimeMarketScopePage(1)"
+                      >
+                        首页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('prev', regimeMarketScopePagination.page, regimeMarketScopeTotalPages)"
+                        :aria-disabled="paginationActionDisabled('prev', regimeMarketScopePagination.page, regimeMarketScopeTotalPages)"
+                        :aria-label="paginationActionTitle('prev', regimeMarketScopePagination.page, regimeMarketScopeTotalPages, '市场缩圈')"
+                        :title="paginationActionTitle('prev', regimeMarketScopePagination.page, regimeMarketScopeTotalPages, '市场缩圈')"
                         @click="goRegimeMarketScopePage(regimeMarketScopePagination.page - 1)"
                       >
                         上一页
                       </button>
-                      <span>{{ regimeMarketScopePagination.page }} / {{ regimeMarketScopeTotalPages }}</span>
+                      <span class="pagination-status" aria-live="polite">{{ regimeMarketScopePagination.page }} / {{ regimeMarketScopeTotalPages }}</span>
                       <button
                         type="button"
-                        :disabled="regimeMarketScopePagination.page >= regimeMarketScopeTotalPages"
+                        :disabled="paginationActionDisabled('next', regimeMarketScopePagination.page, regimeMarketScopeTotalPages)"
+                        :aria-disabled="paginationActionDisabled('next', regimeMarketScopePagination.page, regimeMarketScopeTotalPages)"
+                        :aria-label="paginationActionTitle('next', regimeMarketScopePagination.page, regimeMarketScopeTotalPages, '市场缩圈')"
+                        :title="paginationActionTitle('next', regimeMarketScopePagination.page, regimeMarketScopeTotalPages, '市场缩圈')"
                         @click="goRegimeMarketScopePage(regimeMarketScopePagination.page + 1)"
                       >
                         下一页
                       </button>
                       <button
                         type="button"
-                        :disabled="regimeMarketScopePagination.page >= regimeMarketScopeTotalPages"
+                        :disabled="paginationActionDisabled('last', regimeMarketScopePagination.page, regimeMarketScopeTotalPages)"
+                        :aria-disabled="paginationActionDisabled('last', regimeMarketScopePagination.page, regimeMarketScopeTotalPages)"
+                        :aria-label="paginationActionTitle('last', regimeMarketScopePagination.page, regimeMarketScopeTotalPages, '市场缩圈')"
+                        :title="paginationActionTitle('last', regimeMarketScopePagination.page, regimeMarketScopeTotalPages, '市场缩圈')"
                         @click="goRegimeMarketScopePage(regimeMarketScopeTotalPages)"
                       >
                         末页
@@ -1521,11 +2464,17 @@
                     </div>
                   </div>
                 </div>
-                <DataTable :rows="pagedRegimeMarketScopeRows" :columns="regimeMarketScopeColumns" empty="运行研究后显示最近市场扩散与缩圈过程。" />
+                <DataTable :rows="pagedRegimeMarketScopeRows" :columns="regimeMarketScopeColumns" aria-label="市场缩圈" empty="运行研究后显示最近市场扩散与缩圈过程。" />
               </Panel>
             </section>
 
-            <section v-else-if="activeRegimeSectionTab === 'asset'" class="view-stack market-regime-tab-panel">
+            <section
+              v-else-if="activeRegimeSectionTab === 'asset'"
+              :id="regimeSectionPanelId('asset')"
+              class="view-stack market-regime-tab-panel"
+              role="tabpanel"
+              :aria-labelledby="regimeSectionTabId('asset')"
+            >
               <Panel title="资金回流候选" subtitle="回调、转强、相对强度与流动性排序">
                 <div v-if="displayRegimeFlowCandidateRows.length" class="table-toolbar regime-flow-toolbar">
                   <p class="table-caption">
@@ -1539,25 +2488,51 @@
                         :key="size"
                         type="button"
                         :class="['page-size-button', { active: regimeFlowCandidatePagination.pageSize === size }]"
+                        :aria-pressed="regimeFlowCandidatePagination.pageSize === size"
+                        :title="pageSizeButtonTitle(size, regimeFlowCandidatePagination.pageSize, '资金回流候选')"
                         @click="setRegimeFlowCandidatePageSize(size)"
                       >
                         {{ size }}
                       </button>
                     </div>
                     <div class="pagination-controls">
-                      <button type="button" :disabled="regimeFlowCandidatePagination.page <= 1" @click="goRegimeFlowCandidatePage(1)">首页</button>
-                      <button type="button" :disabled="regimeFlowCandidatePagination.page <= 1" @click="goRegimeFlowCandidatePage(regimeFlowCandidatePagination.page - 1)">上一页</button>
-                      <span>{{ regimeFlowCandidatePagination.page }} / {{ regimeFlowCandidateTotalPages }}</span>
                       <button
                         type="button"
-                        :disabled="regimeFlowCandidatePagination.page >= regimeFlowCandidateTotalPages"
+                        :disabled="paginationActionDisabled('first', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages)"
+                        :aria-disabled="paginationActionDisabled('first', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages)"
+                        :aria-label="paginationActionTitle('first', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages, '资金回流候选')"
+                        :title="paginationActionTitle('first', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages, '资金回流候选')"
+                        @click="goRegimeFlowCandidatePage(1)"
+                      >
+                        首页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('prev', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages)"
+                        :aria-disabled="paginationActionDisabled('prev', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages)"
+                        :aria-label="paginationActionTitle('prev', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages, '资金回流候选')"
+                        :title="paginationActionTitle('prev', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages, '资金回流候选')"
+                        @click="goRegimeFlowCandidatePage(regimeFlowCandidatePagination.page - 1)"
+                      >
+                        上一页
+                      </button>
+                      <span class="pagination-status" aria-live="polite">{{ regimeFlowCandidatePagination.page }} / {{ regimeFlowCandidateTotalPages }}</span>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('next', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages)"
+                        :aria-disabled="paginationActionDisabled('next', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages)"
+                        :aria-label="paginationActionTitle('next', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages, '资金回流候选')"
+                        :title="paginationActionTitle('next', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages, '资金回流候选')"
                         @click="goRegimeFlowCandidatePage(regimeFlowCandidatePagination.page + 1)"
                       >
                         下一页
                       </button>
                       <button
                         type="button"
-                        :disabled="regimeFlowCandidatePagination.page >= regimeFlowCandidateTotalPages"
+                        :disabled="paginationActionDisabled('last', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages)"
+                        :aria-disabled="paginationActionDisabled('last', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages)"
+                        :aria-label="paginationActionTitle('last', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages, '资金回流候选')"
+                        :title="paginationActionTitle('last', regimeFlowCandidatePagination.page, regimeFlowCandidateTotalPages, '资金回流候选')"
                         @click="goRegimeFlowCandidatePage(regimeFlowCandidateTotalPages)"
                       >
                         末页
@@ -1565,7 +2540,7 @@
                     </div>
                   </div>
                 </div>
-                <DataTable :rows="pagedRegimeFlowCandidateRows" :columns="regimeFlowCandidateColumns" empty="运行研究后显示资产级资金回流候选。" />
+                <DataTable :rows="pagedRegimeFlowCandidateRows" :columns="regimeFlowCandidateColumns" aria-label="资金回流候选" empty="运行研究后显示资产级资金回流候选。" />
               </Panel>
               <Panel title="资金迁移资产明细" subtitle="趋势、波动率、流动性">
                 <PaginatedDataTable
@@ -1577,7 +2552,13 @@
               </Panel>
             </section>
 
-            <section v-else-if="activeRegimeSectionTab === 'factor'" class="content-grid two market-regime-result-grid">
+            <section
+              v-else-if="activeRegimeSectionTab === 'factor'"
+              :id="regimeSectionPanelId('factor')"
+              class="content-grid two market-regime-result-grid"
+              role="tabpanel"
+              :aria-labelledby="regimeSectionTabId('factor')"
+            >
               <Panel title="基准调整阶段" subtitle="上涨后回撤样本口径">
                 <PaginatedDataTable
                   :rows="displayRegimeBenchmarkRows"
@@ -1621,9 +2602,15 @@
             </section>
           </section>
 
-          <section v-else class="content-grid two research-review-grid">
+          <section
+            v-else
+            :id="researchPanelId('review')"
+            class="content-grid two research-review-grid"
+            role="tabpanel"
+            :aria-labelledby="researchTabId('review')"
+          >
             <Panel title="多股复盘" subtitle="排序锐评">
-              <form class="task-form" @submit.prevent="runReviewSearch">
+              <form class="task-form" @submit.prevent="requestRunReviewSearch">
                 <div class="inline-fields span-full">
                   <label>
                     <span>开始</span>
@@ -1636,15 +2623,29 @@
                 </div>
                 <div class="date-shortcuts span-full" aria-label="日期快捷选项">
                   <span>快捷</span>
-                  <button
-                    v-for="shortcut in DATE_RANGE_SHORTCUTS"
-                    :key="shortcut.key"
-                    type="button"
-                    :class="['date-shortcut', { active: isDateShortcutActive(reviewForm, shortcut.key) }]"
-                    @click="applyDateShortcut(reviewForm, shortcut.key)"
-                  >
-                    {{ shortcut.label }}
-                  </button>
+                  <template v-if="pendingResearchDateShortcut?.target === 'review'">
+                    <button class="date-shortcut" type="button" title="取消复盘日期快捷修改" @click="cancelResearchDateShortcut">取消</button>
+                    <button class="date-shortcut danger" type="button" :title="researchDateShortcutPendingText" @click="confirmResearchDateShortcut">
+                      确认应用
+                    </button>
+                  </template>
+                  <template v-else>
+                    <button
+                      v-for="shortcut in DATE_RANGE_SHORTCUTS"
+                      :key="shortcut.key"
+                      type="button"
+                      :class="['date-shortcut', { active: isDateShortcutActive(reviewForm, shortcut.key) }]"
+                      :aria-pressed="isDateShortcutActive(reviewForm, shortcut.key)"
+                      title="应用复盘日期快捷前需要确认"
+                      @click="requestResearchDateShortcut('review', shortcut.key)"
+                    >
+                      {{ shortcut.label }}
+                    </button>
+                  </template>
+                  <span v-if="pendingResearchDateShortcut?.target === 'review'" class="action-status inline warning research-date-shortcut-status">
+                    <i></i>
+                    {{ researchDateShortcutPendingText }}
+                  </span>
                 </div>
                 <label>
                   <span>最小波段幅度</span>
@@ -1680,14 +2681,46 @@
                   <textarea v-model="reviewForm.symbols" rows="5"></textarea>
                 </label>
                 <div class="form-actions span-full">
-                  <button class="btn primary" type="submit" :disabled="runningResearch === 'review'">
+                  <template v-if="confirmingRunReviewSearch">
+                    <button class="btn secondary" type="button" title="取消生成多股复盘" @click="cancelRunReviewSearch">
+                      取消
+                    </button>
+                    <button
+                      class="btn danger"
+                      type="button"
+                      :disabled="researchActionDisabled('review')"
+                      :title="researchActionDisabledReason('review') || reviewSearchConfirmText"
+                      @click="confirmRunReviewSearch"
+                    >
+                      确认生成
+                    </button>
+                  </template>
+                  <button
+                    v-else
+                    class="btn primary"
+                    type="submit"
+                    :disabled="researchActionDisabled('review')"
+                    :title="researchActionDisabledReason('review') || '生成多股复盘前需要确认'"
+                  >
                     <Icon name="clipboard" />
-                    生成复盘
+                    {{ runningResearch === 'review' ? '生成中' : '生成复盘' }}
                   </button>
-                  <button class="btn secondary" type="button" :disabled="!reviewResult" @click="saveResearchSnapshot('review')">
+                  <button class="btn secondary" type="button" :disabled="resultActionDisabled('review')" :title="resultActionDisabledReason('review') || '保存当前多股复盘结果到本机快照'" @click="saveResearchSnapshot('review')">
                     <Icon name="save" />
                     保存快照
                   </button>
+                  <span v-if="runningResearch === 'review'" class="action-status inline busy">
+                    <i></i>
+                    {{ researchBusyStatusText }}
+                  </span>
+                  <span v-else-if="confirmingRunReviewSearch" class="action-status inline warning">
+                    <i></i>
+                    {{ reviewSearchConfirmText }}
+                  </span>
+                  <span v-else-if="resultActionDisabledReason('review')" class="action-status inline warning">
+                    <i></i>
+                    {{ resultActionDisabledReason('review') }}
+                  </span>
                 </div>
               </form>
               <div v-if="reviewChartItems.length" class="research-kline-section">
@@ -1706,20 +2739,43 @@
 
             <div class="view-stack">
               <Panel title="排序锐评" subtitle="本地行情">
-                <DataTable :rows="displayReviewRows" :columns="reviewColumns" empty="暂无复盘排序。" />
+                <DataTable :rows="displayReviewRows" :columns="reviewColumns" aria-label="复盘排序" empty="暂无复盘排序。" />
               </Panel>
               <Panel title="对标比较" subtitle="指数关系">
-                <DataTable :rows="displayComparisonRows" :columns="comparisonColumns" empty="暂无对标比较。" />
+                <DataTable :rows="displayComparisonRows" :columns="comparisonColumns" aria-label="对标比较" empty="暂无对标比较。" />
               </Panel>
               <Panel title="关键波段" subtitle="首位标的">
-                <DataTable :rows="displaySegmentRows" :columns="segmentColumns" empty="暂无关键波段。" />
+                <DataTable :rows="displaySegmentRows" :columns="segmentColumns" aria-label="关键波段" empty="暂无关键波段。" />
               </Panel>
               <Panel title="复盘与锐评" subtitle="结构化输出">
                 <div class="panel-actions">
-                  <button class="btn secondary" type="button" :disabled="runningAiReview || !reviewResult?.ai?.messages?.length" @click="runAiReview()">
+                  <template v-if="confirmingRunAiReview">
+                    <button class="btn secondary" type="button" title="取消 AI 覆盖" @click="cancelRunAiReview">取消</button>
+                    <button
+                      class="btn danger"
+                      type="button"
+                      :disabled="reviewAiActionDisabled"
+                      :title="reviewAiActionDisabledReason || reviewAiConfirmText"
+                      @click="confirmRunAiReview"
+                    >
+                      确认覆盖
+                    </button>
+                  </template>
+                  <button
+                    v-else
+                    class="btn secondary"
+                    type="button"
+                    :disabled="reviewAiActionDisabled"
+                    :title="reviewAiActionDisabledReason || 'AI 覆盖复盘前需要确认'"
+                    @click="requestRunAiReview"
+                  >
                     <Icon name="activity" />
-                    {{ aiConfigReady ? 'AI覆盖' : '本地规则' }}
+                    {{ runningAiReview ? '生成中' : aiConfigReady ? 'AI覆盖' : '本地规则' }}
                   </button>
+                  <span class="action-status inline" :class="{ busy: runningAiReview, warning: Boolean((reviewAiActionDisabledReason && !runningAiReview) || confirmingRunAiReview) }">
+                    <i></i>
+                    {{ reviewAiActionStatusText }}
+                  </span>
                 </div>
                 <div v-if="reviewMarkdownBlocks.length || reviewScriptCards.length" class="review-output-stack">
                   <section v-if="reviewScriptCards.length" class="review-script-wrap">
@@ -1762,10 +2818,11 @@
                     >
                       <template v-if="block.type === 'table'">
                         <div class="review-markdown-table">
-                          <table>
+                          <table aria-label="多股复盘结构化表格">
+                            <caption class="sr-only">多股复盘结构化表格</caption>
                             <thead>
                               <tr>
-                                <th v-for="head in block.headers" :key="head">{{ head }}</th>
+                                <th v-for="head in block.headers" :key="head" scope="col">{{ head }}</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -1794,23 +2851,91 @@
 
         <section v-else-if="activeView === 'tasks'" class="content-grid two">
           <Panel title="任务队列" subtitle="后台执行">
-            <div class="panel-actions">
-              <button class="btn secondary" :disabled="clearingTasks" @click="clearTaskHistory">
+            <div class="panel-actions task-clear-actions" :class="{ confirming: confirmingClearTasks }">
+              <template v-if="confirmingClearTasks">
+                <span class="action-status inline warning">
+                  <i></i>
+                  {{ clearTasksConfirmStatusText }}
+                </span>
+                <button
+                  class="btn secondary"
+                  type="button"
+                  :disabled="clearTasksCancelDisabled"
+                  :title="clearTasksCancelDisabledReason || '取消清空任务历史'"
+                  @click="cancelClearTaskHistory"
+                >
+                  取消
+                </button>
+                <button
+                  class="btn danger"
+                  type="button"
+                  :disabled="clearTasksConfirmDisabled"
+                  :title="clearTasksConfirmDisabledReason || clearTasksConfirmTitle"
+                  @click="confirmClearTaskHistory"
+                >
+                  <Icon name="trash" />
+                  {{ clearingTasks ? '清理中' : '确认清空' }}
+                </button>
+              </template>
+              <button
+                v-else
+                class="btn secondary"
+                type="button"
+                :disabled="clearTasksDisabled"
+                :title="clearTasksDisabledReason || '清空当前后台任务历史记录'"
+                @click="requestClearTaskHistory"
+              >
                 <Icon name="trash" />
                 清空历史
               </button>
             </div>
             <div v-if="tasks.length" class="task-list">
-              <button
+              <article
                 v-for="task in tasks"
                 :key="task.id"
                 :class="['task-item', { active: selectedTaskId === task.id }]"
-                @click="selectTask(task.id)"
               >
-                <strong>{{ task.status }}</strong>
-                <span>{{ task.id.slice(0, 12) }}</span>
-                <em>{{ task.finished_at || task.started_at || task.created_at }}</em>
-              </button>
+                <button
+                  class="task-item-main"
+                  type="button"
+                  :aria-pressed="selectedTaskId === task.id"
+                  :title="selectedTaskId === task.id ? '当前任务' : '查看任务详情'"
+                  @click="selectTask(task.id)"
+                >
+                  <strong>{{ taskStatusLabel(task.status) }}</strong>
+                  <span>{{ task.id.slice(0, 12) }}</span>
+                  <em>{{ task.finished_at || task.started_at || task.created_at }}</em>
+                </button>
+                <div v-if="taskHasControls(task)" class="task-control-actions" aria-label="任务控制">
+                  <button
+                    class="mini-action"
+                    type="button"
+                    :disabled="!taskCanPause(task) || taskControlBusy(task)"
+                    :title="taskPauseTitle(task)"
+                    @click="controlTask(task, 'pause')"
+                  >
+                    暂停
+                  </button>
+                  <button
+                    class="mini-action"
+                    type="button"
+                    :disabled="!taskCanResume(task) || taskControlBusy(task)"
+                    :title="taskResumeTitle(task)"
+                    @click="controlTask(task, 'resume')"
+                  >
+                    继续
+                  </button>
+                  <button
+                    class="mini-action danger"
+                    type="button"
+                    :disabled="!taskCanCancel(task) || taskControlBusy(task)"
+                    :title="taskCancelTitle(task)"
+                    @click="controlTask(task, 'cancel')"
+                  >
+                    终止
+                  </button>
+                </div>
+              </article>
             </div>
             <EmptyState v-else title="暂无任务" body="执行下载后任务会出现在这里。" />
           </Panel>
@@ -1820,7 +2945,7 @@
               <section class="event-window">
                 <div class="task-section-head">
                   <strong>当前进度</strong>
-                  <span>最新 {{ visibleTaskEvents.length }} / {{ selectedTaskEvents.length }} 条</span>
+                  <span>{{ selectedTaskControlText }} · 最新 {{ visibleTaskEvents.length }} / {{ selectedTaskEvents.length }} 条</span>
                 </div>
                 <div class="event-list compact">
                   <div v-for="event in visibleTaskEvents" :key="event.key" class="event-row">
@@ -1841,21 +2966,59 @@
                         :key="size"
                         type="button"
                         :class="['page-size-button', { active: taskQualityIssuePagination.pageSize === size }]"
+                        :aria-pressed="taskQualityIssuePagination.pageSize === size"
+                        :title="pageSizeButtonTitle(size, taskQualityIssuePagination.pageSize, '质量门禁明细')"
                         @click="setTaskQualityIssuePageSize(size)"
                       >
                         {{ size }}
                       </button>
                     </div>
                     <div class="pagination-controls">
-                      <button type="button" :disabled="taskQualityIssuePagination.page <= 1" @click="goTaskQualityIssuePage(1)">首页</button>
-                      <button type="button" :disabled="taskQualityIssuePagination.page <= 1" @click="goTaskQualityIssuePage(taskQualityIssuePagination.page - 1)">上一页</button>
-                      <span>{{ taskQualityIssuePagination.page }} / {{ taskQualityIssueTotalPages }}</span>
-                      <button type="button" :disabled="taskQualityIssuePagination.page >= taskQualityIssueTotalPages" @click="goTaskQualityIssuePage(taskQualityIssuePagination.page + 1)">下一页</button>
-                      <button type="button" :disabled="taskQualityIssuePagination.page >= taskQualityIssueTotalPages" @click="goTaskQualityIssuePage(taskQualityIssueTotalPages)">末页</button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('first', taskQualityIssuePagination.page, taskQualityIssueTotalPages)"
+                        :aria-disabled="paginationActionDisabled('first', taskQualityIssuePagination.page, taskQualityIssueTotalPages)"
+                        :aria-label="paginationActionTitle('first', taskQualityIssuePagination.page, taskQualityIssueTotalPages, '质量门禁明细')"
+                        :title="paginationActionTitle('first', taskQualityIssuePagination.page, taskQualityIssueTotalPages, '质量门禁明细')"
+                        @click="goTaskQualityIssuePage(1)"
+                      >
+                        首页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('prev', taskQualityIssuePagination.page, taskQualityIssueTotalPages)"
+                        :aria-disabled="paginationActionDisabled('prev', taskQualityIssuePagination.page, taskQualityIssueTotalPages)"
+                        :aria-label="paginationActionTitle('prev', taskQualityIssuePagination.page, taskQualityIssueTotalPages, '质量门禁明细')"
+                        :title="paginationActionTitle('prev', taskQualityIssuePagination.page, taskQualityIssueTotalPages, '质量门禁明细')"
+                        @click="goTaskQualityIssuePage(taskQualityIssuePagination.page - 1)"
+                      >
+                        上一页
+                      </button>
+                      <span class="pagination-status" aria-live="polite">{{ taskQualityIssuePagination.page }} / {{ taskQualityIssueTotalPages }}</span>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('next', taskQualityIssuePagination.page, taskQualityIssueTotalPages)"
+                        :aria-disabled="paginationActionDisabled('next', taskQualityIssuePagination.page, taskQualityIssueTotalPages)"
+                        :aria-label="paginationActionTitle('next', taskQualityIssuePagination.page, taskQualityIssueTotalPages, '质量门禁明细')"
+                        :title="paginationActionTitle('next', taskQualityIssuePagination.page, taskQualityIssueTotalPages, '质量门禁明细')"
+                        @click="goTaskQualityIssuePage(taskQualityIssuePagination.page + 1)"
+                      >
+                        下一页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('last', taskQualityIssuePagination.page, taskQualityIssueTotalPages)"
+                        :aria-disabled="paginationActionDisabled('last', taskQualityIssuePagination.page, taskQualityIssueTotalPages)"
+                        :aria-label="paginationActionTitle('last', taskQualityIssuePagination.page, taskQualityIssueTotalPages, '质量门禁明细')"
+                        :title="paginationActionTitle('last', taskQualityIssuePagination.page, taskQualityIssueTotalPages, '质量门禁明细')"
+                        @click="goTaskQualityIssuePage(taskQualityIssueTotalPages)"
+                      >
+                        末页
+                      </button>
                     </div>
                   </div>
                 </div>
-                <DataTable :rows="pagedTaskQualityIssueRows" :columns="taskQualityIssueColumns" empty="暂无质量门禁明细。" />
+                <DataTable :rows="pagedTaskQualityIssueRows" :columns="taskQualityIssueColumns" aria-label="质量门禁明细" empty="暂无质量门禁明细。" />
               </section>
               <div v-else-if="selectedTask.error" class="error-box">{{ selectedTask.error }}</div>
               <section v-if="displayTaskEventRows.length" class="task-paged-section">
@@ -1869,21 +3032,59 @@
                         :key="size"
                         type="button"
                         :class="['page-size-button', { active: taskEventPagination.pageSize === size }]"
+                        :aria-pressed="taskEventPagination.pageSize === size"
+                        :title="pageSizeButtonTitle(size, taskEventPagination.pageSize, '任务事件')"
                         @click="setTaskEventPageSize(size)"
                       >
                         {{ size }}
                       </button>
                     </div>
                     <div class="pagination-controls">
-                      <button type="button" :disabled="taskEventPagination.page <= 1" @click="goTaskEventPage(1)">首页</button>
-                      <button type="button" :disabled="taskEventPagination.page <= 1" @click="goTaskEventPage(taskEventPagination.page - 1)">上一页</button>
-                      <span>{{ taskEventPagination.page }} / {{ taskEventTotalPages }}</span>
-                      <button type="button" :disabled="taskEventPagination.page >= taskEventTotalPages" @click="goTaskEventPage(taskEventPagination.page + 1)">下一页</button>
-                      <button type="button" :disabled="taskEventPagination.page >= taskEventTotalPages" @click="goTaskEventPage(taskEventTotalPages)">末页</button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('first', taskEventPagination.page, taskEventTotalPages)"
+                        :aria-disabled="paginationActionDisabled('first', taskEventPagination.page, taskEventTotalPages)"
+                        :aria-label="paginationActionTitle('first', taskEventPagination.page, taskEventTotalPages, '任务事件')"
+                        :title="paginationActionTitle('first', taskEventPagination.page, taskEventTotalPages, '任务事件')"
+                        @click="goTaskEventPage(1)"
+                      >
+                        首页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('prev', taskEventPagination.page, taskEventTotalPages)"
+                        :aria-disabled="paginationActionDisabled('prev', taskEventPagination.page, taskEventTotalPages)"
+                        :aria-label="paginationActionTitle('prev', taskEventPagination.page, taskEventTotalPages, '任务事件')"
+                        :title="paginationActionTitle('prev', taskEventPagination.page, taskEventTotalPages, '任务事件')"
+                        @click="goTaskEventPage(taskEventPagination.page - 1)"
+                      >
+                        上一页
+                      </button>
+                      <span class="pagination-status" aria-live="polite">{{ taskEventPagination.page }} / {{ taskEventTotalPages }}</span>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('next', taskEventPagination.page, taskEventTotalPages)"
+                        :aria-disabled="paginationActionDisabled('next', taskEventPagination.page, taskEventTotalPages)"
+                        :aria-label="paginationActionTitle('next', taskEventPagination.page, taskEventTotalPages, '任务事件')"
+                        :title="paginationActionTitle('next', taskEventPagination.page, taskEventTotalPages, '任务事件')"
+                        @click="goTaskEventPage(taskEventPagination.page + 1)"
+                      >
+                        下一页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('last', taskEventPagination.page, taskEventTotalPages)"
+                        :aria-disabled="paginationActionDisabled('last', taskEventPagination.page, taskEventTotalPages)"
+                        :aria-label="paginationActionTitle('last', taskEventPagination.page, taskEventTotalPages, '任务事件')"
+                        :title="paginationActionTitle('last', taskEventPagination.page, taskEventTotalPages, '任务事件')"
+                        @click="goTaskEventPage(taskEventTotalPages)"
+                      >
+                        末页
+                      </button>
                     </div>
                   </div>
                 </div>
-                <DataTable :rows="pagedTaskEventRows" :columns="taskEventColumns" empty="暂无事件记录。" />
+                <DataTable :rows="pagedTaskEventRows" :columns="taskEventColumns" aria-label="任务事件记录" empty="暂无事件记录。" />
               </section>
               <section v-if="selectedTaskResultRows.length" class="task-paged-section">
                 <div class="table-toolbar">
@@ -1896,21 +3097,59 @@
                         :key="size"
                         type="button"
                         :class="['page-size-button', { active: taskResultPagination.pageSize === size }]"
+                        :aria-pressed="taskResultPagination.pageSize === size"
+                        :title="pageSizeButtonTitle(size, taskResultPagination.pageSize, '写入结果')"
                         @click="setTaskResultPageSize(size)"
                       >
                         {{ size }}
                       </button>
                     </div>
                     <div class="pagination-controls">
-                      <button type="button" :disabled="taskResultPagination.page <= 1" @click="goTaskResultPage(1)">首页</button>
-                      <button type="button" :disabled="taskResultPagination.page <= 1" @click="goTaskResultPage(taskResultPagination.page - 1)">上一页</button>
-                      <span>{{ taskResultPagination.page }} / {{ taskResultTotalPages }}</span>
-                      <button type="button" :disabled="taskResultPagination.page >= taskResultTotalPages" @click="goTaskResultPage(taskResultPagination.page + 1)">下一页</button>
-                      <button type="button" :disabled="taskResultPagination.page >= taskResultTotalPages" @click="goTaskResultPage(taskResultTotalPages)">末页</button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('first', taskResultPagination.page, taskResultTotalPages)"
+                        :aria-disabled="paginationActionDisabled('first', taskResultPagination.page, taskResultTotalPages)"
+                        :aria-label="paginationActionTitle('first', taskResultPagination.page, taskResultTotalPages, '写入结果')"
+                        :title="paginationActionTitle('first', taskResultPagination.page, taskResultTotalPages, '写入结果')"
+                        @click="goTaskResultPage(1)"
+                      >
+                        首页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('prev', taskResultPagination.page, taskResultTotalPages)"
+                        :aria-disabled="paginationActionDisabled('prev', taskResultPagination.page, taskResultTotalPages)"
+                        :aria-label="paginationActionTitle('prev', taskResultPagination.page, taskResultTotalPages, '写入结果')"
+                        :title="paginationActionTitle('prev', taskResultPagination.page, taskResultTotalPages, '写入结果')"
+                        @click="goTaskResultPage(taskResultPagination.page - 1)"
+                      >
+                        上一页
+                      </button>
+                      <span class="pagination-status" aria-live="polite">{{ taskResultPagination.page }} / {{ taskResultTotalPages }}</span>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('next', taskResultPagination.page, taskResultTotalPages)"
+                        :aria-disabled="paginationActionDisabled('next', taskResultPagination.page, taskResultTotalPages)"
+                        :aria-label="paginationActionTitle('next', taskResultPagination.page, taskResultTotalPages, '写入结果')"
+                        :title="paginationActionTitle('next', taskResultPagination.page, taskResultTotalPages, '写入结果')"
+                        @click="goTaskResultPage(taskResultPagination.page + 1)"
+                      >
+                        下一页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('last', taskResultPagination.page, taskResultTotalPages)"
+                        :aria-disabled="paginationActionDisabled('last', taskResultPagination.page, taskResultTotalPages)"
+                        :aria-label="paginationActionTitle('last', taskResultPagination.page, taskResultTotalPages, '写入结果')"
+                        :title="paginationActionTitle('last', taskResultPagination.page, taskResultTotalPages, '写入结果')"
+                        @click="goTaskResultPage(taskResultTotalPages)"
+                      >
+                        末页
+                      </button>
                     </div>
                   </div>
                 </div>
-                <DataTable :rows="displayResultRows" :columns="resultColumns" empty="暂无写入结果。" />
+                <DataTable :rows="displayResultRows" :columns="resultColumns" aria-label="任务写入结果" empty="暂无写入结果。" />
               </section>
             </div>
             <EmptyState v-else title="未选择任务" body="左侧选择任务查看事件和结果。" />
@@ -1923,7 +3162,7 @@
               <section class="ai-side-card">
                 <header>
                   <span>数据参数</span>
-                  <strong>{{ aiWorkbenchForm.timeframe }} · {{ aiSelectedSymbols.length }} 只</strong>
+                  <strong>{{ aiWorkbenchDataSummary }}</strong>
                 </header>
                 <div class="ai-side-grid">
                   <label>
@@ -1934,19 +3173,19 @@
                     <span>结束</span>
                     <input v-model="aiWorkbenchForm.end" type="date" />
                   </label>
-                  <label>
+                  <label class="ai-side-period span-full">
                     <span>周期</span>
-                    <select v-model="aiWorkbenchForm.timeframe">
-                      <option v-for="timeframe in config?.timeframes || ['1d']" :key="timeframe" :value="timeframe">{{ timeframe }}</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>标的上限</span>
-                    <input v-model.number="aiWorkbenchForm.max_symbols" type="number" min="1" max="50" />
-                  </label>
-                  <label>
-                    <span>数据行</span>
-                    <input v-model.number="aiWorkbenchForm.max_rows" type="number" min="20" max="1000" step="20" />
+                    <div class="ai-period-options" role="group" aria-label="AI 分析周期">
+                      <button
+                        v-for="timeframe in config?.timeframes || ['1d']"
+                        :key="timeframe"
+                        type="button"
+                        :class="['ai-period-option', { active: aiWorkbenchForm.timeframe === timeframe }]"
+                        @click="aiWorkbenchForm.timeframe = timeframe"
+                      >
+                        {{ timeframe }}
+                      </button>
+                    </div>
                   </label>
                   <label>
                     <span>K线图</span>
@@ -1963,70 +3202,70 @@
                 <div class="ai-side-actions">
                   <label class="mini-action skill-file-action">
                     <Icon name="folder" />
-                    导入文本
+                    导入
                     <input type="file" accept=".md,.txt,text/markdown,text/plain" @change="importAiSkillPrompt" />
                   </label>
-                  <button class="mini-action" type="button" @click="aiWorkbenchForm.skill_prompt = ''">清空</button>
-                </div>
-                <textarea v-model="aiWorkbenchForm.skill_prompt" rows="7" placeholder="粘贴或导入你的 skill、研究框架、输出约束。"></textarea>
-              </section>
-
-              <section class="ai-side-card ai-symbol-side-card">
-                <header>
-                  <span>标的选择</span>
-                  <strong>{{ aiSymbolVisibleRows.length }} / {{ aiCurrentSymbolRows.length }}</strong>
-                </header>
-                <select v-model="aiSymbolGroupName">
-                  <option v-for="group in aiSymbolGroups" :key="group.name" :value="group.name">
-                    {{ group.name }} · {{ group.symbols.length }}只
-                  </option>
-                </select>
-                <input v-model="aiSymbolKeyword" type="search" placeholder="搜索代码或名称" />
-                <div class="ai-natural-filter">
-                  <input v-model="aiSymbolNaturalQuery" type="text" placeholder="例如：选择创业板里做 AI 分析" />
+                  <template v-if="confirmingClearAiSkillPrompt">
+                    <button class="mini-action" type="button" title="取消清空 Skill 提示词" @click="cancelClearAiSkillPrompt">取消</button>
+                    <button class="mini-action danger" type="button" :title="aiSkillPromptClearConfirmTitle" @click="confirmClearAiSkillPrompt">确认清空</button>
+                  </template>
                   <button
+                    v-else
                     class="mini-action"
                     type="button"
-                    :disabled="runningAiSymbolFilter || !aiSymbolNaturalQuery.trim()"
-                    @click="runAiSymbolFilter"
+                    :disabled="aiSkillPromptClearDisabled"
+                    :title="aiSkillPromptClearDisabledReason || '清空 Skill 提示词前需要确认'"
+                    @click="requestClearAiSkillPrompt"
                   >
-                    <Icon name="sparkles" />
-                    筛选
+                    清空
                   </button>
                 </div>
-                <div class="ai-symbol-actions">
-                  <button class="mini-action" type="button" :disabled="!aiCurrentSymbolRows.length" @click="replaceAiSymbolsFromGroup">
-                    替换为本类
-                  </button>
-                  <button class="mini-action" type="button" :disabled="!aiSymbolVisibleRows.length" @click="appendVisibleAiSymbols">
-                    追加筛选
-                  </button>
-                  <button class="mini-action" type="button" @click="aiWorkbenchForm.symbols = ''">清空</button>
-                </div>
-                <div class="ai-symbol-list">
-                  <button
-                    v-for="row in aiSymbolVisibleRows"
-                    :key="row.symbol"
-                    type="button"
-                    :class="['ai-symbol-row', { active: aiSelectedSymbolSet.has(row.symbol) }]"
-                    @click="toggleAiSymbol(row.symbol)"
-                  >
-                    <strong>{{ row.symbol }}</strong>
-                    <span>{{ row.name || '-' }}</span>
-                    <em>{{ row.assetLabel }}</em>
-                  </button>
-                </div>
-                <label class="ai-selected-symbols">
-                  <span>已选代码</span>
-                  <textarea v-model="aiWorkbenchForm.symbols" rows="4" placeholder="从上方列表选择，或手动输入代码。"></textarea>
-                </label>
+                <p v-if="confirmingClearAiSkillPrompt" class="ai-side-warning">{{ aiSkillPromptClearConfirmText }}</p>
+                <textarea
+                  v-model="aiWorkbenchForm.skill_prompt"
+                  rows="7"
+                  aria-label="Skill 侧载提示词"
+                  placeholder="粘贴或导入你的 skill、研究框架、输出约束。"
+                ></textarea>
               </section>
+
             </aside>
 
             <section class="ai-chat-panel">
+              <div class="ai-workbench-tabs" role="tablist" aria-label="AI 工作台页签">
+                <button
+                  v-for="tab in aiWorkbenchTabs"
+                  :key="tab.key"
+                  type="button"
+                  :class="{ active: activeAiWorkbenchTab === tab.key }"
+                  role="tab"
+                  :id="aiWorkbenchTabId(tab.key)"
+                  :aria-selected="activeAiWorkbenchTab === tab.key"
+                  :aria-controls="aiWorkbenchPanelId(tab.key)"
+                  :tabindex="activeAiWorkbenchTab === tab.key ? 0 : -1"
+                  @click="activeAiWorkbenchTab = tab.key"
+                  @keydown="handleAiWorkbenchTabKeydown($event, tab.key)"
+                >
+                  {{ tab.label }}
+                </button>
+              </div>
+
+              <div
+                v-if="activeAiWorkbenchTab === 'chat'"
+                :id="aiWorkbenchPanelId('chat')"
+                class="ai-chat-mode"
+                role="tabpanel"
+                :aria-labelledby="aiWorkbenchTabId('chat')"
+              >
               <div class="ai-chat-context">
                 <span>{{ aiWorkbenchContextSummary }}</span>
-                <em>{{ aiConfigReady ? `模型 ${aiSettings.model}` : '请先在设置页配置模型' }}</em>
+                <div class="ai-chat-context-meta">
+                  <strong :class="['ai-run-state', aiWorkbenchStreamStatus, { active: runningAiWorkbench }]">
+                    <i></i>
+                    {{ aiWorkbenchStatusLabel }}
+                  </strong>
+                  <em>{{ aiConfigReady ? `模型 ${aiSettings.model}` : '请先在设置页配置模型' }}</em>
+                </div>
               </div>
 
               <div class="ai-chat-thread">
@@ -2034,7 +3273,7 @@
                   <span>用户目标</span>
                   <p>{{ aiWorkbenchForm.prompt || '在底部输入你的分析目标。' }}</p>
                 </article>
-                <article v-if="aiWorkbenchResult" class="ai-chat-message assistant">
+                <article v-if="aiWorkbenchResultVisible" class="ai-chat-message assistant">
                   <span>AI 输出</span>
                   <div class="ai-workbench-output">
                     <section class="review-markdown-card ai-markdown-card">
@@ -2045,10 +3284,11 @@
                       >
                         <template v-if="block.type === 'table'">
                           <div class="review-markdown-table">
-                            <table>
+                            <table aria-label="AI 输出结构化表格">
+                              <caption class="sr-only">AI 输出结构化表格</caption>
                               <thead>
                                 <tr>
-                                  <th v-for="head in block.headers" :key="head">{{ head }}</th>
+                                  <th v-for="head in block.headers" :key="head" scope="col">{{ head }}</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -2067,7 +3307,7 @@
                           <p v-for="(line, lineIndex) in block.lines" :key="lineIndex">{{ line }}</p>
                         </template>
                       </article>
-                      <em>{{ aiWorkbenchResult.disclaimer }}</em>
+                      <em>{{ aiWorkbenchResult?.disclaimer || '仅用于本地行情研究，不构成投资建议。' }}</em>
                     </section>
                     <div v-if="aiWorkbenchChartItems.length" class="research-kline-section ai-kline-section">
                       <div class="review-section-head">
@@ -2078,41 +3318,389 @@
                         <KlineChart v-for="item in aiWorkbenchChartItems" :key="`ai-${item.symbol}`" :item="item" />
                       </div>
                     </div>
-                    <DataTable :rows="aiWorkbenchLatestRows" :columns="aiWorkbenchLatestColumns" empty="暂无最新指标。" />
-                    <DataTable :rows="aiWorkbenchRecordRows" :columns="aiWorkbenchRecordColumns" empty="暂无行情上下文。" />
+                    <DataTable :rows="aiWorkbenchLatestRows" :columns="aiWorkbenchLatestColumns" aria-label="AI最新指标" empty="暂无最新指标。" />
+                    <DataTable :rows="aiWorkbenchRecordRows" :columns="aiWorkbenchRecordColumns" aria-label="AI行情上下文" empty="暂无行情上下文。" />
                   </div>
                 </article>
-                <EmptyState v-else title="等待对话" body="左侧选择数据与 Skill，在底部输入任务后调用模型。" />
+                <EmptyState v-else title="等待对话" body="选择数据、标的与 Skill，在底部输入任务后调用模型。" />
               </div>
 
-              <form class="ai-chat-composer" @submit.prevent="runAiWorkbench">
-                <textarea
-                  v-model="aiWorkbenchForm.prompt"
-                  rows="4"
-                  placeholder="告诉 AI 你的目标，例如：用我的框架判断这批股票的强弱、风险点和下一步观察项。"
-                ></textarea>
+              <form class="ai-chat-composer" @submit.prevent="requestRunAiWorkbench">
+                <div class="ai-composer-input">
+                  <span>任务</span>
+                  <textarea
+                    v-model="aiWorkbenchForm.prompt"
+                    rows="3"
+                    aria-label="AI 工作台任务内容"
+                    placeholder="输入分析目标，例如：判断这批股票强弱、风险点和下一步观察项。"
+                    @input="confirmingRunAiWorkbench = false"
+                  ></textarea>
+                </div>
                 <div class="ai-composer-actions">
-                  <button class="btn secondary" type="button" @click="aiWorkbenchForm.symbols = reviewForm.symbols || symbolsText">
-                    载入当前标的
+                  <template v-if="confirmingLoadAiWorkbenchSymbols">
+                    <button class="btn secondary" type="button" title="取消载入标的" @click="cancelLoadAiWorkbenchSymbols">取消</button>
+                    <button class="btn danger" type="button" :title="aiWorkbenchLoadSymbolsConfirmText" @click="confirmLoadAiWorkbenchSymbols">确认载入</button>
+                  </template>
+                  <template v-else-if="confirmingRunAiWorkbench">
+                    <button class="btn secondary" type="button" title="取消发送 AI 任务" @click="cancelRunAiWorkbench">取消</button>
+                    <button
+                      class="btn danger"
+                      type="button"
+                      :disabled="aiWorkbenchRunDisabled"
+                      :title="aiWorkbenchRunDisabledReason || aiWorkbenchRunConfirmText"
+                      @click="confirmRunAiWorkbench"
+                    >
+                      确认发送
+                    </button>
+                  </template>
+                  <button
+                    v-else
+                    class="btn secondary"
+                    type="button"
+                    :disabled="aiWorkbenchLoadSymbolsDisabled"
+                    :title="aiWorkbenchLoadSymbolsDisabledReason || '载入标的前需要确认'"
+                    @click="requestLoadAiWorkbenchSymbols"
+                  >
+                    载入标的
                   </button>
-                  <button class="btn primary" type="submit" :disabled="runningAiWorkbench || !aiConfigReady || !aiWorkbenchForm.prompt.trim()">
+                  <button
+                    v-if="!confirmingRunAiWorkbench"
+                    class="btn primary"
+                    type="submit"
+                    :disabled="aiWorkbenchRunDisabled"
+                    :title="aiWorkbenchRunDisabledReason || '发送 AI 任务前需要确认'"
+                  >
                     <Icon name="sparkles" />
                     {{ runningAiWorkbench ? '运行中' : '发送' }}
                   </button>
                 </div>
+                <div class="ai-composer-status" :class="{ busy: runningAiWorkbench, warning: Boolean((aiWorkbenchRunDisabledReason && !runningAiWorkbench) || confirmingLoadAiWorkbenchSymbols || confirmingRunAiWorkbench) }">
+                  <i></i>
+                  <span>{{ confirmingLoadAiWorkbenchSymbols ? aiWorkbenchLoadSymbolsConfirmText : confirmingRunAiWorkbench ? aiWorkbenchRunConfirmText : aiWorkbenchRunStatusText }}</span>
+                </div>
               </form>
+              </div>
+
+              <div
+                v-else
+                :id="aiWorkbenchPanelId('symbols')"
+                class="ai-symbol-workspace"
+                role="tabpanel"
+                :aria-labelledby="aiWorkbenchTabId('symbols')"
+              >
+                <header class="ai-symbol-workspace-head">
+                  <div>
+                    <span>标的池</span>
+                    <strong>
+                      {{ aiCurrentSymbolGroup?.name || '-' }} ·
+                      {{ formatInt(aiFilteredSymbolRows.length) }} / {{ formatInt(aiCurrentSymbolRows.length) }}
+                    </strong>
+                  </div>
+                  <button
+                    class="mini-action"
+                    type="button"
+                    :disabled="aiSymbolMetricsDisabled"
+                    :title="aiSymbolMetricsDisabledReason || '刷新当前标的池指标前需要确认'"
+                    @click="requestAiSymbolRunAction('metrics')"
+                  >
+                    <Icon name="refresh" />
+                    {{ loadingAiSymbolMetrics ? '刷新中' : '刷新指标' }}
+                  </button>
+                </header>
+
+                <div class="ai-symbol-filter-bar">
+                  <label>
+                    <span>分组</span>
+                    <select
+                      v-model="aiSymbolGroupName"
+                      :disabled="Boolean(aiSymbolControlsDisabledReason)"
+                      :title="aiSymbolControlsDisabledReason || '切换标的分组'"
+                      aria-describedby="ai-symbol-status"
+                    >
+                      <option v-for="group in aiSymbolGroups" :key="group.name" :value="group.name">
+                        {{ group.name }} · {{ group.symbols.length }}只
+                      </option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>搜索</span>
+                    <input
+                      v-model="aiSymbolKeyword"
+                      type="search"
+                      placeholder="代码、名称、类型"
+                      :disabled="Boolean(aiSymbolControlsDisabledReason)"
+                      :title="aiSymbolControlsDisabledReason || '按代码、名称或类型筛选当前分组'"
+                      aria-describedby="ai-symbol-status"
+                    />
+                  </label>
+                  <label class="ai-symbol-topn-field">
+                    <span>前 N</span>
+                    <input
+                      v-model.number="aiSymbolTopN"
+                      type="number"
+                      min="1"
+                      step="1"
+                      :disabled="Boolean(aiSymbolControlsDisabledReason)"
+                      :title="aiSymbolControlsDisabledReason || '设置按当前排序选中的数量'"
+                      aria-describedby="ai-symbol-status"
+                    />
+                  </label>
+                  <button class="mini-action" type="button" :disabled="aiSymbolTopNDisabled" :title="aiSymbolTopNDisabledReason || aiSymbolTopNActionTitle" @click="requestAiSymbolAction('topN')">
+                    选中前 N
+                  </button>
+                </div>
+
+                <div class="ai-natural-filter">
+                  <input
+                    v-model="aiSymbolNaturalQuery"
+                    type="text"
+                    aria-label="AI 标的自然语言筛选条件"
+                    placeholder="例如：选择创业板里成交额最高的股票"
+                    :disabled="Boolean(aiSymbolControlsDisabledReason)"
+                    :title="aiSymbolControlsDisabledReason || '输入自然语言筛选条件'"
+                    aria-describedby="ai-symbol-status"
+                  />
+                  <button
+                    class="mini-action"
+                    type="button"
+                    :disabled="aiSymbolFilterDisabled"
+                    :title="aiSymbolFilterDisabledReason || '执行 AI 筛选前需要确认'"
+                    @click="requestAiSymbolRunAction('filter')"
+                  >
+                    <Icon name="sparkles" />
+                    {{ runningAiSymbolFilter ? '筛选中' : 'AI 筛选' }}
+                  </button>
+                </div>
+
+                <div class="ai-symbol-actions">
+                  <template v-if="pendingAiSymbolRunAction">
+                    <button class="mini-action" type="button" title="取消当前 AI 标的运行操作" @click="cancelAiSymbolRunAction">取消</button>
+                    <button
+                      class="mini-action danger"
+                      type="button"
+                      :disabled="aiSymbolRunPendingDisabled"
+                      :title="aiSymbolRunPendingDisabledReason || aiSymbolRunPendingText"
+                      @click="confirmAiSymbolRunAction"
+                    >
+                      确认{{ aiSymbolRunPendingActionLabel }}
+                    </button>
+                  </template>
+                  <template v-else-if="pendingAiSymbolAction">
+                    <button class="mini-action" type="button" title="取消当前 AI 标的操作" @click="cancelAiSymbolAction">取消</button>
+                    <button
+                      class="mini-action danger"
+                      type="button"
+                      :disabled="aiSymbolPendingActionDisabled"
+                      :title="aiSymbolPendingActionDisabledReason || aiSymbolPendingActionText"
+                      @click="confirmAiSymbolAction"
+                    >
+                      确认{{ aiSymbolPendingActionLabel }}
+                    </button>
+                  </template>
+                  <button
+                    v-else
+                    class="mini-action"
+                    type="button"
+                    :disabled="aiSymbolReplaceGroupDisabled"
+                    :title="aiSymbolReplaceGroupDisabledReason || '替换本类前需要确认'"
+                    @click="requestAiSymbolAction('replaceGroup')"
+                  >
+                    替换本类
+                  </button>
+                  <button
+                    v-if="!pendingAiSymbolAction && !pendingAiSymbolRunAction"
+                    class="mini-action"
+                    type="button"
+                    :disabled="aiSymbolAppendFilteredDisabled"
+                    :title="aiSymbolAppendFilteredDisabledReason || '追加当前筛选前需要确认'"
+                    @click="requestAiSymbolAction('appendFiltered')"
+                  >
+                    追加当前筛选
+                  </button>
+                  <button
+                    v-if="!pendingAiSymbolAction && !pendingAiSymbolRunAction"
+                    class="mini-action"
+                    type="button"
+                    :disabled="aiSymbolAppendPageDisabled"
+                    :title="aiSymbolAppendPageDisabledReason || '追加本页前需要确认'"
+                    @click="requestAiSymbolAction('appendPage')"
+                  >
+                    追加本页
+                  </button>
+                  <template v-if="confirmingClearAiSymbols && !pendingAiSymbolAction && !pendingAiSymbolRunAction">
+                    <button class="mini-action" type="button" title="取消清空 AI 工作台标的" @click="cancelClearAiSelectedSymbols">
+                      取消
+                    </button>
+                    <button
+                      class="mini-action danger"
+                      type="button"
+                      :disabled="aiSymbolClearDisabled"
+                      :title="aiSymbolClearDisabledReason || aiSymbolClearConfirmTitle"
+                      @click="confirmClearAiSelectedSymbols"
+                    >
+                      确认清空
+                    </button>
+                  </template>
+                  <button
+                    v-else-if="!pendingAiSymbolAction && !pendingAiSymbolRunAction"
+                    class="mini-action"
+                    type="button"
+                    :disabled="aiSymbolClearDisabled"
+                    :title="aiSymbolClearDisabledReason || '清空 AI 工作台已选标的前需要确认'"
+                    @click="requestClearAiSelectedSymbols"
+                  >
+                    清空
+                  </button>
+                </div>
+
+                <div
+                  id="ai-symbol-status"
+                  class="ai-symbol-status"
+                  role="status"
+                  aria-live="polite"
+                  :class="{ busy: aiSymbolActionBusy, warning: Boolean(aiSymbolActionWarning) || Boolean(aiSymbolControlsDisabledReason) }"
+                >
+                  <i></i>
+                  <span>{{ pendingAiSymbolRunAction ? aiSymbolRunPendingText : pendingAiSymbolAction ? aiSymbolPendingActionText : confirmingClearAiSymbols ? aiSymbolClearConfirmStatusText : aiSymbolActionStatusText }}</span>
+                </div>
+
+                <div class="ai-symbol-table-toolbar">
+                  <span>
+                    显示 {{ aiSymbolPageFirst }}-{{ aiSymbolPageEnd }} / {{ formatInt(aiSortedSymbolRows.length) }} ·
+                    已选 {{ formatInt(aiSelectedSymbols.length) }}
+                  </span>
+                  <em class="ai-symbol-unit-note">成交额源字段为万元，表内自动换算为万/亿显示。</em>
+                  <div class="table-controls">
+                    <div class="page-size-group" aria-label="标的池每页条数">
+                      <span>每页</span>
+                      <button
+                        v-for="size in aiSymbolPageSizeOptions"
+                        :key="size"
+                        type="button"
+                        :class="['page-size-button', { active: aiSymbolPagination.pageSize === size }]"
+                        :aria-pressed="aiSymbolPagination.pageSize === size"
+                        :title="pageSizeButtonTitle(size, aiSymbolPagination.pageSize, 'AI标的池')"
+                        @click="setAiSymbolPageSize(size)"
+                      >
+                        {{ size }}
+                      </button>
+                    </div>
+                    <div class="pagination-controls">
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('first', aiSymbolPagination.page, aiSymbolTotalPages)"
+                        :aria-disabled="paginationActionDisabled('first', aiSymbolPagination.page, aiSymbolTotalPages)"
+                        :aria-label="paginationActionTitle('first', aiSymbolPagination.page, aiSymbolTotalPages, 'AI标的池')"
+                        :title="paginationActionTitle('first', aiSymbolPagination.page, aiSymbolTotalPages, 'AI标的池')"
+                        @click="goAiSymbolPage(1)"
+                      >
+                        首页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('prev', aiSymbolPagination.page, aiSymbolTotalPages)"
+                        :aria-disabled="paginationActionDisabled('prev', aiSymbolPagination.page, aiSymbolTotalPages)"
+                        :aria-label="paginationActionTitle('prev', aiSymbolPagination.page, aiSymbolTotalPages, 'AI标的池')"
+                        :title="paginationActionTitle('prev', aiSymbolPagination.page, aiSymbolTotalPages, 'AI标的池')"
+                        @click="goAiSymbolPage(aiSymbolPagination.page - 1)"
+                      >
+                        上一页
+                      </button>
+                      <span class="pagination-status" aria-live="polite">{{ aiSymbolPagination.page }} / {{ aiSymbolTotalPages }}</span>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('next', aiSymbolPagination.page, aiSymbolTotalPages)"
+                        :aria-disabled="paginationActionDisabled('next', aiSymbolPagination.page, aiSymbolTotalPages)"
+                        :aria-label="paginationActionTitle('next', aiSymbolPagination.page, aiSymbolTotalPages, 'AI标的池')"
+                        :title="paginationActionTitle('next', aiSymbolPagination.page, aiSymbolTotalPages, 'AI标的池')"
+                        @click="goAiSymbolPage(aiSymbolPagination.page + 1)"
+                      >
+                        下一页
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="paginationActionDisabled('last', aiSymbolPagination.page, aiSymbolTotalPages)"
+                        :aria-disabled="paginationActionDisabled('last', aiSymbolPagination.page, aiSymbolTotalPages)"
+                        :aria-label="paginationActionTitle('last', aiSymbolPagination.page, aiSymbolTotalPages, 'AI标的池')"
+                        :title="paginationActionTitle('last', aiSymbolPagination.page, aiSymbolTotalPages, 'AI标的池')"
+                        @click="goAiSymbolPage(aiSymbolTotalPages)"
+                      >
+                        末页
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-if="aiSortedSymbolRows.length" class="ai-symbol-table-scroll">
+                  <table class="ai-symbol-table" aria-label="AI标的池">
+                    <caption class="sr-only">AI标的池</caption>
+                    <thead>
+                      <tr>
+                        <th v-for="column in aiSymbolTableColumns" :key="column.key" :aria-sort="aiSymbolAriaSort(column.key)" scope="col">
+                          <button
+                            type="button"
+                            :aria-label="aiSymbolSortAriaLabel(column)"
+                            :title="aiSymbolSortAriaLabel(column)"
+                            @click="toggleAiSymbolSort(column.key)"
+                          >
+                            <span>{{ column.label }}</span>
+                            <em v-if="aiSymbolSortIndicator(column.key)" aria-hidden="true">{{ aiSymbolSortIndicator(column.key) }}</em>
+                          </button>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in aiPagedSymbolRows" :key="row.symbol" :class="{ selected: row.selected }">
+                        <td>
+                          <input
+                            type="checkbox"
+                            :checked="row.selected"
+                            :aria-label="aiSymbolSelectionLabel(row)"
+                            @change="toggleAiSymbol(row.symbol)"
+                          />
+                        </td>
+                        <td><strong>{{ row.symbol }}</strong></td>
+                        <td>{{ row.name || '-' }}</td>
+                        <td>{{ row.assetLabel }}</td>
+                        <td>{{ row.latestDate || '-' }}</td>
+                        <td>{{ formatDecimalValue(row.close, 2) }}</td>
+                        <td>{{ formatAmountValue(row.amount) }}</td>
+                        <td>{{ formatLargeNumberValue(row.volume) }}</td>
+                        <td>{{ formatLargeNumberValue(row.marketValue) }}</td>
+                        <td>{{ formatPercentValue(row.turnoverRate) }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <EmptyState v-else title="暂无标的" body="切换分组或搜索条件后显示。" />
+
+                <label class="ai-selected-symbols ai-symbol-selected-editor">
+                  <span>已选代码</span>
+                  <textarea v-model="aiWorkbenchForm.symbols" rows="4" placeholder="从标的池选择，或手动输入代码。"></textarea>
+                </label>
+              </div>
             </section>
           </div>
         </section>
 
         <section v-else-if="activeView === 'settings'" class="content-grid two">
           <Panel title="系统设置" subtitle="本地配置">
-            <form class="task-form" @submit.prevent="saveSettings">
+            <form class="task-form" @submit.prevent="saveSettings('system')">
+              <div class="settings-runtime-note span-full" :class="{ warning: settingsPathWarning }">
+                <strong>{{ runtimeLabel }}</strong>
+                <span>{{ settingsPathStatusText }}</span>
+              </div>
               <label class="span-full">
                 <span>行情根目录</span>
                 <div class="path-control">
                   <input v-model="settings.data_root" type="text" />
-                  <button class="btn secondary" type="button" :disabled="pickingDirectory !== ''" @click="pickDirectory('data_root')">
+                  <button
+                    class="btn secondary"
+                    type="button"
+                    :disabled="directoryPickDisabled"
+                    :title="directoryPickTitle('data_root')"
+                    @click="pickDirectory('data_root')"
+                  >
                     <Icon name="folder" />
                     {{ pickingDirectory === 'data_root' ? '选择中' : '选择文件夹' }}
                   </button>
@@ -2122,7 +3710,13 @@
                 <span>TDX PYPlugins 或根目录</span>
                 <div class="path-control">
                   <input v-model="settings.tdx_path" type="text" />
-                  <button class="btn secondary" type="button" :disabled="pickingDirectory !== ''" @click="pickDirectory('tdx_path')">
+                  <button
+                    class="btn secondary"
+                    type="button"
+                    :disabled="directoryPickDisabled"
+                    :title="directoryPickTitle('tdx_path')"
+                    @click="pickDirectory('tdx_path')"
+                  >
                     <Icon name="folder" />
                     {{ pickingDirectory === 'tdx_path' ? '选择中' : '选择文件夹' }}
                   </button>
@@ -2135,14 +3729,38 @@
                   <em :title="symbolMetadataCachePath">{{ compactPath(symbolMetadataCachePath) }}</em>
                 </div>
                 <button
+                  v-if="pendingSymbolRefreshTarget !== 'all'"
                   class="btn secondary"
                   type="button"
-                  :disabled="loadingSymbolGroups"
-                  @click="refreshShortcutGroup('all')"
+                  :disabled="symbolGroupRefreshDisabled"
+                  :title="symbolGroupRefreshDisabledReason || '更新代码表缓存前需要确认'"
+                  @click="requestSymbolGroupRefresh('all')"
                 >
                   <Icon name="refresh" />
                   {{ refreshingSymbolGroup === 'all' ? '更新中' : '更新代码表缓存' }}
                 </button>
+                <div v-else class="symbol-refresh-confirm-actions">
+                  <button class="btn secondary" type="button" title="取消更新代码表缓存" @click="cancelSymbolGroupRefresh">
+                    取消
+                  </button>
+                  <button
+                    class="btn danger"
+                    type="button"
+                    :disabled="pendingSymbolRefreshDisabled"
+                    :title="pendingSymbolRefreshDisabledReason || pendingSymbolRefreshConfirmText"
+                    @click="confirmSymbolGroupRefresh"
+                  >
+                    确认更新
+                  </button>
+                </div>
+              </div>
+              <span v-if="pendingSymbolRefreshTarget === 'all'" class="action-status inline warning symbol-refresh-status span-full">
+                <i></i>
+                {{ pendingSymbolRefreshConfirmText }}
+              </span>
+              <div class="action-readiness span-full" :class="{ warning: settingsActionWarning }">
+                <strong>{{ settingsActionStateLabel }}</strong>
+                <span>{{ settingsActionStatusText }}</span>
               </div>
               <label>
                 <span>复权</span>
@@ -2165,14 +3783,23 @@
                 <input v-model="fuyaoSettings.api_key" type="password" autocomplete="off" placeholder="用于同花顺交易日历，保存到本机浏览器 localStorage" />
               </label>
               <div class="form-actions span-full">
-                <button class="btn primary" type="submit">保存设置</button>
-                <button class="btn secondary" type="button" @click="resetSettings">恢复默认</button>
+                <button class="btn primary" type="submit" :title="settingsSaveTitle">保存设置</button>
+                <template v-if="confirmingResetSettings">
+                  <button class="btn secondary" type="button" title="取消恢复默认设置" @click="cancelResetSettings">取消</button>
+                  <button class="btn danger" type="button" title="确认恢复默认路径、运行参数和 API 设置" @click="confirmResetSettings">确认恢复</button>
+                </template>
+                <button v-else class="btn secondary" type="button" title="恢复默认前需要确认" @click="requestResetSettings">恢复默认</button>
+                <span v-if="settingsSaveFeedback" class="save-status success">{{ settingsSaveFeedback }}</span>
+                <span v-else-if="confirmingResetSettings" class="action-status inline warning settings-reset-status">
+                  <i></i>
+                  {{ resetSettingsConfirmText }}
+                </span>
               </div>
             </form>
           </Panel>
 
           <Panel title="AI 设置" subtitle="命令框 / 锐评 / AI 模块">
-            <form class="task-form ai-settings-form" @submit.prevent="saveSettings">
+            <form class="task-form ai-settings-form" @submit.prevent="saveSettings('ai')">
               <label class="span-full">
                 <span>接口 URL</span>
                 <input v-model="aiSettings.base_url" type="url" placeholder="https://api.openai.com/v1" />
@@ -2204,9 +3831,22 @@
               <div class="ai-settings-note span-full">
                 大模型命令框、AI 模块和多股复盘 AI 覆盖都会读取这里保存的参数；具体证据由各模块自动附加。
               </div>
+              <div class="action-readiness span-full" :class="{ warning: Boolean(aiSettingsActionWarning) }">
+                <strong>{{ aiSettingsActionStateLabel }}</strong>
+                <span>{{ aiSettingsActionStatusText }}</span>
+              </div>
               <div class="form-actions span-full">
-                <button class="btn primary" type="submit">保存 AI 设置</button>
-                <button class="btn secondary" type="button" @click="resetAiPromptSettings">恢复默认提示词</button>
+                <button class="btn primary" type="submit" :title="aiSettingsSaveTitle">保存 AI 设置</button>
+                <template v-if="confirmingResetAiPromptSettings">
+                  <button class="btn secondary" type="button" title="取消恢复默认提示词" @click="cancelResetAiPromptSettings">取消</button>
+                  <button class="btn danger" type="button" title="确认恢复默认提示词" @click="confirmResetAiPromptSettings">确认恢复</button>
+                </template>
+                <button v-else class="btn secondary" type="button" title="恢复默认提示词前需要确认" @click="requestResetAiPromptSettings">恢复默认提示词</button>
+                <span v-if="aiSettingsSaveFeedback" class="save-status success">{{ aiSettingsSaveFeedback }}</span>
+                <span v-else-if="confirmingResetAiPromptSettings" class="action-status inline warning settings-reset-status">
+                  <i></i>
+                  {{ resetAiPromptSettingsConfirmText }}
+                </span>
               </div>
             </form>
           </Panel>
@@ -2226,7 +3866,7 @@
               <article>
                 <span>AI 数据处理</span>
                 <code>POST {{ publicApiBaseUrl }}/ai/stock-agent</code>
-                <em>调用方可传自己的 base_url、api_key、model、prompt 和 skill_prompt。</em>
+                <em>默认读取当前保存的 AI 设置；内置 stock-data skill，会优先引用本地 SQLite 行情索引。</em>
               </article>
               <article>
                 <span>Skill 导入</span>
@@ -2256,12 +3896,18 @@
       </main>
     </div>
 
-    <div v-if="directoryBrowserOpen" class="modal-backdrop" @click.self="closeDirectoryBrowser">
-      <section class="asset-picker-modal directory-browser-modal" role="dialog" aria-modal="true" aria-labelledby="directory-browser-title">
+    <div v-if="directoryBrowserOpen" class="modal-backdrop" @click.self="closeDirectoryBrowser" @keydown.esc="closeDirectoryBrowser">
+      <section
+        class="asset-picker-modal directory-browser-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="directory-browser-title"
+        aria-describedby="directory-browser-description"
+      >
         <header class="asset-picker-head">
           <div>
             <h3 id="directory-browser-title">选择{{ directoryFieldLabel(directoryBrowserField) }}</h3>
-            <p>{{ directoryBrowserReason || '浏览当前服务可访问的目录' }}</p>
+            <p id="directory-browser-description">{{ directoryBrowserReason || '浏览当前服务可访问的目录' }}</p>
           </div>
           <button class="icon-button" type="button" aria-label="关闭" @click="closeDirectoryBrowser">
             <Icon name="collapse" />
@@ -2269,14 +3915,26 @@
         </header>
 
         <div class="directory-browser-path">
-          <input v-model="directoryBrowserPath" type="text" aria-label="当前目录路径" @keyup.enter="loadDirectoryBrowser(directoryBrowserPath)" />
-          <button class="btn secondary" type="button" :disabled="directoryBrowserLoading" @click="loadDirectoryBrowser(directoryBrowserPath)">
+          <input
+            ref="directoryBrowserPathInput"
+            v-model="directoryBrowserPath"
+            type="text"
+            aria-label="当前目录路径"
+            @keyup.enter="requestLoadDirectoryBrowser(directoryBrowserPath)"
+          />
+          <button
+            class="btn secondary"
+            type="button"
+            :disabled="directoryBrowserOpenDisabled"
+            :title="directoryBrowserOpenDisabledReason || '读取当前输入路径下的可访问目录'"
+            @click="requestLoadDirectoryBrowser(directoryBrowserPath)"
+          >
             <Icon name="folder" />
             打开
           </button>
         </div>
 
-        <div class="asset-picker-summary">
+        <div class="asset-picker-summary" role="status" aria-live="polite">
           <span :title="directoryBrowserPath">当前位置 {{ compactPath(directoryBrowserPath) }}</span>
           <strong>{{ formatInt(directoryBrowserEntries.length) }} 个目录</strong>
         </div>
@@ -2288,7 +3946,9 @@
             v-if="directoryBrowserParent"
             class="directory-browser-row parent"
             type="button"
-            @click="loadDirectoryBrowser(directoryBrowserParent)"
+            :disabled="directoryBrowserLoading"
+            :title="directoryBrowserLoading ? '正在读取目录，请稍候' : directoryBrowserParent"
+            @click="requestLoadDirectoryBrowser(directoryBrowserParent)"
           >
             <Icon name="folder" />
             <span>
@@ -2301,8 +3961,9 @@
             :key="entry.path"
             class="directory-browser-row"
             type="button"
-            :disabled="!entry.readable"
-            @click="loadDirectoryBrowser(entry.path)"
+            :disabled="directoryBrowserLoading || !entry.readable"
+            :title="directoryBrowserLoading ? '正在读取目录，请稍候' : entry.readable ? entry.path : '该目录当前不可读取'"
+            @click="requestLoadDirectoryBrowser(entry.path)"
           >
             <Icon name="folder" />
             <span>
@@ -2314,20 +3975,42 @@
         </div>
 
         <footer class="asset-picker-footer">
+          <span
+            v-if="directoryBrowserStatusText"
+            class="action-status inline"
+            role="status"
+            aria-live="polite"
+            :class="{ busy: directoryBrowserLoading, warning: directoryBrowserStatusTone === 'warning' }"
+          >
+            <i></i>
+            {{ directoryBrowserStatusText }}
+          </span>
           <button class="btn secondary" type="button" @click="closeDirectoryBrowser">取消</button>
-          <button class="btn primary" type="button" :disabled="!directoryBrowserPath" @click="confirmDirectoryBrowserPath">
+          <button
+            class="btn primary"
+            type="button"
+            :disabled="directoryBrowserConfirmDisabled"
+            :title="directoryBrowserConfirmDisabledReason || '使用当前位置更新配置'"
+            @click="confirmDirectoryBrowserPath"
+          >
             使用当前目录
           </button>
         </footer>
       </section>
     </div>
 
-    <div v-if="reviewSymbolPickerOpen" class="modal-backdrop" @click.self="closeReviewSymbolPicker">
-      <section class="asset-picker-modal" role="dialog" aria-modal="true" aria-labelledby="review-symbol-picker-title">
+    <div v-if="reviewSymbolPickerOpen" class="modal-backdrop" @click.self="closeReviewSymbolPicker" @keydown.esc="closeReviewSymbolPicker">
+      <section
+        class="asset-picker-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="review-symbol-picker-title"
+        aria-describedby="review-symbol-picker-description"
+      >
         <header class="asset-picker-head">
           <div>
             <h3 id="review-symbol-picker-title">选择复盘标的</h3>
-            <p>{{ reviewSymbolPickerSourceSummary }}</p>
+            <p id="review-symbol-picker-description">{{ reviewSymbolPickerSourceSummary }}</p>
           </div>
           <button class="icon-button" type="button" aria-label="关闭" @click="closeReviewSymbolPicker">
             <Icon name="collapse" />
@@ -2340,6 +4023,7 @@
             :key="tabItem.key"
             type="button"
             :class="['asset-picker-tab', { active: reviewSymbolPickerType === tabItem.key }]"
+            :aria-pressed="reviewSymbolPickerType === tabItem.key"
             @click="setReviewSymbolPickerType(tabItem.key)"
           >
             {{ tabItem.label }}
@@ -2348,18 +4032,49 @@
         </div>
 
         <div class="asset-picker-tools">
-          <select v-model="reviewSymbolPickerCategory" aria-label="复盘标的分类">
+          <select v-model="reviewSymbolPickerCategory" aria-label="复盘标的分类" @change="cancelReviewSymbolPendingAction">
             <option v-for="item in reviewSymbolPickerCategoryOptions" :key="item.value" :value="item.value">
               {{ item.label }} · {{ formatInt(item.count) }}
             </option>
           </select>
-          <input v-model="reviewSymbolPickerKeyword" type="search" placeholder="搜索代码或名称" />
-          <button class="btn secondary" type="button" @click="selectFilteredReviewSymbols">选当前结果</button>
-          <button class="btn secondary" type="button" @click="selectAllReviewSymbols">全选当前分类</button>
-          <button class="btn secondary" type="button" @click="clearReviewSymbolSelection">清空</button>
+          <input
+            ref="reviewSymbolPickerSearchInput"
+            v-model="reviewSymbolPickerKeyword"
+            type="search"
+            aria-label="搜索复盘标的"
+            placeholder="搜索代码或名称"
+            @input="cancelReviewSymbolPendingAction"
+          />
+          <button
+            class="btn secondary"
+            type="button"
+            :disabled="reviewSymbolPickerSelectFilteredDisabled"
+            :title="reviewSymbolPickerSelectFilteredDisabledReason || '选中当前搜索和分类筛选结果'"
+            @click="selectFilteredReviewSymbols"
+          >
+            选当前结果
+          </button>
+          <button
+            class="btn secondary"
+            type="button"
+            :disabled="reviewSymbolPickerSelectAllDisabled"
+            :title="reviewSymbolPickerSelectAllDisabledReason || '选中当前分类下全部标的'"
+            @click="selectAllReviewSymbols"
+          >
+            全选当前分类
+          </button>
+          <button
+            class="btn secondary"
+            type="button"
+            :disabled="reviewSymbolPickerClearDisabled"
+            :title="reviewSymbolPickerClearDisabledReason || '清空当前弹窗内已选标的'"
+            @click="clearReviewSymbolSelection"
+          >
+            清空
+          </button>
         </div>
 
-        <div class="asset-picker-summary">
+        <div class="asset-picker-summary" role="status" aria-live="polite">
           <span>
             显示 {{ formatInt(reviewSymbolPickerVisibleRows.length) }} / 筛选 {{ formatInt(filteredReviewSymbolPickerRows.length) }}
             / 分类 {{ formatInt(categoryFilteredReviewSymbolPickerRows.length) }} / 总 {{ formatInt(reviewSymbolPickerRows.length) }}
@@ -2377,7 +4092,12 @@
             :key="row.symbol"
             :class="['asset-picker-row', { selected: isReviewSymbolSelected(row.symbol) }]"
           >
-            <input type="checkbox" :checked="isReviewSymbolSelected(row.symbol)" @change="toggleReviewSymbol(row.symbol)" />
+            <input
+              type="checkbox"
+              :checked="isReviewSymbolSelected(row.symbol)"
+              :aria-label="`选择 ${row.symbol} ${row.name || row.assetType || reviewSymbolPickerTypeLabel}`"
+              @change="toggleReviewSymbol(row.symbol)"
+            />
             <span>
               <strong>{{ row.symbol }}</strong>
               <em>{{ row.name || row.assetType || reviewSymbolPickerTypeLabel }} · {{ row.categoryLabel }}</em>
@@ -2386,14 +4106,55 @@
         </div>
         <div v-else class="asset-picker-empty">当前分类暂无可选标的。</div>
 
-        <footer class="asset-picker-footer">
-          <button class="btn secondary" type="button" @click="closeReviewSymbolPicker">取消</button>
-          <button class="btn secondary" type="button" :disabled="!reviewSymbolPickerSelection.length" @click="applyReviewSymbolSelection('append')">
-            追加选中
-          </button>
-          <button class="btn primary" type="button" :disabled="!reviewSymbolPickerSelection.length" @click="applyReviewSymbolSelection('replace')">
-            替换标的
-          </button>
+        <footer class="asset-picker-footer asset-picker-footer-stable">
+          <span
+            class="action-status inline"
+            role="status"
+            aria-live="polite"
+            :class="{
+              'asset-picker-footer-status': true,
+              warning: Boolean(reviewSymbolPickerApplyDisabledReason) || Boolean(pendingReviewSymbolAction),
+              muted: !reviewSymbolPickerStatusText
+            }"
+          >
+            <i></i>
+            {{ reviewSymbolPickerStatusText || '选择标的后可追加或替换。' }}
+          </span>
+          <div class="asset-picker-footer-actions">
+            <button class="btn secondary" type="button" @click="pendingReviewSymbolAction ? cancelReviewSymbolPendingAction() : closeReviewSymbolPicker">
+              {{ pendingReviewSymbolAction ? '返回选择' : '取消' }}
+            </button>
+            <button
+              v-show="pendingReviewSymbolAction"
+              :class="['btn', pendingReviewSymbolAction === 'replace' ? 'danger' : 'primary']"
+              type="button"
+              :disabled="reviewSymbolPickerPendingActionDisabled"
+              :title="reviewSymbolPickerPendingActionDisabledReason || reviewSymbolPickerStatusText"
+              @click="confirmReviewSymbolPickerApply"
+            >
+              确认{{ reviewSymbolPickerPendingActionLabel }}
+            </button>
+            <button
+              v-show="!pendingReviewSymbolAction"
+              class="btn secondary"
+              type="button"
+              :disabled="reviewSymbolPickerApplyDisabled"
+              :title="reviewSymbolPickerApplyDisabledReason || '追加选中前需要确认'"
+              @click="requestReviewSymbolPickerApply('append')"
+            >
+              追加选中
+            </button>
+            <button
+              v-show="!pendingReviewSymbolAction"
+              class="btn primary"
+              type="button"
+              :disabled="reviewSymbolPickerApplyDisabled"
+              :title="reviewSymbolPickerApplyDisabledReason || '替换标的前需要确认'"
+              @click="requestReviewSymbolPickerApply('replace')"
+            >
+              替换标的
+            </button>
+          </div>
         </footer>
       </section>
     </div>
@@ -2401,7 +4162,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import DataTable from './components/DataTable.vue'
 import EmptyState from './components/EmptyState.vue'
 import Icon from './components/Icon.vue'
@@ -2432,6 +4193,7 @@ interface TaskPayload {
   id: string
   kind: string
   status: string
+  control?: string
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -2457,6 +4219,23 @@ interface TaskQualityIssue {
 
 type DateShortcutKey = '20d' | '50d' | 'ytd' | '1y'
 type RegimeParameterPresetKey = 'balanced' | 'defensive' | 'elastic'
+type SortDirection = 'asc' | 'desc'
+type RegimeAdvancedParameterKey =
+  | (typeof REGIME_PERCENT_FIELD_KEYS)[number]
+  | 'concentration_top_n'
+  | 'daily_report_days'
+  | 'flow_candidate_limit'
+  | 'risk_timeline_days'
+
+interface RegimeAdvancedParameter {
+  key: RegimeAdvancedParameterKey
+  label: string
+  unit: '%' | 'count'
+  min?: number
+  max?: number
+  step: number
+  hint: string
+}
 
 interface DateRangeFields {
   start: string
@@ -2466,10 +4245,33 @@ interface DateRangeFields {
 type DirectoryField = 'data_root' | 'tdx_path'
 type ResearchTabKey = 'history' | 'cross' | 'review' | 'etf' | 'regime'
 type RegimeSectionTabKey = 'overview' | 'daily' | 'flow' | 'factor' | 'asset'
+type AiWorkbenchTabKey = 'chat' | 'symbols'
+type AiCommandResultState = 'idle' | 'pending' | 'applied' | 'cancelled' | 'empty'
+type AiSymbolRunPendingAction = '' | 'metrics' | 'filter'
+type AiSymbolPendingAction = '' | 'topN' | 'replaceGroup' | 'appendFiltered' | 'appendPage' | 'filterResult'
+type AiSymbolSortKey =
+  | 'selected'
+  | 'symbol'
+  | 'name'
+  | 'assetLabel'
+  | 'latestDate'
+  | 'close'
+  | 'amount'
+  | 'volume'
+  | 'marketValue'
+  | 'turnoverRate'
 type SymbolRefreshTarget = 'all' | 'index' | 'etf'
 type ReviewSymbolPickerType = 'etf' | 'sector'
+type ReviewSymbolPendingAction = '' | 'append' | 'replace'
 type AssetShortcutType = 'etf' | 'stock' | 'index'
+type CrossUniversePendingAction = '' | AssetShortcutType
+type DownloadTimeframePendingAction = '' | 'all' | 'default'
+type DownloadDatePendingShortcut = '' | DateShortcutKey
+type ResearchDateShortcutTarget = 'history' | 'crossTarget' | 'crossCandidate' | 'review' | 'etf' | 'regime'
+type EtfRefreshPendingAction = '' | 'tracking' | 'returns'
 type EtfClientCacheSource = 'empty' | 'client' | 'memory' | 'disk' | 'network' | 'cleared'
+
+const ASSET_SHORTCUT_LABELS: Record<AssetShortcutType, string> = { etf: 'ETF', stock: '个股', index: '指数' }
 
 interface EtfClientCacheState {
   source: EtfClientCacheSource
@@ -2542,17 +4344,37 @@ const regimeSectionTabs: Array<{ key: RegimeSectionTabKey; label: string; icon: 
   { key: 'factor', label: '因子回测', icon: 'database' },
   { key: 'asset', label: '资产明细', icon: 'archive' }
 ]
+const aiWorkbenchTabs: Array<{ key: AiWorkbenchTabKey; label: string }> = [
+  { key: 'chat', label: '对话' },
+  { key: 'symbols', label: '标的池' }
+]
+const aiSymbolTableColumns: Array<{ key: AiSymbolSortKey; label: string }> = [
+  { key: 'selected', label: '选中' },
+  { key: 'symbol', label: '代码' },
+  { key: 'name', label: '名称' },
+  { key: 'assetLabel', label: '类型' },
+  { key: 'latestDate', label: '最新日期' },
+  { key: 'close', label: '最新价' },
+  { key: 'amount', label: '成交额' },
+  { key: 'volume', label: '成交量' },
+  { key: 'marketValue', label: '市值' },
+  { key: 'turnoverRate', label: '换手率' }
+]
 
 const SETTINGS_STORAGE_KEY = 'tdx-downloader-web-settings'
 const RESEARCH_SNAPSHOT_STORAGE_KEY = 'tdx-downloader-research-snapshots'
 const ETF_TRACKING_CACHE_STORAGE_KEY = 'tdx-downloader-etf-tracking-cache'
 const ETF_RETURNS_CACHE_STORAGE_KEY = 'tdx-downloader-etf-returns-cache'
+const API_GET_TIMEOUT_MS = 60_000
+const API_POST_TIMEOUT_MS = 60_000
+const DOWNLOAD_SUBMIT_TIMEOUT_MS = 15_000
 const ETF_TRACKING_CLIENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const ETF_RETURNS_CLIENT_CACHE_TTL_MS = 12 * 60 * 60 * 1000
 const MAX_RESEARCH_SNAPSHOTS = 60
 const CACHE_PAGE_SIZE_OPTIONS = [25, 50, 100]
 const PLAN_PAGE_SIZE_OPTIONS = [25, 50, 100]
 const ETF_TRACKER_PAGE_SIZE_OPTIONS = [25, 50, 100]
+const AI_SYMBOL_PAGE_SIZE_OPTIONS = [25, 50, 100]
 const REGIME_FLOW_CANDIDATE_PAGE_SIZE_OPTIONS = [10, 20, 30]
 const REGIME_MARKET_SCOPE_PAGE_SIZE_OPTIONS = [10, 15, 30]
 const REGIME_RAI_WINDOW_SIZE = 60
@@ -2666,6 +4488,183 @@ const REGIME_PARAMETER_PRESETS: Array<{
     }
   }
 ]
+const REGIME_ADVANCED_PARAMETERS: RegimeAdvancedParameter[] = [
+  {
+    key: 'liquidity_high_percentile',
+    label: '高流动性分位',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 5,
+    hint: '按全市场 20 日平均成交额做横截面排名，分位高于该值的资产归入高流动性层，用于观察权重资产是否补跌。'
+  },
+  {
+    key: 'liquidity_mid_percentile',
+    label: '中盘起始分位',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 5,
+    hint: '成交额分位在该值到高流动性分位之间的资产归入中盘核心，低于该值默认视为长尾/低流动性。'
+  },
+  {
+    key: 'liquidity_low_percentile',
+    label: '低流动性分位',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 5,
+    hint: '成交额分位低于该值时标记为低流动性层，用于区分长尾资产的弱信号，避免和主线流动性混看。'
+  },
+  {
+    key: 'volatility_high_percentile',
+    label: '高波动分位',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 5,
+    hint: '按 HV20 年化波动率横截面排名，分位高于该值的资产归入高波动层，常用于识别弹性资产先承压。'
+  },
+  {
+    key: 'volatility_low_percentile',
+    label: '低波动分位',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 5,
+    hint: 'HV20 分位低于该值时标记为低波动层，用于区分防守型或波动收敛资产。'
+  },
+  {
+    key: 'high_position_drawdown_threshold',
+    label: '高位回撤阈值',
+    unit: '%',
+    max: 0,
+    step: 0.5,
+    hint: '资产相对 250 日高点的回撤不低于该值时仍视为高位，例如 -10 表示距离高点 10% 内仍属于高位资产。'
+  },
+  {
+    key: 'high_position_return_percentile',
+    label: '高位涨幅分位',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 5,
+    hint: '按 120 日涨幅横截面排名，分位高于该值也会归入高位资产，用于捕捉强趋势拥挤区。'
+  },
+  {
+    key: 'leader_return_5d_threshold',
+    label: '领涨5日阈值',
+    unit: '%',
+    step: 0.5,
+    hint: '近 5 日收益超过该值的资产计为领涨资产，用于市场缩圈表判断上涨是否集中在少数标的。'
+  },
+  {
+    key: 'stress_ma20_break_threshold',
+    label: '压力破位阈值',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 5,
+    hint: '某一层级内跌破 MA20 的资产占比达到该值，且近 5 日收益弱于压力收益阈值时，记为压力信号。'
+  },
+  {
+    key: 'stress_return_5d_threshold',
+    label: '压力收益阈值',
+    unit: '%',
+    step: 0.5,
+    hint: '层级近 5 日平均收益低于该值时配合破位阈值触发压力信号；填 0 表示转负即偏弱。'
+  },
+  {
+    key: 'cash_stress_score_threshold',
+    label: '现金压力分',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 1,
+    hint: '现金偏好代理层的压力分阈值，由高流动性破位、市场宽度下降和短期动量转弱合成，高于该值表示防守情绪升温。'
+  },
+  {
+    key: 'cash_preference_proxy_threshold',
+    label: '现金偏好阈值',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 5,
+    hint: '现金偏好代理达到该值时，日报会标记为明显防守，用于判断资金是否从风险资产转向现金/低风险偏好。'
+  },
+  {
+    key: 'risk_expansion_breadth_threshold',
+    label: '扩张宽度',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 5,
+    hint: '站上 MA20 的资产占比高于该值且 5 日动量为正时，市场阶段倾向风险偏好扩张。'
+  },
+  {
+    key: 'risk_contraction_breadth_threshold',
+    label: '收缩宽度',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 5,
+    hint: '站上 MA20 的资产占比低于该值时，市场阶段倾向风险偏好收缩。'
+  },
+  {
+    key: 'risk_release_breadth_threshold',
+    label: '释放后段宽度',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 5,
+    hint: '市场宽度低于该值且高流动性破位达到阈值时，阶段判为风险释放后段。'
+  },
+  {
+    key: 'high_liquidity_selloff_threshold',
+    label: '高流动性抛售',
+    unit: '%',
+    min: 0,
+    max: 100,
+    step: 5,
+    hint: '高流动性资产中跌破 MA20 的比例达到该值，说明权重/高成交资产也在补跌，是风险释放确认条件之一。'
+  },
+  {
+    key: 'concentration_top_n',
+    label: '集中度TopN',
+    unit: 'count',
+    min: 1,
+    max: 500,
+    step: 1,
+    hint: '计算成交额集中度时取成交额最高的 N 个资产，N 越小越强调头部拥挤，N 越大越平滑。'
+  },
+  {
+    key: 'daily_report_days',
+    label: '日报交易日数',
+    unit: 'count',
+    min: 1,
+    max: 120,
+    step: 1,
+    hint: '日报和近期证据回看多少个交易日，用于展示市场状态变化和最近触发记录。'
+  },
+  {
+    key: 'flow_candidate_limit',
+    label: '回流候选数',
+    unit: 'count',
+    min: 1,
+    max: 200,
+    step: 1,
+    hint: '资金回流候选表最多返回多少只资产；候选按回调、转强、相对强度和流动性综合排序。'
+  },
+  {
+    key: 'risk_timeline_days',
+    label: '时间线交易日数',
+    unit: 'count',
+    min: 5,
+    max: 180,
+    step: 1,
+    hint: '风险释放热力图和 RAI 时间线展示的交易日长度，越长越利于看阶段，越短越聚焦近期。'
+  }
+]
 const RISK_RELEASE_LAYER_DESCRIPTIONS: Record<string, string> = {
   '高波资产': '弹性资产先承压',
   '高位资产': '拥挤交易退潮',
@@ -2764,6 +4763,7 @@ const TASK_QUALITY_PAGE_SIZE_OPTIONS = [25, 50, 100]
 const RISK_RELEASE_LAYER_ORDER = ['高波资产', '高位资产', '高流动性资产', '现金偏好代理']
 const STATUS_LABELS: Record<string, string> = {
   cached: '可用',
+  missing_index: '索引缺失',
   missing_file: '缺文件',
   read_error: '读取失败',
   missing_columns: '缺字段',
@@ -2772,11 +4772,32 @@ const STATUS_LABELS: Record<string, string> = {
   quality_error: '质量异常',
   no_window_data: '窗口无数据',
   coverage_gap: '覆盖缺口',
+  coverage_ready: '窗口完整',
+  coverage_partial: '窗口缺失',
+  coverage_empty: '窗口无数据',
+  coverage_unknown: '未建覆盖索引',
+  coverage_missing_index: '未建覆盖索引',
+  coverage_unavailable: '不可校验覆盖',
+  coverage_below_min: '低于阈值',
+  not_checked: '未检查',
   ready: '准备完成',
   partial: '部分可用',
   empty: '无可用缓存',
   fetch: '待下载',
+  derive: '待派生',
+  derived_from_source: '由5m派生',
+  derive_from_cached_source: '由本地5m派生',
   fetched: '已下载'
+}
+const TASK_STATUS_LABELS: Record<string, string> = {
+  queued: '排队中',
+  running: '运行中',
+  pausing: '暂停中',
+  paused: '已暂停',
+  cancelling: '终止中',
+  cancelled: '已终止',
+  succeeded: '已完成',
+  failed: '失败'
 }
 const TIMEFRAME_DIR_NAMES: Record<string, string> = {
   '1d': 'daily',
@@ -2793,8 +4814,15 @@ const config = ref<ConfigPayload | null>(null)
 const overview = ref<Record<string, any> | null>(null)
 const tasks = ref<TaskPayload[]>([])
 const selectedTaskId = ref('')
+const controllingTaskId = ref('')
 const selectedGroup = ref('核心样例')
+const pendingDownloadSymbolGroup = ref('')
+const previousDownloadSymbolGroup = ref('')
 const selectedTimeframes = ref<string[]>(['1d'])
+const pendingDownloadTimeframeAction = ref<DownloadTimeframePendingAction>('')
+const pendingDownloadDateShortcut = ref<DownloadDatePendingShortcut>('')
+const pendingResearchDateShortcut = ref<{ target: ResearchDateShortcutTarget; key: DateShortcutKey } | null>(null)
+const confirmingRunAiCommand = ref(false)
 const researchTimeframe = ref('1d')
 const allAssetsLookbackDays = ref(DEFAULT_ALL_ASSETS_LOOKBACK_DAYS)
 const reviewSymbolPickerOpen = ref(false)
@@ -2802,26 +4830,72 @@ const reviewSymbolPickerType = ref<ReviewSymbolPickerType>('etf')
 const reviewSymbolPickerCategory = ref(defaultReviewSymbolCategory('etf'))
 const reviewSymbolPickerKeyword = ref('')
 const reviewSymbolPickerSelection = ref<string[]>([])
+const pendingReviewSymbolAction = ref<ReviewSymbolPendingAction>('')
+const pendingCrossUniverseAction = ref<CrossUniversePendingAction>('')
 const symbolsText = ref('')
+const confirmingLoadAiWorkbenchSymbols = ref(false)
+const confirmingRunAiWorkbench = ref(false)
+const confirmingClearAiSymbols = ref(false)
+const pendingAiSymbolAction = ref<AiSymbolPendingAction>('')
+const pendingAiSymbolFilterResult = ref<Record<string, any> | null>(null)
+const pendingEtfRefreshAction = ref<EtfRefreshPendingAction>('')
+const confirmingClearAiSkillPrompt = ref(false)
+const confirmingImportIndicatorFormula = ref(false)
+const confirmingMapSelectedIndicators = ref(false)
+const confirmingComputeSelectedIndicators = ref(false)
+const confirmingLoadPriceTable = ref(false)
+const confirmingPriceTableCommonIndicators = ref(false)
+const confirmingOverviewRefresh = ref(false)
+const confirmingTopbarRefresh = ref(false)
+const pendingRegimePresetKey = ref<RegimeParameterPresetKey | ''>('')
 const planning = ref(false)
 const downloading = ref(false)
+const confirmingPreviewPlan = ref(false)
+const confirmingStartDownload = ref(false)
+const confirmingAllAssetsUpdate = ref(false)
+const confirmingClearEtfCache = ref(false)
+const confirmingLoadEtfReview = ref(false)
+const confirmingRunEtfTrackerReview = ref(false)
+const confirmingClearRegimeManualSymbols = ref(false)
+const confirmingRunHistorySearch = ref(false)
+const confirmingRunCrossSearch = ref(false)
+const confirmingRunRegimeResearch = ref(false)
+const confirmingRunReviewSearch = ref(false)
+const confirmingResetResizableCards = ref(false)
+const confirmingResetSettings = ref(false)
 const loadingOverview = ref(false)
 const refreshingTopbar = ref(false)
 const loadingSymbolGroups = ref(false)
 const refreshingSymbolGroup = ref<SymbolRefreshTarget | ''>('')
+const pendingSymbolRefreshTarget = ref<SymbolRefreshTarget | ''>('')
 const clearingTasks = ref(false)
 const loadingEtfTracking = ref(false)
 const loadingEtfReturns = ref(false)
 const loadingTradingCalendar = ref(false)
+const loadingPriceTable = ref(false)
+const loadingIndicatorFormulas = ref(false)
+const importingIndicatorFormula = ref(false)
+const computingIndicators = ref(false)
+const mappingIndicators = ref(false)
 const runningResearch = ref<ResearchTabKey | ''>('')
 const runningAiReview = ref(false)
+const confirmingRunAiReview = ref(false)
+const confirmingRegimeExport = ref(false)
 const runningAiCommand = ref(false)
 const runningAiSymbolFilter = ref(false)
 const runningAiWorkbench = ref(false)
+const loadingAiSymbolMetrics = ref(false)
+const aiWorkbenchStreamText = ref('')
+const aiWorkbenchStreamStatus = ref<'idle' | 'preparing' | 'streaming' | 'done' | 'error'>('idle')
+const confirmingClearTasks = ref(false)
+const confirmingResearchSnapshotLoadId = ref('')
+const confirmingResearchSnapshotDeleteId = ref('')
 const activeResearchTab = ref<ResearchTabKey>('history')
 const activeRegimeSectionTab = ref<RegimeSectionTabKey>('overview')
+const activeAiWorkbenchTab = ref<AiWorkbenchTabKey>('chat')
 const pickingDirectory = ref<DirectoryField | ''>('')
 const directoryBrowserOpen = ref(false)
+const directoryBrowserPathInput = ref<HTMLInputElement | null>(null)
 const directoryBrowserField = ref<DirectoryField | ''>('')
 const directoryBrowserPath = ref('')
 const directoryBrowserParent = ref('')
@@ -2829,6 +4903,7 @@ const directoryBrowserEntries = ref<DirectoryEntry[]>([])
 const directoryBrowserLoading = ref(false)
 const directoryBrowserError = ref('')
 const directoryBrowserReason = ref('')
+const reviewSymbolPickerSearchInput = ref<HTMLInputElement | null>(null)
 const planRows = ref<Array<Record<string, any>>>([])
 const planSummary = ref<Record<string, any>>({})
 const historyResult = ref<Record<string, any> | null>(null)
@@ -2837,16 +4912,27 @@ const reviewResult = ref<Record<string, any> | null>(null)
 const regimeResult = ref<Record<string, any> | null>(null)
 const activeRegimeRaiKey = ref('')
 const regimeRaiWindowStart = ref(-1)
+const historyResultSignature = ref('')
+const crossResultSignature = ref('')
 const reviewResultSignature = ref('')
+const regimeResultSignature = ref('')
 const etfTrackerResultSignature = ref('')
 const etfTrackingRows = ref<Array<Record<string, any>>>([])
 const etfReturnRows = ref<Array<Record<string, any>>>([])
+const indicatorFormulaRows = ref<Array<Record<string, any>>>([])
+const priceTableRows = ref<Array<Record<string, any>>>([])
+const aiSymbolMetricRows = ref<Array<Record<string, any>>>([])
+const aiSymbolMetricGroupName = ref('')
 const symbolMetadataCache = ref<Record<string, any> | null>(null)
 const etfTrackingCacheState = reactive<EtfClientCacheState>({ source: 'empty', saved_at: 0, record_count: 0 })
 const etfReturnsCacheState = reactive<EtfClientCacheState>({ source: 'empty', saved_at: 0, record_count: 0 })
 const tradingCalendarDays = ref<string[]>([])
+const settingsSaveFeedback = ref('')
+const aiSettingsSaveFeedback = ref('')
+const confirmingResetAiPromptSettings = ref(false)
 const aiReviewOutput = ref<Record<string, any> | null>(null)
 const aiCommandResult = ref<Record<string, any> | null>(null)
+const aiCommandResultState = ref<AiCommandResultState>('idle')
 const aiWorkbenchResult = ref<Record<string, any> | null>(null)
 const researchSnapshots = ref<ResearchSnapshot[]>([])
 const notice = ref<NoticePayload | null>(null)
@@ -2859,6 +4945,20 @@ const cacheFilters = reactive({
 const cachePagination = reactive({
   page: 1,
   pageSize: 25
+})
+const priceTableForm = reactive({
+  symbols: '000001.SZ',
+  timeframe: '1d',
+  start: tradingLookbackStartText(60),
+  end: todayText(),
+  indicators: 'ma5,ma10,ma20'
+})
+const indicatorImportForm = reactive({
+  formula_id_prefix: '',
+  text: ''
+})
+const indicatorMappingForm = reactive({
+  asset_type: 'stock'
 })
 const planPagination = reactive({
   page: 1,
@@ -2887,6 +4987,14 @@ const regimeFlowCandidatePagination = reactive({
 const regimeMarketScopePagination = reactive({
   page: 1,
   pageSize: REGIME_MARKET_SCOPE_PAGE_SIZE_OPTIONS[1]
+})
+const aiSymbolPagination = reactive({
+  page: 1,
+  pageSize: AI_SYMBOL_PAGE_SIZE_OPTIONS[1]
+})
+const aiSymbolSort = reactive<{ key: AiSymbolSortKey; direction: SortDirection }>({
+  key: 'amount',
+  direction: 'desc'
 })
 
 const settings = reactive({
@@ -2920,15 +5028,15 @@ const aiCommandForm = reactive({
 const aiSymbolGroupName = ref('')
 const aiSymbolKeyword = ref('')
 const aiSymbolNaturalQuery = ref('')
+const aiSymbolTopN = ref(50)
+const pendingAiSymbolRunAction = ref<AiSymbolRunPendingAction>('')
 const aiWorkbenchForm = reactive({
-  symbols: '000001.SZ\n300750.SZ',
+  symbols: '',
   start: tradingLookbackStartText(60),
   end: todayText(),
   timeframe: '1d',
   skill_prompt: '',
   prompt: '请基于这些本地行情数据，输出强弱判断、风险点和下一步观察项。',
-  max_symbols: 20,
-  max_rows: 240,
   max_charts: 3
 })
 const chartSettings = reactive({
@@ -3033,10 +5141,27 @@ const regimeActivePresetKey = computed(() => {
   )
   return matched?.key || ''
 })
+const pendingRegimePreset = computed(() =>
+  pendingRegimePresetKey.value ? REGIME_PARAMETER_PRESETS.find((preset) => preset.key === pendingRegimePresetKey.value) || null : null
+)
+const regimePresetConfirmDisabledReason = computed(() => {
+  if (!pendingRegimePresetKey.value) return '当前没有待确认的参数预设'
+  if (!pendingRegimePreset.value) return '待应用的参数预设不存在，请重新选择'
+  return ''
+})
+const regimePresetConfirmDisabled = computed(() => Boolean(regimePresetConfirmDisabledReason.value))
+const regimePresetConfirmText = computed(() => {
+  if (regimePresetConfirmDisabledReason.value) return regimePresetConfirmDisabledReason.value
+  const preset = pendingRegimePreset.value
+  return `确认后将用“${preset?.label || pendingRegimePresetKey.value}”覆盖 ${formatInt(REGIME_PERCENT_FIELD_KEYS.length)} 项风险偏好阈值；当前高级参数未修改。`
+})
 
 const activeMeta = computed(() => navItems.find((item) => item.key === activeView.value) || navItems[0])
 const activeResearchMeta = computed(() => researchTabs.find((item) => item.key === activeResearchTab.value) || researchTabs[0])
 const crossSearchModeLabel = computed(() => (crossForm.search_mode === 'traversal' ? '指定区间' : '同区间'))
+const crossCandidateRangeDisabledReason = computed(() =>
+  crossForm.search_mode !== 'traversal' ? '候选区间只在指定区间模式下可修改；同区间模式下候选区间跟随目标区间；切换为指定区间后可编辑。' : ''
+)
 const summary = computed(() => overview.value?.summary || {})
 const assetRows = computed(() => overview.value?.by_asset_type || [])
 const timeframeRows = computed(() => overview.value?.by_timeframe || [])
@@ -3300,11 +5425,23 @@ const activeRegimeUniverseGroups = computed(() =>
     return Boolean(group?.symbols.length)
   })
 )
+const regimeManualSymbols = computed(() => parseSymbols(regimeForm.symbols))
+const regimeManualSymbolsClearDisabledReason = computed(() => {
+  if (!regimeManualSymbols.value.length) return '当前没有手动补充标的'
+  return ''
+})
+const regimeManualSymbolsClearDisabled = computed(() => Boolean(regimeManualSymbolsClearDisabledReason.value))
+const regimeManualSymbolsClearConfirmText = computed(() =>
+  `将清空 ${formatInt(regimeManualSymbols.value.length)} 只手动补充标的；所选研究宇宙不会变化。`
+)
 const selectedRegimeUniverseCount = computed(() =>
   regimeForm.universe_groups.reduce((total, name) => {
     const group = config.value?.symbol_groups.find((item) => item.name === name)
     return total + (group?.symbols.length || 0)
-  }, parseSymbols(regimeForm.symbols).length)
+  }, regimeManualSymbols.value.length)
+)
+const regimeResearchConfirmText = computed(() =>
+  `确认后将按 ${formatInt(selectedRegimeUniverseCount.value)} 只候选资产、基准 ${regimeForm.benchmark_symbol || '-'}、${regimeForm.start || '-'} 至 ${regimeForm.end || '-'} 运行市场风险偏好研究。`
 )
 const regimeDailyReportCards = computed(() => {
   const report = regimeResult.value?.daily_report || {}
@@ -3418,6 +5555,41 @@ const regimeRaiLatestBadges = computed(() => {
 function setActiveRegimeRaiPoint(point: Record<string, any>) {
   activeRegimeRaiKey.value = String(point.key || '')
 }
+
+function researchActionDisabled(tab: ResearchTabKey) {
+  return Boolean(researchActionDisabledReason(tab))
+}
+
+function researchActionDisabledReason(tab: ResearchTabKey) {
+  if (runningResearch.value && runningResearch.value !== tab) return `${researchBusyStatusText.value}，请等待完成。`
+  if (runningResearch.value === tab) return researchBusyStatusText.value
+  return ''
+}
+
+function resultActionDisabledReason(tab: ResearchTabKey) {
+  const runningReason = researchActionDisabledReason(tab)
+  if (runningReason) return runningReason
+  if (!researchResultFor(tab)) return `先运行${activeResearchMetaFor(tab).label}，生成结果后才能保存快照。`
+  const staleReason = researchResultStaleReason(tab)
+  if (staleReason) return staleReason
+  return ''
+}
+
+function resultActionDisabled(tab: ResearchTabKey) {
+  return Boolean(resultActionDisabledReason(tab))
+}
+
+function researchResultStaleReason(tab: ResearchTabKey) {
+  if (tab === 'history' && historyResultSignature.value !== historySearchSignature()) return '历史相似参数已变更，请重新搜索后再保存快照。'
+  if (tab === 'cross' && crossResultSignature.value !== crossSearchSignature()) return '横截面参数已变更，请重新搜索后再保存快照。'
+  if (tab === 'regime' && regimeResultSignature.value !== regimeSearchSignature()) return '市场风偏参数已变更，请重新运行后再保存快照。'
+  if (tab === 'review' && reviewResultSignature.value !== reviewSearchSignature()) return '多股复盘参数已变更，请重新生成后再保存快照。'
+  if (tab === 'etf' && etfTrackerResultSignature.value !== etfTrackerSearchSignature()) return 'ETF 趋势参数已变更，请重新生成后再保存快照。'
+  return ''
+}
+
+const activeResearchSnapshotDisabledReason = computed(() => resultActionDisabledReason(activeResearchTab.value))
+const activeResearchSnapshotDisabled = computed(() => Boolean(activeResearchSnapshotDisabledReason.value))
 
 function onRegimeRaiWindowInput(event: Event) {
   const input = event.target as HTMLInputElement | null
@@ -3800,6 +5972,42 @@ const cachePageFirst = computed(() => (filteredCacheRows.value.length ? cachePag
 const pagedCacheRows = computed(() => filteredCacheRows.value.slice(cachePageStartIndex.value, cachePageEnd.value))
 const displayCacheRows = computed(() => pagedCacheRows.value.map((row: Record<string, any>) => displayCacheRecord(row)))
 const cachePageSizeOptions = CACHE_PAGE_SIZE_OPTIONS
+const selectedPriceIndicators = computed(() => parseIndicatorIds(priceTableForm.indicators))
+const priceTableSummary = computed(() => {
+  const indicators = selectedPriceIndicators.value.length ? ` · 指标 ${selectedPriceIndicators.value.join(',')}` : ''
+  return `${priceTableForm.timeframe} · ${priceTableForm.start} 至 ${priceTableForm.end}${indicators}`
+})
+const priceTableColumns = computed(() => [
+  { key: '日期', label: '日期' },
+  { key: '代码', label: '代码' },
+  { key: '名称', label: '名称' },
+  { key: '开', label: '开' },
+  { key: '高', label: '高' },
+  { key: '低', label: '低' },
+  { key: '收', label: '收' },
+  { key: '成交量', label: '成交量' },
+  { key: '成交额', label: '成交额' },
+  ...selectedPriceIndicators.value.map((indicator) => ({ key: indicator, label: indicator.toUpperCase() }))
+])
+const displayPriceTableRows = computed(() =>
+  priceTableRows.value.map((row: Record<string, any>) => {
+    const result: Record<string, any> = {
+      '日期': formatDateTimeText(row.date),
+      '代码': row.stock_code,
+      '名称': row.stock_name || displaySymbolName(row.stock_code),
+      '开': formatDecimalValue(row.open, 2),
+      '高': formatDecimalValue(row.high, 2),
+      '低': formatDecimalValue(row.low, 2),
+      '收': formatDecimalValue(row.close, 2),
+      '成交量': formatInt(row.volume),
+      '成交额': formatAmountValue(row.amount)
+    }
+    selectedPriceIndicators.value.forEach((indicator) => {
+      result[indicator] = formatDecimalValue(row[indicator], 3)
+    })
+    return result
+  })
+)
 const planTotalPages = computed(() => Math.max(1, Math.ceil(planRows.value.length / planPagination.pageSize)))
 const planPageStartIndex = computed(() => (planRows.value.length ? (planPagination.page - 1) * planPagination.pageSize : 0))
 const planPageEnd = computed(() => Math.min(planPageStartIndex.value + planPagination.pageSize, planRows.value.length))
@@ -3997,7 +6205,7 @@ const aiCommandScopeLabel = computed(() => {
 const chartThemeClass = computed(() => `chart-theme-${chartSettings.theme === 'contrast' ? 'contrast' : 'clean'}`)
 const chartDensityClass = computed(() => `chart-density-${chartSettings.density === 'compact' ? 'compact' : 'comfortable'}`)
 const aiDefaultSystemPrompt = computed(() =>
-  String((reviewResult.value?.ai?.messages || []).find((message: Record<string, string>) => message.role === 'system')?.content || '')
+  String((reviewResult.value?.ai?.messages || []).find((message: Record<string, string>) => message.role === 'system')?.content || builtinStockDataSkillPrompt())
 )
 const aiWorkbenchLatestRows = computed(() =>
   (aiWorkbenchResult.value?.data_context?.latest || []).map((row: Record<string, any>) => ({
@@ -4021,7 +6229,8 @@ const aiWorkbenchRecordRows = computed(() =>
   }))
 )
 const aiWorkbenchMarkdownBlocks = computed<ReviewMarkdownBlock[]>(() => {
-  const blocks = markdownBlocks(String(aiWorkbenchResult.value?.content || ''))
+  const content = aiWorkbenchStreamText.value || String(aiWorkbenchResult.value?.content || '')
+  const blocks = markdownBlocks(content)
   return blocks.length ? blocks : [{ type: 'paragraph', title: '', lines: ['-'], headers: [], rows: [] }]
 })
 const aiWorkbenchChartItems = computed(() =>
@@ -4103,6 +6312,7 @@ const uniqueAssetTypes = computed(() => {
   }))
 })
 const runtimeLabel = computed(() => config.value?.runtime === 'parallels' ? 'Parallels' : 'Local')
+const runningInContainer = computed(() => ['/data/', '/app/', '/workspace/'].some((prefix) => settings.data_root.startsWith(prefix)))
 const symbolMetadataCacheLabel = computed(() => {
   const cache = symbolMetadataCache.value || config.value?.symbol_metadata_cache
   if (!cache?.hit) return '未缓存'
@@ -4110,6 +6320,77 @@ const symbolMetadataCacheLabel = computed(() => {
   return `${formatInt(cache.record_count)} 条${savedAt ? ` · ${savedAt}` : ''}`
 })
 const symbolMetadataCachePath = computed(() => String((symbolMetadataCache.value || config.value?.symbol_metadata_cache)?.path || ''))
+const settingsPathWarning = computed(() => {
+  if (!settings.data_root.trim()) return true
+  if (runningInContainer.value && settings.tdx_path.startsWith('/Volumes/')) return true
+  return false
+})
+const settingsPathStatusText = computed(() => {
+  if (!settings.data_root.trim()) return '行情根目录为空，下载、缓存扫描和研究都会无法执行。'
+  if (runningInContainer.value) {
+    return settings.tdx_path.startsWith('/Volumes/')
+      ? '当前像 Docker 挂载路径；TDX 路径仍是宿主机 /Volumes，容器通常无法直接读取。建议在宿主机更新数据，Docker 只挂载数据目录。'
+      : '当前像 Docker 挂载路径；文件夹选择只浏览容器可访问目录，宿主机 TDX 目录需通过挂载或本机更新脚本处理。'
+  }
+  if (config.value?.runtime === 'parallels') return '当前通过 Parallels/Windows 通达信链路读取代码表；移动硬盘路径变化后，先更新这里的 TDX 路径再刷新代码表缓存。'
+  return '当前为本机链路；路径会保存到浏览器 localStorage，仅影响本机控制台。'
+})
+const directoryPickerStatusText = computed(() => {
+  if (pickingDirectory.value) return `正在选择${directoryFieldLabel(pickingDirectory.value)}。`
+  if (runningInContainer.value) return '文件夹选择只显示当前服务进程可访问的目录。'
+  return '可以用系统选择器；失败时会自动打开服务端目录浏览器。'
+})
+const symbolCacheRefreshTitle = computed(() => {
+  if (loadingSymbolGroups.value) return '代码表缓存正在更新'
+  return '重新读取股票、ETF、指数列表并写入本地缓存'
+})
+const symbolGroupRefreshDisabledReason = computed(() => {
+  if (loadingSymbolGroups.value) return '股票、ETF、指数列表正在更新'
+  return ''
+})
+const symbolGroupRefreshDisabled = computed(() => Boolean(symbolGroupRefreshDisabledReason.value))
+const pendingSymbolRefreshLabel = computed(() => {
+  if (pendingSymbolRefreshTarget.value === 'index') return '指数列表'
+  if (pendingSymbolRefreshTarget.value === 'etf') return 'ETF 列表'
+  if (pendingSymbolRefreshTarget.value === 'all') return '股票 / ETF / 指数列表缓存'
+  return ''
+})
+const pendingSymbolRefreshDisabledReason = computed(() => {
+  if (!pendingSymbolRefreshTarget.value) return '当前没有待确认的代码表刷新操作'
+  return symbolGroupRefreshDisabledReason.value
+})
+const pendingSymbolRefreshDisabled = computed(() => Boolean(pendingSymbolRefreshDisabledReason.value))
+const pendingSymbolRefreshConfirmText = computed(() => {
+  if (pendingSymbolRefreshDisabledReason.value) return pendingSymbolRefreshDisabledReason.value
+  return `确认后将重新读取${pendingSymbolRefreshLabel.value}并写入本地缓存；移动硬盘或 Parallels 路径异常时会直接报错。`
+})
+const settingsActionWarning = computed(() => settingsPathWarning.value || loadingSymbolGroups.value || Boolean(pickingDirectory.value))
+const settingsActionStateLabel = computed(() => {
+  if (pickingDirectory.value) return '选择目录中'
+  if (loadingSymbolGroups.value) return '更新代码表中'
+  if (settingsPathWarning.value) return '请检查路径'
+  return '可保存'
+})
+const settingsActionStatusText = computed(() => {
+  if (loadingSymbolGroups.value) return symbolCacheRefreshTitle.value
+  if (pickingDirectory.value) return directoryPickerStatusText.value
+  return settingsPathStatusText.value
+})
+const resetSettingsConfirmText = computed(() => '将恢复 API 默认路径、下载参数、Fuyao/AI 设置和图表偏好；已保存到浏览器的当前配置会被移除。')
+const settingsSaveTitle = computed(() => '保存路径、复权、批次、Fuyao Key 和运行参数到本机浏览器')
+const aiSettingsActionWarning = computed(() => {
+  if (!aiSettings.base_url.trim()) return '接口 URL 为空，AI 命令和 AI 工作台不可用。'
+  if (!aiSettings.api_key.trim()) return 'API Key 为空，AI 命令和 AI 工作台不可用。'
+  if (!aiSettings.model.trim()) return '模型为空，AI 命令和 AI 工作台不可用。'
+  return ''
+})
+const aiSettingsActionStateLabel = computed(() => (aiSettingsActionWarning.value ? '待配置' : '可保存'))
+const aiSettingsActionStatusText = computed(() => {
+  if (aiSettingsActionWarning.value) return aiSettingsActionWarning.value
+  return `将使用模型 ${aiSettings.model.trim()}；参数保存到本机浏览器 localStorage。`
+})
+const resetAiPromptSettingsConfirmText = computed(() => '将清空系统约束草稿、恢复默认卡片任务提示，并关闭自定义提示词开关。')
+const aiSettingsSaveTitle = computed(() => '保存 AI 接口参数和自定义提示词到本机浏览器')
 const topbarRefreshing = computed(() => loadingOverview.value || refreshingTopbar.value)
 const topbarRefreshTitle = computed(() => {
   if (activeView.value === 'cache') return '扫描缓存并更新索引'
@@ -4117,9 +6398,177 @@ const topbarRefreshTitle = computed(() => {
   if (activeView.value === 'download') return '刷新任务和缓存状态'
   return '刷新当前页面数据'
 })
+const topbarRefreshStatusText = computed(() => {
+  if (activeView.value === 'cache') return '正在扫描缓存'
+  if (activeView.value === 'tasks') return '正在刷新任务'
+  if (activeView.value === 'download') return '正在同步任务和缓存'
+  return '正在刷新页面数据'
+})
+const topbarRefreshConfirmText = computed(() => {
+  if (activeView.value === 'cache') return '确认后将扫描缓存并更新 SQLite 索引；不会删除本地行情文件。'
+  if (activeView.value === 'tasks') return '确认后将刷新任务进度、事件和结果表。'
+  if (activeView.value === 'download') return '确认后将同步下载任务进度和缓存概览。'
+  return '确认后将刷新当前页面的概览和任务状态。'
+})
+const overviewRefreshDisabledReason = computed(() => {
+  if (loadingOverview.value) return '正在扫描缓存并更新索引'
+  return ''
+})
+const overviewRefreshDisabled = computed(() => Boolean(overviewRefreshDisabledReason.value))
+const overviewRefreshConfirmText = computed(() =>
+  `确认后将扫描 ${compactPath(settings.data_root)} 的本地行情缓存并更新 SQLite 索引；不会删除本地行情文件。`
+)
+const directoryPickDisabledReason = computed(() => {
+  if (pickingDirectory.value) return `正在选择${directoryFieldLabel(pickingDirectory.value)}`
+  return ''
+})
+const directoryPickDisabled = computed(() => Boolean(directoryPickDisabledReason.value))
+const etfTrackingRefreshDisabledReason = computed(() => {
+  if (loadingEtfTracking.value) return '正在读取 TDX ETF 接口'
+  return ''
+})
+const etfTrackingRefreshDisabled = computed(() => Boolean(etfTrackingRefreshDisabledReason.value))
+const etfReturnsRefreshDisabledReason = computed(() => {
+  if (loadingEtfReturns.value) return '正在计算 ETF 收益率'
+  if (!etfTrackerReturnSymbols().length) return '当前没有可计算收益率的 ETF 标的'
+  return ''
+})
+const etfReturnsRefreshDisabled = computed(() => Boolean(etfReturnsRefreshDisabledReason.value))
+const pendingEtfRefreshDisabledReason = computed(() => {
+  if (pendingEtfRefreshAction.value === 'tracking') return etfTrackingRefreshDisabledReason.value
+  if (pendingEtfRefreshAction.value === 'returns') return etfReturnsRefreshDisabledReason.value
+  return '当前没有待确认的 ETF 刷新操作'
+})
+const pendingEtfRefreshDisabled = computed(() => Boolean(pendingEtfRefreshDisabledReason.value))
+const pendingEtfRefreshConfirmText = computed(() => {
+  if (pendingEtfRefreshDisabledReason.value) return pendingEtfRefreshDisabledReason.value
+  if (pendingEtfRefreshAction.value === 'tracking') {
+    return '确认后将重新读取 TDX ETF 跟踪接口并更新浏览器缓存；完成后会尝试刷新收益率缓存。'
+  }
+  if (pendingEtfRefreshAction.value === 'returns') {
+    return `确认后将按当前 ${formatInt(etfTrackerReturnSymbols().length)} 只 ETF 重新计算当日、近5日、近20日、近50日和 YTD 收益率。`
+  }
+  return ''
+})
+const aiCommandDisabledReason = computed(() => {
+  if (runningAiCommand.value) return '正在解析上一条命令'
+  if (aiCommandResultState.value === 'pending') return '请先确认或取消当前 AI 命令解析结果'
+  if (!aiCommandForm.text.trim()) return '先输入要执行的自然语言命令'
+  return ''
+})
+const aiCommandDisabled = computed(() => Boolean(aiCommandDisabledReason.value))
+const aiCommandHasWarnings = computed(() => Boolean((aiCommandResult.value?.warnings || []).length))
+const aiCommandPatchCount = computed(() => (Array.isArray(aiCommandResult.value?.patches) ? aiCommandResult.value?.patches.length || 0 : 0))
+const aiCommandApplyDisabledReason = computed(() => {
+  if (runningAiCommand.value) return '正在解析命令，请稍候'
+  if (aiCommandResultState.value !== 'pending') return '当前没有待确认的 AI 命令结果'
+  if (!aiCommandResult.value) return '当前没有可应用的 AI 命令结果'
+  if (!aiCommandPatchCount.value) return '解析结果没有可应用参数'
+  return ''
+})
+const aiCommandApplyDisabled = computed(() => Boolean(aiCommandApplyDisabledReason.value))
+const aiCommandApplyConfirmText = computed(() =>
+  `确认后将应用 ${formatInt(aiCommandPatchCount.value)} 项 AI 命令参数变更。`
+)
+const aiCommandRunConfirmText = computed(() =>
+  aiConfigReady.value
+    ? `确认后将使用模型 ${aiSettings.model.trim()} 解析当前命令；解析结果仍需再次确认才会应用。`
+    : '确认后将使用本地规则解析当前命令；解析结果仍需再次确认才会应用。'
+)
+const aiCommandStatusText = computed(() => {
+  if (runningAiCommand.value) return '正在解析意图、匹配本地参数并准备应用。'
+  if (confirmingRunAiCommand.value) return aiCommandRunConfirmText.value
+  if (!aiCommandForm.text.trim()) return '输入命令后，会先解析为本地可执行参数；涉及股票池时优先使用本地索引。'
+  if (!aiCommandResult.value) return aiConfigReady.value ? '将使用已保存模型参数；股票筛选仍由本地结构化数据执行。' : '未配置模型时会使用本地规则规划。'
+  if (aiCommandResultState.value === 'pending') return `命令已解析，确认后才会应用 ${formatInt(aiCommandPatchCount.value)} 项参数变更。`
+  if (aiCommandResultState.value === 'cancelled') return 'AI 命令参数未修改。'
+  if (aiCommandResultState.value === 'empty') return '命令已解析，但没有可应用参数。'
+  if (aiCommandHasWarnings.value) return '命令已应用，但存在警告需要复核。'
+  return '命令已应用到当前页面。'
+})
+const aiSkillPromptClearDisabledReason = computed(() => {
+  if (!aiWorkbenchForm.skill_prompt.trim()) return '当前没有已载入 Skill 提示词'
+  return ''
+})
+const aiSkillPromptClearDisabled = computed(() => Boolean(aiSkillPromptClearDisabledReason.value))
+const aiSkillPromptClearConfirmTitle = computed(() => '确认清空当前 Skill 提示词')
+const aiSkillPromptClearConfirmText = computed(() => '将清空当前 AI 工作台侧载 Skill 提示词；不会删除本地 skill 文件。')
+const downloadActionReadyReason = computed(() => {
+  if (!parsedSymbols.value.length) return '请填写或选择至少 1 个标的代码'
+  if (!selectedDownloadTimeframes.value.length) return '请至少选择 1 个下载周期'
+  if (!settings.start || !settings.end) return '请填写开始和结束日期'
+  if (settings.start > settings.end) return '开始日期不能晚于结束日期'
+  if (!settings.data_root.trim()) return '请填写行情根目录'
+  return ''
+})
+const downloadActionReady = computed(() => !downloadActionReadyReason.value)
+const downloadActionWarning = computed(() => {
+  if (!downloadActionReady.value) return ''
+  if (!planRows.value.length) return '尚未预览计划，执行下载前建议先查看缺口。'
+  return ''
+})
+const downloadActionStatusText = computed(() => {
+  if (planning.value) return '正在比较任务交易日与本地缓存，生成可翻页下载计划。'
+  if (downloading.value) return '正在提交后台任务，提交后会跳转到执行记录。'
+  return downloadActionReadyReason.value || downloadActionWarning.value || `当前将处理 ${formatInt(parsedSymbols.value.length)} 个标的、${downloadTimeframeSummary.value}。`
+})
+const previewPlanDisabledReason = computed(() => {
+  if (planning.value) return '下载计划正在生成'
+  if (downloading.value) return '下载任务提交中'
+  return downloadActionReadyReason.value
+})
+const previewPlanDisabled = computed(() => Boolean(previewPlanDisabledReason.value))
+const previewPlanConfirmText = computed(() =>
+  `确认后将只读比较 ${formatInt(parsedSymbols.value.length)} 个标的、${downloadTimeframeSummary.value}、${settings.start} 至 ${settings.end} 的本地缓存缺口；不会提交下载任务。`
+)
+const startDownloadDisabledReason = computed(() => {
+  if (downloading.value) return '下载任务提交中'
+  if (planning.value) return '请等待当前计划生成完成'
+  return downloadActionReadyReason.value
+})
+const startDownloadDisabled = computed(() => Boolean(startDownloadDisabledReason.value))
+const downloadBusyStatusText = computed(() => {
+  if (planning.value) return '生成下载计划中'
+  if (downloading.value) return '提交后台任务中'
+  return ''
+})
+const startDownloadRequestTitle = computed(() => '进入确认状态，确认后才提交后台下载任务')
+const startDownloadConfirmTitle = computed(() => `确认提交下载：${formatInt(parsedSymbols.value.length)} 个标的，${downloadTimeframeSummary.value}，${settings.start} 至 ${settings.end}`)
+const startDownloadConfirmStatusText = computed(() => {
+  const previewHint = planRows.value.length ? `当前预览计划 ${formatInt(planRows.value.length)} 条。` : '尚未预览计划。'
+  return `${previewHint} 确认后将提交后台任务并写入本地行情缓存。`
+})
 const latestTask = computed(() => tasks.value[0])
 const latestTaskText = computed(() => latestTask.value ? latestTask.value.status : '无')
+const clearTasksDisabledReason = computed(() => {
+  if (clearingTasks.value) return '任务历史正在清理'
+  if (!tasks.value.length) return '当前没有任务历史'
+  return ''
+})
+const clearTasksDisabled = computed(() => Boolean(clearTasksDisabledReason.value))
+const clearTasksConfirmTitle = computed(() => `确认清理当前 ${formatInt(tasks.value.length)} 条任务记录；该操作只清理页面历史，不删除本地行情数据。`)
+const clearTasksConfirmStatusText = computed(() => {
+  if (clearingTasks.value) return '正在清理任务历史，请稍候。'
+  return `将清理当前 ${formatInt(tasks.value.length)} 条任务记录；不会删除本地行情数据。`
+})
+const clearTasksCancelDisabledReason = computed(() => {
+  if (clearingTasks.value) return '任务历史正在清理，暂不能取消'
+  return ''
+})
+const clearTasksCancelDisabled = computed(() => Boolean(clearTasksCancelDisabledReason.value))
+const clearTasksConfirmDisabledReason = computed(() => {
+  if (clearingTasks.value) return '任务历史正在清理'
+  if (!confirmingClearTasks.value) return '请先点击清空历史进入确认状态'
+  if (!tasks.value.length) return '当前没有任务历史'
+  return ''
+})
+const clearTasksConfirmDisabled = computed(() => Boolean(clearTasksConfirmDisabledReason.value))
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value) || tasks.value[0] || null)
+const selectedTaskControlText = computed(() => {
+  if (!selectedTask.value) return '未选择任务'
+  const control = selectedTask.value.control && selectedTask.value.control !== 'run' ? ` · ${selectedTask.value.control}` : ''
+  return `${taskStatusLabel(selectedTask.value.status)}${control}`
+})
 const selectedTaskEvents = computed(() =>
   (selectedTask.value?.events || []).map((event: Record<string, any>, index: number) => ({
     key: `${index}-${event.time || event.stage || event.label || ''}`,
@@ -4186,6 +6635,34 @@ const parsedSymbols = computed(() => parseSymbols(symbolsText.value))
 const allAssetSymbols = computed(() =>
   uniqueStringsInOrder((config.value?.symbol_groups || []).flatMap((group) => group.symbols))
 )
+const pendingDownloadSymbolGroupRecord = computed(() =>
+  pendingDownloadSymbolGroup.value
+    ? config.value?.symbol_groups.find((group) => group.name === pendingDownloadSymbolGroup.value) || null
+    : null
+)
+const downloadSymbolGroupConfirmDisabledReason = computed(() => {
+  if (!pendingDownloadSymbolGroup.value) return '当前没有待确认的代码来源'
+  if (!pendingDownloadSymbolGroupRecord.value) return '待应用的代码来源不存在，请重新选择'
+  if (!pendingDownloadSymbolGroupRecord.value.symbols.length) return '待应用的代码来源没有标的'
+  return ''
+})
+const downloadSymbolGroupConfirmDisabled = computed(() => Boolean(downloadSymbolGroupConfirmDisabledReason.value))
+const downloadSymbolGroupConfirmText = computed(() => {
+  if (downloadSymbolGroupConfirmDisabledReason.value) return downloadSymbolGroupConfirmDisabledReason.value
+  const group = pendingDownloadSymbolGroupRecord.value
+  return `确认后将用“${group?.name || pendingDownloadSymbolGroup.value}”的 ${formatInt(group?.symbols.length || 0)} 只标的覆盖当前 ${formatInt(parsedSymbols.value.length)} 只下载标的。`
+})
+const allAssetsUpdateDisabledReason = computed(() => {
+  if (!allAssetSymbols.value.length) return '代码库为空，先刷新代码表缓存'
+  return ''
+})
+const allAssetsUpdateDisabled = computed(() => Boolean(allAssetsUpdateDisabledReason.value))
+const allAssetsUpdateDays = computed(() =>
+  Math.max(1, Math.trunc(Number(allAssetsLookbackDays.value) || DEFAULT_ALL_ASSETS_LOOKBACK_DAYS))
+)
+const allAssetsUpdateConfirmText = computed(() =>
+  `将覆盖下载任务的标的、开始日期、结束日期并清空当前预览计划；共 ${formatInt(allAssetSymbols.value.length)} 只资产，近 ${allAssetsUpdateDays.value} 个交易日。`
+)
 const aiSymbolGroups = computed(() => (config.value?.symbol_groups || []).filter((group) => group.symbols.length > 0))
 const aiCurrentSymbolGroup = computed(() => {
   const groups = aiSymbolGroups.value
@@ -4193,33 +6670,268 @@ const aiCurrentSymbolGroup = computed(() => {
 })
 const aiSelectedSymbols = computed(() => parseSymbols(aiWorkbenchForm.symbols))
 const aiSelectedSymbolSet = computed(() => new Set(aiSelectedSymbols.value))
+const aiSymbolMetricMap = computed(() => {
+  const metrics = new Map<string, Record<string, any>>()
+  aiSymbolMetricRows.value.forEach((row: Record<string, any>) => {
+    const symbol = normalizeSymbol(String(row.symbol || row.stock_code || ''))
+    if (symbol) metrics.set(symbol, row)
+  })
+  return metrics
+})
 const aiCurrentSymbolRows = computed(() =>
   uniqueStringsInOrder(aiCurrentSymbolGroup.value?.symbols || []).map((symbol) => {
     const normalized = normalizeSymbol(symbol)
     const meta = cacheSymbolMeta.value.get(normalized)
     const name = symbolNameMap.value.get(normalized) || meta?.name || ''
     const assetType = meta?.assetType || guessAssetType(normalized, name, aiCurrentSymbolGroup.value?.name || '')
+    const metrics = aiSymbolMetricMap.value.get(normalized) || {}
     return {
       symbol: normalized,
       name,
       assetType,
-      assetLabel: assetTypeLabel(assetType)
+      assetLabel: assetTypeLabel(assetType),
+      selected: aiSelectedSymbolSet.value.has(normalized),
+      latestDate: formatDateOnly(metrics.latest_date),
+      close: finiteNumberOrNull(metrics.close),
+      amount: finiteNumberOrNull(metrics.amount),
+      volume: finiteNumberOrNull(metrics.volume),
+      marketValue: finiteNumberOrNull(metrics.market_value),
+      turnoverRate: finiteNumberOrNull(metrics.turnover_rate)
     }
   }).filter((row) => row.symbol)
 )
-const aiSymbolVisibleRows = computed(() => {
+const aiFilteredSymbolRows = computed(() => {
   const keyword = aiSymbolKeyword.value.trim().toLowerCase()
-  const rows = keyword
-    ? aiCurrentSymbolRows.value.filter((row) =>
-        `${row.symbol} ${row.name} ${row.assetType} ${row.assetLabel}`.toLowerCase().includes(keyword)
-      )
-    : aiCurrentSymbolRows.value
-  return rows.slice(0, REVIEW_SYMBOL_PICKER_VISIBLE_LIMIT)
+  if (!keyword) return aiCurrentSymbolRows.value
+  return aiCurrentSymbolRows.value.filter((row) =>
+    `${row.symbol} ${row.name} ${row.assetType} ${row.assetLabel}`.toLowerCase().includes(keyword)
+  )
+})
+const aiSortedSymbolRows = computed(() => {
+  const rows = [...aiFilteredSymbolRows.value]
+  const key = aiSymbolSort.key
+  const direction = aiSymbolSort.direction
+  return rows.sort((left, right) => {
+    const result = compareAiSymbolValues(left[key], right[key])
+    return direction === 'asc' ? result : -result
+  })
+})
+const aiSymbolTotalPages = computed(() => Math.max(1, Math.ceil(aiSortedSymbolRows.value.length / aiSymbolPagination.pageSize)))
+const aiSymbolPageStartIndex = computed(() =>
+  aiSortedSymbolRows.value.length ? (aiSymbolPagination.page - 1) * aiSymbolPagination.pageSize : 0
+)
+const aiSymbolPageEnd = computed(() =>
+  Math.min(aiSymbolPageStartIndex.value + aiSymbolPagination.pageSize, aiSortedSymbolRows.value.length)
+)
+const aiSymbolPageFirst = computed(() => (aiSortedSymbolRows.value.length ? aiSymbolPageStartIndex.value + 1 : 0))
+const aiPagedSymbolRows = computed(() => aiSortedSymbolRows.value.slice(aiSymbolPageStartIndex.value, aiSymbolPageEnd.value))
+const aiSymbolPageSizeOptions = AI_SYMBOL_PAGE_SIZE_OPTIONS
+const aiSymbolControlsDisabledReason = computed(() => {
+  if (pendingAiSymbolRunAction.value) return '请先确认或取消当前 AI 标的运行操作'
+  if (pendingAiSymbolAction.value) return '请先确认或取消当前 AI 标的操作'
+  if (confirmingClearAiSymbols.value) return '请先确认或取消清空已选标的'
+  return ''
+})
+const aiSymbolMetricsDisabledReason = computed(() => {
+  if (loadingAiSymbolMetrics.value) return '当前标的池指标正在刷新'
+  if (!aiCurrentSymbolRows.value.length) return '当前分组没有可刷新标的'
+  return ''
+})
+const aiSymbolMetricsDisabled = computed(() => Boolean(aiSymbolMetricsDisabledReason.value))
+const aiSymbolTopNCount = computed(() => Math.max(1, Math.trunc(Number(aiSymbolTopN.value) || 1)))
+const aiSymbolTopNDisabledReason = computed(() => {
+  if (!aiSortedSymbolRows.value.length) return '当前表格没有可选标的'
+  return ''
+})
+const aiSymbolTopNDisabled = computed(() => Boolean(aiSymbolTopNDisabledReason.value))
+const aiSymbolTopNActionTitle = computed(() =>
+  `按当前排序选中前 ${formatInt(Math.min(aiSymbolTopNCount.value, aiSortedSymbolRows.value.length))} 只`
+)
+const aiSymbolFilterDisabledReason = computed(() => {
+  if (runningAiSymbolFilter.value) return 'AI 筛选正在执行'
+  if (pendingAiSymbolAction.value) return '请先确认或取消当前 AI 标的操作'
+  if (!aiSymbolNaturalQuery.value.trim()) return '请先输入筛选条件'
+  if (!aiCurrentSymbolRows.value.length) return '当前分组没有可筛选标的'
+  return ''
+})
+const aiSymbolFilterDisabled = computed(() => Boolean(aiSymbolFilterDisabledReason.value))
+const aiSymbolRunPendingActionLabel = computed(() => {
+  const labels: Record<AiSymbolRunPendingAction, string> = {
+    '': '',
+    metrics: '刷新指标',
+    filter: 'AI 筛选'
+  }
+  return labels[pendingAiSymbolRunAction.value]
+})
+const aiSymbolRunPendingDisabledReason = computed(() => {
+  if (pendingAiSymbolRunAction.value === 'metrics') return aiSymbolMetricsDisabledReason.value
+  if (pendingAiSymbolRunAction.value === 'filter') return aiSymbolFilterDisabledReason.value
+  return '当前没有待确认的 AI 标的运行操作'
+})
+const aiSymbolRunPendingDisabled = computed(() => Boolean(aiSymbolRunPendingDisabledReason.value))
+const aiSymbolRunPendingText = computed(() => {
+  if (aiSymbolRunPendingDisabledReason.value) return aiSymbolRunPendingDisabledReason.value
+  if (pendingAiSymbolRunAction.value === 'metrics') {
+    return `确认后将刷新“${aiCurrentSymbolGroup.value?.name || '当前分组'}” ${formatInt(aiCurrentSymbolRows.value.length)} 只标的的最新行情指标。`
+  }
+  if (pendingAiSymbolRunAction.value === 'filter') {
+    return `确认后将解析“${aiSymbolNaturalQuery.value.trim()}”，并在“${aiCurrentSymbolGroup.value?.name || '当前分组'}” ${formatInt(aiCurrentSymbolRows.value.length)} 只标的中执行筛选。`
+  }
+  return ''
+})
+const pendingAiSymbolFilterSymbols = computed(() => {
+  const patches = pendingAiSymbolFilterResult.value?.patches || []
+  const patch = Array.isArray(patches)
+    ? patches.find((item: Record<string, any>) => String(item.target || '') === 'aiWorkbenchForm.symbols')
+    : null
+  return parseSymbols(String(patch?.value || ''))
+})
+const aiSymbolReplaceGroupDisabledReason = computed(() => {
+  if (!aiCurrentSymbolRows.value.length) return '当前分组没有可替换标的'
+  return ''
+})
+const aiSymbolReplaceGroupDisabled = computed(() => Boolean(aiSymbolReplaceGroupDisabledReason.value))
+const aiSymbolAppendFilteredDisabledReason = computed(() => {
+  if (!aiFilteredSymbolRows.value.length) return '当前筛选结果为空'
+  return ''
+})
+const aiSymbolAppendFilteredDisabled = computed(() => Boolean(aiSymbolAppendFilteredDisabledReason.value))
+const aiSymbolAppendPageDisabledReason = computed(() => {
+  if (!aiPagedSymbolRows.value.length) return '当前页没有可追加标的'
+  return ''
+})
+const aiSymbolAppendPageDisabled = computed(() => Boolean(aiSymbolAppendPageDisabledReason.value))
+const aiSymbolPendingActionLabel = computed(() => {
+  const labels: Record<AiSymbolPendingAction, string> = {
+    '': '',
+    topN: '选中前 N',
+    replaceGroup: '替换本类',
+    appendFiltered: '追加当前筛选',
+    appendPage: '追加本页',
+    filterResult: '载入 AI 筛选结果'
+  }
+  return labels[pendingAiSymbolAction.value]
+})
+const aiSymbolPendingActionDisabledReason = computed(() => {
+  if (pendingAiSymbolAction.value === 'filterResult') {
+    if (!pendingAiSymbolFilterResult.value) return '当前没有待确认的 AI 筛选结果'
+    if (!pendingAiSymbolFilterSymbols.value.length) return 'AI 筛选结果没有可载入标的'
+    return ''
+  }
+  if (pendingAiSymbolAction.value === 'topN') return aiSymbolTopNDisabledReason.value
+  if (pendingAiSymbolAction.value === 'replaceGroup') return aiSymbolReplaceGroupDisabledReason.value
+  if (pendingAiSymbolAction.value === 'appendFiltered') return aiSymbolAppendFilteredDisabledReason.value
+  if (pendingAiSymbolAction.value === 'appendPage') return aiSymbolAppendPageDisabledReason.value
+  return '请先选择要确认的 AI 标的操作'
+})
+const aiSymbolPendingActionDisabled = computed(() => Boolean(aiSymbolPendingActionDisabledReason.value))
+const aiSymbolPendingActionText = computed(() => {
+  const currentCount = aiSelectedSymbols.value.length
+  if (pendingAiSymbolAction.value === 'topN') {
+    return `将用当前排序前 ${formatInt(Math.min(aiSymbolTopNCount.value, aiSortedSymbolRows.value.length))} 只覆盖 AI 工作台当前 ${formatInt(currentCount)} 只标的。`
+  }
+  if (pendingAiSymbolAction.value === 'replaceGroup') {
+    return `将用“${aiCurrentSymbolGroup.value?.name || '当前分类'}”的 ${formatInt(aiCurrentSymbolRows.value.length)} 只标的覆盖 AI 工作台当前 ${formatInt(currentCount)} 只。`
+  }
+  if (pendingAiSymbolAction.value === 'appendFiltered') {
+    return `将把当前筛选结果 ${formatInt(aiFilteredSymbolRows.value.length)} 只追加到 AI 工作台，当前已选 ${formatInt(currentCount)} 只。`
+  }
+  if (pendingAiSymbolAction.value === 'appendPage') {
+    return `将把当前页 ${formatInt(aiPagedSymbolRows.value.length)} 只追加到 AI 工作台，当前已选 ${formatInt(currentCount)} 只。`
+  }
+  if (pendingAiSymbolAction.value === 'filterResult') {
+    const totalCount = Number(pendingAiSymbolFilterResult.value?.selected_symbol_count || pendingAiSymbolFilterSymbols.value.length)
+    return `AI 筛选匹配 ${formatInt(totalCount)} 只，确认后将载入 ${formatInt(pendingAiSymbolFilterSymbols.value.length)} 只并覆盖当前 ${formatInt(currentCount)} 只标的。`
+  }
+  return ''
+})
+const aiSymbolClearDisabledReason = computed(() => {
+  if (!aiSelectedSymbols.value.length) return '当前没有已选标的'
+  return ''
+})
+const aiSymbolClearDisabled = computed(() => Boolean(aiSymbolClearDisabledReason.value))
+const aiSymbolClearConfirmTitle = computed(() => `确认清空 AI 工作台当前 ${formatInt(aiSelectedSymbols.value.length)} 只已选标的`)
+const aiSymbolClearConfirmStatusText = computed(() =>
+  `将清空 AI 工作台当前 ${formatInt(aiSelectedSymbols.value.length)} 只已选标的；不会删除本地行情数据。`
+)
+const aiSymbolActionBusy = computed(() => loadingAiSymbolMetrics.value || runningAiSymbolFilter.value)
+const aiSymbolActionWarning = computed(() =>
+  aiSymbolMetricsDisabledReason.value ||
+  aiSymbolTopNDisabledReason.value ||
+  aiSymbolFilterDisabledReason.value ||
+  aiSymbolReplaceGroupDisabledReason.value ||
+  aiSymbolClearDisabledReason.value
+)
+const aiSymbolActionStatusText = computed(() => {
+  if (loadingAiSymbolMetrics.value) return `正在刷新 ${formatInt(aiCurrentSymbolRows.value.length)} 只标的的最新行情指标。`
+  if (runningAiSymbolFilter.value) return '正在解析筛选条件，并用本地结构化数据执行选股。'
+  const availableActions: string[] = []
+  if (!aiSymbolMetricsDisabledReason.value) availableActions.push('刷新指标')
+  if (!aiSymbolTopNDisabledReason.value) availableActions.push('选前 N')
+  if (!aiSymbolFilterDisabledReason.value) availableActions.push('AI 筛选')
+  if (!aiSymbolAppendFilteredDisabledReason.value) availableActions.push('追加筛选')
+  if (!aiSymbolAppendPageDisabledReason.value) availableActions.push('追加本页')
+  if (!aiSymbolReplaceGroupDisabledReason.value) availableActions.push('替换本类')
+  if (!aiSymbolClearDisabledReason.value) availableActions.push('清空已选')
+  if (availableActions.length) {
+    return `${availableActions.join('、')}可执行；当前已选 ${formatInt(aiSelectedSymbols.value.length)} 只。`
+  }
+  return '当前没有可操作标的，请切换分组或刷新代码表缓存。'
 })
 const aiWorkbenchContextSummary = computed(() => {
   const range = `${aiWorkbenchForm.start || '-'} 至 ${aiWorkbenchForm.end || '-'}`
   const skill = aiWorkbenchForm.skill_prompt.trim() ? 'Skill 已载入' : '无 Skill'
-  return `${formatInt(aiSelectedSymbols.value.length)} 只 · ${aiWorkbenchForm.timeframe} · ${range} · ${skill}`
+  const symbols = aiSelectedSymbols.value.length ? `已选 ${formatInt(aiSelectedSymbols.value.length)} 只` : '未选标的'
+  return `${symbols} · ${aiWorkbenchForm.timeframe} · ${range} · ${skill}`
+})
+const aiWorkbenchDataSummary = computed(() => {
+  const symbols = aiSelectedSymbols.value.length ? `已选 ${formatInt(aiSelectedSymbols.value.length)} 只` : '未选标的'
+  return `${aiWorkbenchForm.timeframe} · ${symbols}`
+})
+const aiWorkbenchLoadSourceSymbols = computed(() => parseSymbols(reviewForm.symbols || symbolsText.value))
+const aiWorkbenchLoadSymbolsDisabledReason = computed(() => {
+  if (!aiWorkbenchLoadSourceSymbols.value.length) return '复盘标的和下载任务标的都为空'
+  return ''
+})
+const aiWorkbenchLoadSymbolsDisabled = computed(() => Boolean(aiWorkbenchLoadSymbolsDisabledReason.value))
+const aiWorkbenchLoadSymbolsConfirmText = computed(() => {
+  const sourceLabel = parseSymbols(reviewForm.symbols).length ? '多股复盘标的' : '下载任务标的'
+  return `将用 ${sourceLabel} 覆盖 AI 工作台当前标的，共 ${formatInt(aiWorkbenchLoadSourceSymbols.value.length)} 只。`
+})
+const aiWorkbenchStatusLabel = computed(() => {
+  if (!aiConfigReady.value) return '未配置模型'
+  if (aiWorkbenchStreamStatus.value === 'preparing') return '整理本地行情'
+  if (aiWorkbenchStreamStatus.value === 'streaming') return '模型生成中'
+  if (aiWorkbenchStreamStatus.value === 'done') return '已完成'
+  if (aiWorkbenchStreamStatus.value === 'error') return '运行失败'
+  return aiWorkbenchResult.value ? '结果已就绪' : '等待发送'
+})
+const aiWorkbenchResultVisible = computed(() => Boolean(aiWorkbenchResult.value || aiWorkbenchStreamText.value))
+const aiWorkbenchRunDisabledReason = computed(() => {
+  if (runningAiWorkbench.value) return 'AI 模块正在运行'
+  if (!aiConfigReady.value) return '请先在系统设置里填写接口 URL、API Key 和模型'
+  if (!aiSelectedSymbols.value.length) return '请先在标的池选择或手动输入至少 1 个代码'
+  if (!aiWorkbenchForm.prompt.trim()) return '请先填写任务目标'
+  return ''
+})
+const aiWorkbenchRunDisabled = computed(() => Boolean(aiWorkbenchRunDisabledReason.value))
+const aiWorkbenchRunConfirmText = computed(() =>
+  `确认后将发送 ${formatInt(aiSelectedSymbols.value.length)} 只标的、${aiWorkbenchForm.timeframe}、${aiWorkbenchForm.start || '-'} 至 ${aiWorkbenchForm.end || '-'} 的本地行情上下文给模型。`
+)
+const aiWorkbenchRunStatusText = computed(() => {
+  if (runningAiWorkbench.value) return aiWorkbenchStatusLabel.value
+  if (aiWorkbenchRunDisabledReason.value) return aiWorkbenchRunDisabledReason.value
+  return `将发送 ${formatInt(aiSelectedSymbols.value.length)} 只标的的本地行情上下文。`
+})
+const researchBusyStatusText = computed(() => {
+  const labels: Record<string, string> = {
+    history: '历史相似搜索中',
+    cross: '横截面相似搜索中',
+    review: '多股复盘生成中',
+    etf: 'ETF 趋势对比生成中',
+    regime: '市场风险偏好研究中'
+  }
+  return labels[runningResearch.value] || '研究任务运行中'
 })
 const downloadTimeframeOptions = computed(() => sortTimeframes(config.value?.timeframes || Object.keys(TIMEFRAME_DIR_NAMES)))
 const selectedDownloadTimeframes = computed(() => normalizeDownloadTimeframes(selectedTimeframes.value))
@@ -4228,6 +6940,221 @@ const downloadTimeframeSummary = computed(() => {
   if (!selected.length) return '未选择'
   if (selected.length === downloadTimeframeOptions.value.length) return `全周期 ${selected.length}`
   return selected.join(' / ')
+})
+const downloadTimeframePendingSelection = computed(() => {
+  if (pendingDownloadTimeframeAction.value === 'all') return [...downloadTimeframeOptions.value]
+  if (pendingDownloadTimeframeAction.value === 'default') {
+    return normalizeDownloadTimeframes(config.value?.defaults?.timeframes || ['1d'])
+  }
+  return []
+})
+const downloadTimeframePendingDisabledReason = computed(() => {
+  if (!pendingDownloadTimeframeAction.value) return '当前没有待确认的下载周期修改'
+  if (!downloadTimeframePendingSelection.value.length) return '当前没有可应用的下载周期'
+  return ''
+})
+const downloadTimeframePendingDisabled = computed(() => Boolean(downloadTimeframePendingDisabledReason.value))
+const downloadTimeframePendingText = computed(() => {
+  if (downloadTimeframePendingDisabledReason.value) return downloadTimeframePendingDisabledReason.value
+  const label = pendingDownloadTimeframeAction.value === 'all' ? '全周期' : '默认周期'
+  return `确认后将下载周期改为${label}：${downloadTimeframePendingSelection.value.join(' / ')}，并清空当前预览计划。`
+})
+const downloadDateShortcutPendingRange = computed(() =>
+  pendingDownloadDateShortcut.value ? dateRangeForShortcut(pendingDownloadDateShortcut.value) : { start: '', end: '' }
+)
+const downloadDateShortcutPendingLabel = computed(() =>
+  DATE_RANGE_SHORTCUTS.find((item) => item.key === pendingDownloadDateShortcut.value)?.label || ''
+)
+const downloadDateShortcutPendingDisabledReason = computed(() => {
+  if (!pendingDownloadDateShortcut.value) return '当前没有待确认的日期快捷修改'
+  if (!downloadDateShortcutPendingRange.value.start || !downloadDateShortcutPendingRange.value.end) return '日期快捷没有可应用区间'
+  return ''
+})
+const downloadDateShortcutPendingDisabled = computed(() => Boolean(downloadDateShortcutPendingDisabledReason.value))
+const downloadDateShortcutPendingText = computed(() => {
+  if (downloadDateShortcutPendingDisabledReason.value) return downloadDateShortcutPendingDisabledReason.value
+  return `确认后将下载日期改为${downloadDateShortcutPendingLabel.value}：${downloadDateShortcutPendingRange.value.start} 至 ${downloadDateShortcutPendingRange.value.end}，并清空当前预览计划。`
+})
+const researchDateShortcutPendingRange = computed(() =>
+  pendingResearchDateShortcut.value ? dateRangeForShortcut(pendingResearchDateShortcut.value.key) : { start: '', end: '' }
+)
+const researchDateShortcutPendingLabel = computed(() =>
+  DATE_RANGE_SHORTCUTS.find((item) => item.key === pendingResearchDateShortcut.value?.key)?.label || ''
+)
+const researchDateShortcutPendingTargetLabel = computed(() => {
+  const target = pendingResearchDateShortcut.value?.target
+  if (target === 'history') return '历史相似窗口'
+  if (target === 'crossTarget') return '横截面目标窗口'
+  if (target === 'crossCandidate') return '横截面候选区间'
+  if (target === 'review') return '多股复盘区间'
+  if (target === 'etf') return 'ETF 趋势区间'
+  if (target === 'regime') return '市场风偏区间'
+  return '研究日期'
+})
+const researchDateShortcutPendingDisabledReason = computed(() => {
+  if (!pendingResearchDateShortcut.value) return '当前没有待确认的研究日期快捷修改'
+  if (
+    pendingResearchDateShortcut.value.target === 'crossCandidate' &&
+    crossCandidateRangeDisabledReason.value
+  ) return crossCandidateRangeDisabledReason.value
+  if (!researchDateShortcutPendingRange.value.start || !researchDateShortcutPendingRange.value.end) return '日期快捷没有可应用区间'
+  return ''
+})
+const researchDateShortcutPendingText = computed(() => {
+  if (researchDateShortcutPendingDisabledReason.value) return researchDateShortcutPendingDisabledReason.value
+  return `确认后将${researchDateShortcutPendingTargetLabel.value}改为${researchDateShortcutPendingLabel.value}：${researchDateShortcutPendingRange.value.start} 至 ${researchDateShortcutPendingRange.value.end}；旧研究结果不会自动刷新。`
+})
+const priceTableSymbolCount = computed(() => parseSymbols(priceTableForm.symbols).length)
+const priceTableDateRangeReason = computed(() => {
+  if (!priceTableForm.start || !priceTableForm.end) return '请填写开始和结束日期'
+  if (priceTableForm.start > priceTableForm.end) return '开始日期不能晚于结束日期'
+  return ''
+})
+const priceTableActionDisabledReason = computed(() => {
+  if (loadingPriceTable.value) return '股票数据表正在读取'
+  if (!priceTableSymbolCount.value) return '请填写至少 1 个股票代码'
+  return priceTableDateRangeReason.value
+})
+const priceTableActionDisabled = computed(() => Boolean(priceTableActionDisabledReason.value))
+const priceTableActionStatusText = computed(() => {
+  if (loadingPriceTable.value) return '正在读取 K 线、补算缺失指标并刷新表格。'
+  if (priceTableActionDisabledReason.value) return priceTableActionDisabledReason.value
+  const indicatorText = selectedPriceIndicators.value.length ? `，附带 ${formatInt(selectedPriceIndicators.value.length)} 个指标` : ''
+  return `将读取 ${formatInt(priceTableSymbolCount.value)} 个代码、${priceTableForm.timeframe}、${priceTableForm.start} 至 ${priceTableForm.end}${indicatorText}。`
+})
+const priceTableLoadConfirmText = computed(() => `${priceTableActionStatusText.value} 本次只刷新页面表格，不写入行情文件。`)
+const priceTableCommonIndicatorsConfirmText = computed(() =>
+  `确认后将指标列改为 ma5、ma10、ma20；当前已选 ${formatInt(selectedPriceIndicators.value.length)} 个指标。`
+)
+const indicatorImportDisabledReason = computed(() => {
+  if (importingIndicatorFormula.value) return '指标公式正在导入'
+  if (!indicatorImportForm.text.trim()) return '请先粘贴通达信公式文本'
+  return ''
+})
+const indicatorImportDisabled = computed(() => Boolean(indicatorImportDisabledReason.value))
+const indicatorImportConfirmText = computed(() => {
+  const prefix = indicatorImportForm.formula_id_prefix.trim()
+  const asset = indicatorMappingForm.asset_type || '全部资产'
+  return `将解析公式并写入本地指标库，导入后加入当前指标列，并自动绑定到${asset}${prefix ? `；公式前缀 ${prefix}` : ''}。`
+})
+const indicatorMappingDisabledReason = computed(() => {
+  if (mappingIndicators.value) return '指标映射正在保存'
+  if (!selectedPriceIndicators.value.length) return '请先选择至少 1 个指标'
+  return ''
+})
+const indicatorMappingDisabled = computed(() => Boolean(indicatorMappingDisabledReason.value))
+const indicatorMappingTargetLabel = computed(() => {
+  const firstSymbol = parseSymbols(priceTableForm.symbols)[0] || ''
+  if (firstSymbol) return firstSymbol
+  return indicatorMappingForm.asset_type || '全部资产'
+})
+const indicatorMappingConfirmText = computed(() =>
+  `将把 ${formatInt(selectedPriceIndicators.value.length)} 个指标绑定到 ${indicatorMappingTargetLabel.value}，周期 ${priceTableForm.timeframe}。`
+)
+const indicatorComputeDisabledReason = computed(() => {
+  if (computingIndicators.value) return '指标正在计算'
+  if (!priceTableSymbolCount.value) return '请先填写至少 1 个股票代码'
+  if (!selectedPriceIndicators.value.length) return '请先选择至少 1 个指标'
+  return priceTableDateRangeReason.value
+})
+const indicatorComputeDisabled = computed(() => Boolean(indicatorComputeDisabledReason.value))
+const indicatorComputeConfirmText = computed(() =>
+  `将按 ${formatInt(priceTableSymbolCount.value)} 个代码、${formatInt(selectedPriceIndicators.value.length)} 个指标、${priceTableForm.timeframe}、${priceTableForm.start} 至 ${priceTableForm.end} 写入本地指标数据。`
+)
+const indicatorConfirmingAction = computed(() => {
+  if (confirmingImportIndicatorFormula.value) return 'import'
+  if (confirmingMapSelectedIndicators.value) return 'map'
+  if (confirmingComputeSelectedIndicators.value) return 'compute'
+  return ''
+})
+const indicatorConfirmingActionText = computed(() => {
+  if (confirmingImportIndicatorFormula.value) return indicatorImportConfirmText.value
+  if (confirmingMapSelectedIndicators.value) return indicatorMappingConfirmText.value
+  if (confirmingComputeSelectedIndicators.value) return indicatorComputeConfirmText.value
+  return ''
+})
+const indicatorAnyActionReady = computed(() =>
+  !indicatorImportDisabledReason.value || !indicatorMappingDisabledReason.value || !indicatorComputeDisabledReason.value
+)
+const indicatorActionWarning = computed(() => (indicatorAnyActionReady.value ? '' : indicatorActionStatusText.value))
+const indicatorActionStateLabel = computed(() => {
+  if (importingIndicatorFormula.value) return '导入中'
+  if (mappingIndicators.value) return '绑定中'
+  if (computingIndicators.value) return '计算中'
+  return indicatorAnyActionReady.value ? '可执行' : '待补充'
+})
+const indicatorActionStatusText = computed(() => {
+  if (importingIndicatorFormula.value) return '正在解析公式并写入本地指标库。'
+  if (mappingIndicators.value) return '正在保存指标与资产范围的映射。'
+  if (computingIndicators.value) return '正在按当前代码、周期和日期窗口计算指标。'
+  const ready: string[] = []
+  if (!indicatorImportDisabledReason.value) ready.push('导入')
+  if (!indicatorMappingDisabledReason.value) ready.push('绑定')
+  if (!indicatorComputeDisabledReason.value) ready.push('计算')
+  if (ready.length) {
+    const blockers = [indicatorImportDisabledReason.value, indicatorMappingDisabledReason.value, indicatorComputeDisabledReason.value].filter(Boolean)
+    return `${ready.join('、')}可执行${blockers.length ? `；其他动作需先处理：${uniqueStrings(blockers).join('；')}` : '。'}`
+  }
+  return uniqueStrings([indicatorImportDisabledReason.value, indicatorMappingDisabledReason.value, indicatorComputeDisabledReason.value].filter(Boolean)).join('；')
+})
+const etfTrackerActionDisabledReason = computed(() => {
+  const runningReason = researchActionDisabledReason('etf')
+  if (runningReason) return runningReason
+  if (!etfTrackerReviewSymbols.value.length) return '当前 ETF 筛选结果为空'
+  return ''
+})
+const etfTrackerActionDisabled = computed(() => Boolean(etfTrackerActionDisabledReason.value))
+const etfLoadReviewDisabledReason = computed(() => {
+  const runningReason = researchActionDisabledReason('etf')
+  if (runningReason) return runningReason
+  if (!etfTrackerReviewSymbols.value.length) return '当前 ETF 筛选结果为空，无法载入多股复盘'
+  return ''
+})
+const etfLoadReviewDisabled = computed(() => Boolean(etfLoadReviewDisabledReason.value))
+const etfLoadReviewConfirmText = computed(() =>
+  `将用当前 ETF 筛选结果覆盖多股复盘参数，共 ${formatInt(etfTrackerReviewSymbols.value.length)} 只 ETF。`
+)
+const etfTrackerReviewConfirmText = computed(() =>
+  `确认后将按当前 ETF 筛选结果生成趋势对比，复盘 ${formatInt(etfTrackerReviewSymbols.value.length)} 只，并刷新多股复盘排序、K 线和锐评输出。`
+)
+const regimeExportDisabledReason = computed(() => {
+  const runningReason = researchActionDisabledReason('regime')
+  if (runningReason) return runningReason
+  if (!regimeResult.value) return '先运行市场风险偏好研究，生成结果后才能导出 JSON'
+  return ''
+})
+const regimeExportDisabled = computed(() => Boolean(regimeExportDisabledReason.value))
+const regimeExportFilename = computed(() => {
+  const result = regimeResult.value
+  const date = formatDateOnly(result?.summary?.as_of) || regimeForm.end || todayText()
+  return `market-regime-${date}.json`
+})
+const regimeExportConfirmText = computed(() =>
+  `确认后将下载 ${regimeExportFilename.value}，内容为当前市场风险偏好研究结果。`
+)
+const reviewAiActionDisabledReason = computed(() => {
+  if (runningAiReview.value) return 'AI 覆盖正在生成'
+  if (!reviewResult.value?.ai?.messages?.length) return '先生成多股复盘，得到可发送给 AI 的证据'
+  return ''
+})
+const reviewAiActionDisabled = computed(() => Boolean(reviewAiActionDisabledReason.value))
+const reviewSearchConfirmText = computed(() => {
+  const count = parseSymbols(reviewForm.symbols).length
+  const aiText = reviewForm.enable_ai_review ? '，生成完成后将尝试 AI 锐评。' : '。'
+  return `确认后将按 ${formatInt(count)} 只标的、${reviewForm.start || '-'} 至 ${reviewForm.end || '-'} 生成多股复盘，刷新排序、K 线和锐评输出${aiText}`
+})
+const reviewAiConfirmText = computed(() => {
+  const count = parseSymbols(reviewForm.symbols).length
+  return aiConfigReady.value
+    ? `确认后将发送多股复盘证据给模型，覆盖当前复盘与锐评输出；当前标的 ${formatInt(count)} 只。`
+    : '未配置完整 AI 接口，确认后仅切回本地规则锐评，不调用模型。'
+})
+const reviewAiActionStatusText = computed(() => {
+  if (runningAiReview.value) return '正在调用模型生成复盘、分析和视频锐评。'
+  if (confirmingRunAiReview.value) return reviewAiConfirmText.value
+  if (reviewAiActionDisabledReason.value) return reviewAiActionDisabledReason.value
+  if (!aiConfigReady.value) return 'AI 接口未配置，点击后将保留本地规则锐评。'
+  return `将使用模型 ${aiSettings.model.trim()} 覆盖当前复盘锐评。`
 })
 const reviewSymbolPickerTypeLabel = computed(() =>
   REVIEW_SYMBOL_PICKER_TABS.find((item) => item.key === reviewSymbolPickerType.value)?.label || '标的'
@@ -4286,6 +7213,106 @@ const reviewSymbolPickerSourceSummary = computed(() => {
   return `${names} · ${category?.label || '全部'} ${formatInt(category?.count || 0)} / ${formatInt(reviewSymbolPickerRows.value.length)} 只`
 })
 const reviewSymbolPickerSortLabel = computed(() => '近20K成交额降序')
+const reviewSymbolPickerSelectFilteredDisabledReason = computed(() => {
+  if (!filteredReviewSymbolPickerRows.value.length) return '当前搜索和分类下没有可选标的'
+  return ''
+})
+const reviewSymbolPickerSelectFilteredDisabled = computed(() => Boolean(reviewSymbolPickerSelectFilteredDisabledReason.value))
+const reviewSymbolPickerSelectAllDisabledReason = computed(() => {
+  if (!categoryFilteredReviewSymbolPickerRows.value.length) return '当前分类没有可选标的'
+  return ''
+})
+const reviewSymbolPickerSelectAllDisabled = computed(() => Boolean(reviewSymbolPickerSelectAllDisabledReason.value))
+const reviewSymbolPickerClearDisabledReason = computed(() => {
+  if (!reviewSymbolPickerSelection.value.length) return '当前没有已选标的'
+  return ''
+})
+const reviewSymbolPickerClearDisabled = computed(() => Boolean(reviewSymbolPickerClearDisabledReason.value))
+const reviewSymbolPickerApplyDisabledReason = computed(() => {
+  if (!reviewSymbolPickerSelection.value.length) return '先选择要写入多股复盘的标的'
+  return ''
+})
+const reviewSymbolPickerApplyDisabled = computed(() => Boolean(reviewSymbolPickerApplyDisabledReason.value))
+const reviewSymbolPickerPendingActionLabel = computed(() => {
+  const labels: Record<ReviewSymbolPendingAction, string> = {
+    append: '追加选中',
+    replace: '替换标的',
+    '': ''
+  }
+  return labels[pendingReviewSymbolAction.value]
+})
+const reviewSymbolPickerPendingActionDisabledReason = computed(() => {
+  if (!pendingReviewSymbolAction.value) return '当前没有待确认的复盘标的操作'
+  return reviewSymbolPickerApplyDisabledReason.value
+})
+const reviewSymbolPickerPendingActionDisabled = computed(() => Boolean(reviewSymbolPickerPendingActionDisabledReason.value))
+const reviewSymbolPickerCurrentCount = computed(() => parseSymbols(reviewForm.symbols).length)
+const reviewSymbolPickerStatusText = computed(() => {
+  if (reviewSymbolPickerApplyDisabledReason.value) return reviewSymbolPickerApplyDisabledReason.value
+  const selectedCount = formatInt(reviewSymbolPickerSelection.value.length)
+  const currentCount = formatInt(reviewSymbolPickerCurrentCount.value)
+  if (pendingReviewSymbolAction.value === 'append') {
+    return `确认后将把 ${selectedCount} 只${reviewSymbolPickerTypeLabel.value}追加到当前 ${currentCount} 只复盘标的。`
+  }
+  if (pendingReviewSymbolAction.value === 'replace') {
+    return `确认后将用 ${selectedCount} 只${reviewSymbolPickerTypeLabel.value}替换当前 ${currentCount} 只复盘标的。`
+  }
+  return `已选 ${selectedCount} 只${reviewSymbolPickerTypeLabel.value}，追加或替换前需要确认。`
+})
+const directoryBrowserOpenDisabledReason = computed(() => {
+  if (directoryBrowserLoading.value) return '正在读取目录，请稍候'
+  if (!directoryBrowserPath.value.trim()) return '先输入或选择一个目录路径'
+  return ''
+})
+const directoryBrowserOpenDisabled = computed(() => Boolean(directoryBrowserOpenDisabledReason.value))
+const directoryBrowserConfirmDisabledReason = computed(() => {
+  if (directoryBrowserLoading.value) return '正在读取目录，请稍候'
+  if (!directoryBrowserField.value) return '目录字段未确定，请关闭后重新选择'
+  if (!directoryBrowserPath.value.trim()) return '先输入或选择一个目录路径'
+  if (directoryBrowserError.value) return '当前目录读取失败，请先打开一个有效目录'
+  return ''
+})
+const directoryBrowserConfirmDisabled = computed(() => Boolean(directoryBrowserConfirmDisabledReason.value))
+const directoryBrowserStatusTone = computed(() => {
+  if (directoryBrowserLoading.value || directoryBrowserError.value || directoryBrowserConfirmDisabledReason.value) return 'warning'
+  return 'info'
+})
+const directoryBrowserStatusText = computed(() => {
+  if (directoryBrowserLoading.value) return '正在读取目录'
+  if (directoryBrowserError.value) return directoryBrowserError.value
+  if (directoryBrowserConfirmDisabledReason.value) return directoryBrowserConfirmDisabledReason.value
+  return `将使用 ${compactPath(directoryBrowserPath.value)}`
+})
+const crossUniversePendingActionLabel = computed(() => {
+  const action = pendingCrossUniverseAction.value
+  if (!action) return ''
+  return `所有${ASSET_SHORTCUT_LABELS[action]}`
+})
+const crossUniversePendingSymbols = computed(() => {
+  const action = pendingCrossUniverseAction.value
+  return action ? symbolsForAssetType(action) : []
+})
+const crossUniverseCurrentCount = computed(() => parseSymbols(crossForm.universe_symbols).length)
+const crossUniversePendingDisabledReason = computed(() => {
+  const action = pendingCrossUniverseAction.value
+  if (!action) return '当前没有待确认的候选标的操作'
+  if (!crossUniversePendingSymbols.value.length) {
+    return `${ASSET_SHORTCUT_LABELS[action]}候选为空，请先刷新代码表或缓存。`
+  }
+  return ''
+})
+const crossUniversePendingDisabled = computed(() => Boolean(crossUniversePendingDisabledReason.value))
+const crossUniversePendingStatusText = computed(() => {
+  if (crossUniversePendingDisabledReason.value) return crossUniversePendingDisabledReason.value
+  return `确认后将用 ${formatInt(crossUniversePendingSymbols.value.length)} 个${crossUniversePendingActionLabel.value}候选覆盖当前 ${formatInt(crossUniverseCurrentCount.value)} 个候选标的。`
+})
+const historySearchConfirmText = computed(() =>
+  `确认后将按 ${historyForm.symbol || '-'}、${historyForm.window_start || '-'} 至 ${historyForm.as_of || '-'} 搜索历史相似窗口，返回前 ${formatInt(historyForm.top_n)} 个匹配。`
+)
+const crossSearchConfirmText = computed(() => {
+  const mode = crossForm.search_mode === 'traversal' ? `指定区间 ${crossForm.traversal_start || '-'} 至 ${crossForm.traversal_end || '-'}` : `同区间，日期容忍 ${formatInt(crossForm.date_tolerance_bars)} K`
+  return `确认后将按 ${crossForm.target_symbol || '-'}、目标 ${crossForm.start || '-'} 至 ${crossForm.end || '-'} 搜索 ${formatInt(crossUniverseCurrentCount.value)} 个候选；${mode}。`
+})
 const overviewTimeframes = computed(() =>
   sortTimeframes([
     ...timeframeRows.value.map((row: Record<string, any>) => row.timeframe),
@@ -4356,6 +7383,20 @@ watch(
     etfTrackerPagination.page = 1
   }
 )
+watch(
+  () => [aiSymbolGroupName.value, aiSymbolKeyword.value, aiSymbolPagination.pageSize],
+  () => {
+    aiSymbolPagination.page = 1
+  }
+)
+watch(
+  () => [activeAiWorkbenchTab.value, aiSymbolGroupName.value, aiCurrentSymbolRows.value.length],
+  () => {
+    if (activeView.value === 'ai' && activeAiWorkbenchTab.value === 'symbols') {
+      void loadAiSymbolMetrics(false, false)
+    }
+  }
+)
 watch(cacheTotalPages, () => {
   goCachePage(cachePagination.page)
 })
@@ -4367,6 +7408,9 @@ watch(regimeFlowCandidateTotalPages, () => {
 })
 watch(regimeMarketScopeTotalPages, () => {
   goRegimeMarketScopePage(regimeMarketScopePagination.page)
+})
+watch(aiSymbolTotalPages, () => {
+  goAiSymbolPage(aiSymbolPagination.page)
 })
 watch(planTotalPages, () => {
   goPlanPage(planPagination.page)
@@ -4389,6 +7433,9 @@ watch(activeView, (view) => {
   if (view === 'cache' && !overviewRecordsLoaded.value && !loadingOverview.value) {
     void loadOverview(false, { includeRecords: true })
   }
+  if (view === 'ai' && activeAiWorkbenchTab.value === 'symbols') {
+    void loadAiSymbolMetrics(false, false)
+  }
   if (view === 'research' && activeResearchTab.value === 'etf') ensureEtfTrackingLoaded()
   normalizeResizableCardWidths()
 })
@@ -4397,11 +7444,68 @@ watch(activeResearchTab, (tab) => {
   normalizeResizableCardWidths()
 })
 
+function aiWorkbenchTabId(key: AiWorkbenchTabKey) {
+  return `ai-workbench-${key}-tab`
+}
+
+function aiWorkbenchPanelId(key: AiWorkbenchTabKey) {
+  return `ai-workbench-${key}-panel`
+}
+
+function handleAiWorkbenchTabKeydown(event: KeyboardEvent, key: AiWorkbenchTabKey) {
+  handleTabKeydown(event, key, aiWorkbenchTabs.map((item) => item.key), (nextKey) => {
+    activeAiWorkbenchTab.value = nextKey
+  })
+}
+
+function researchTabId(key: ResearchTabKey) {
+  return `research-${key}-tab`
+}
+
+function researchPanelId(key: ResearchTabKey) {
+  return `research-${key}-panel`
+}
+
+function handleResearchTabKeydown(event: KeyboardEvent, key: ResearchTabKey) {
+  handleTabKeydown(event, key, researchTabs.map((item) => item.key), (nextKey) => {
+    activeResearchTab.value = nextKey
+  })
+}
+
+function regimeSectionTabId(key: RegimeSectionTabKey) {
+  return `regime-section-${key}-tab`
+}
+
+function regimeSectionPanelId(key: RegimeSectionTabKey) {
+  return `regime-section-${key}-panel`
+}
+
+function handleRegimeSectionTabKeydown(event: KeyboardEvent, key: RegimeSectionTabKey) {
+  handleTabKeydown(event, key, regimeSectionTabs.map((item) => item.key), (nextKey) => {
+    activeRegimeSectionTab.value = nextKey
+  })
+}
+
+function handleTabKeydown<T extends string>(event: KeyboardEvent, key: T, keys: T[], setKey: (nextKey: T) => void) {
+  const index = keys.indexOf(key)
+  if (index < 0) return
+  let nextIndex = index
+  if (event.key === 'ArrowRight') nextIndex = (index + 1) % keys.length
+  else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + keys.length) % keys.length
+  else if (event.key === 'Home') nextIndex = 0
+  else if (event.key === 'End') nextIndex = keys.length - 1
+  else return
+  event.preventDefault()
+  setKey(keys[nextIndex])
+}
+
 const planColumns = [
   { key: 'stock_code', label: '代码' },
   { key: 'timeframe', label: '周期' },
   { key: 'action', label: '动作' },
   { key: 'reason', label: '原因' },
+  { key: 'catalog_status', label: '文件索引' },
+  { key: 'coverage_status', label: '窗口覆盖' },
   { key: 'missing_rows', label: '缺失K数' },
   { key: 'coverage_ratio', label: '覆盖率' }
 ]
@@ -4410,8 +7514,15 @@ const cacheColumns = [
   { key: 'stock_name', label: '名称' },
   { key: 'asset_type', label: '资产' },
   { key: 'timeframe', label: '周期' },
-  { key: 'adjust', label: '复权' },
   { key: 'status', label: '状态' },
+  { key: 'coverage_status', label: '窗口覆盖' },
+  { key: 'coverage_missing_rows', label: '缺失K数' },
+  { key: 'coverage_ratio', label: '覆盖率' },
+  { key: 'data_kind', label: '数据' },
+  { key: 'indicator', label: '指标' },
+  { key: 'adjust', label: '复权' },
+  { key: 'coverage_start_at', label: '窗口开始' },
+  { key: 'coverage_end_at', label: '窗口结束' },
   { key: 'rows', label: '行数' },
   { key: 'start_at', label: '开始' },
   { key: 'end_at', label: '结束' },
@@ -4704,6 +7815,7 @@ onMounted(async () => {
   restoreResearchSnapshots()
   await loadConfig()
   void loadTradingCalendar()
+  void loadIndicatorFormulas()
   await Promise.all([loadOverview(false, { includeRecords: false }), loadTasks()])
   normalizeResizableCardWidths()
   window.setInterval(() => {
@@ -4751,6 +7863,7 @@ async function loadTradingCalendar() {
 }
 
 async function loadSymbolGroups(preserveSelected: boolean, refreshTarget: SymbolRefreshTarget | '' = '') {
+  cancelApplySymbolGroup()
   loadingSymbolGroups.value = true
   const previousGroup = selectedGroup.value
   const previousSymbols = symbolsText.value
@@ -4834,7 +7947,10 @@ function ensureEtfTrackingLoaded() {
 }
 
 async function loadEtfTracking(notify = false, options: { preferCache?: boolean } = {}) {
-  if (loadingEtfTracking.value) return false
+  if (loadingEtfTracking.value) {
+    if (notify) showNotice('info', 'ETF接口正在读取', etfTrackingRefreshDisabledReason.value)
+    return false
+  }
   loadingEtfTracking.value = true
   try {
     settings.data_root = normalizeDataRoot(settings.data_root)
@@ -4875,9 +7991,15 @@ async function loadEtfTracking(notify = false, options: { preferCache?: boolean 
 }
 
 async function loadEtfReturns(notify = false, options: { preferCache?: boolean } = {}) {
-  if (loadingEtfReturns.value) return false
+  if (loadingEtfReturns.value) {
+    if (notify) showNotice('info', 'ETF收益率正在计算', etfReturnsRefreshDisabledReason.value)
+    return false
+  }
   const symbols = etfTrackerReturnSymbols()
-  if (!symbols.length) return false
+  if (!symbols.length) {
+    if (notify) showNotice('info', 'ETF收益率未计算', etfReturnsRefreshDisabledReason.value || '当前没有可计算收益率的 ETF 标的')
+    return false
+  }
   loadingEtfReturns.value = true
   try {
     settings.data_root = normalizeDataRoot(settings.data_root)
@@ -4909,6 +8031,40 @@ async function loadEtfReturns(notify = false, options: { preferCache?: boolean }
   } finally {
     loadingEtfReturns.value = false
   }
+}
+
+function requestEtfRefreshAction(action: Exclude<EtfRefreshPendingAction, ''>) {
+  pendingEtfRefreshAction.value = action
+  if (pendingEtfRefreshDisabledReason.value) {
+    const title = action === 'tracking' ? 'ETF接口不可刷新' : 'ETF收益率不可刷新'
+    showNotice('info', title, pendingEtfRefreshDisabledReason.value)
+    pendingEtfRefreshAction.value = ''
+    return
+  }
+  confirmingRunEtfTrackerReview.value = false
+  confirmingLoadEtfReview.value = false
+  showNotice('info', action === 'tracking' ? '确认刷新 TDX ETF 接口' : '确认刷新 ETF 收益率', pendingEtfRefreshConfirmText.value)
+}
+
+function cancelEtfRefreshAction() {
+  pendingEtfRefreshAction.value = ''
+  showNotice('info', 'ETF 数据未刷新', '当前 ETF 接口缓存和收益率缓存未修改。')
+}
+
+function confirmEtfRefreshAction() {
+  const action = pendingEtfRefreshAction.value
+  if (!action) {
+    showNotice('info', 'ETF 数据未刷新', '请先选择要刷新的 ETF 数据。')
+    return
+  }
+  if (pendingEtfRefreshDisabledReason.value) {
+    showNotice('info', 'ETF 数据未刷新', pendingEtfRefreshDisabledReason.value)
+    pendingEtfRefreshAction.value = ''
+    return
+  }
+  pendingEtfRefreshAction.value = ''
+  if (action === 'tracking') void loadEtfTracking(true)
+  if (action === 'returns') void loadEtfReturns(true)
 }
 
 function restoreEtfClientCache(storageKey: string, cacheKey: string, ttlMs: number) {
@@ -4945,11 +8101,26 @@ function writeEtfClientCache(storageKey: string, cacheKey: string, records: Arra
   )
 }
 
-function clearEtfClientCache() {
+function requestClearEtfClientCache() {
+  confirmingClearEtfCache.value = true
+  showNotice('info', '确认清理 ETF 缓存', '该操作只清理浏览器本地 ETF 接口和收益缓存，不删除行情数据。')
+}
+
+function cancelClearEtfClientCache() {
+  confirmingClearEtfCache.value = false
+  showNotice('info', '已取消清理', 'ETF 浏览器缓存未修改。')
+}
+
+function confirmClearEtfClientCache() {
+  if (!confirmingClearEtfCache.value) {
+    requestClearEtfClientCache()
+    return
+  }
   window.localStorage.removeItem(ETF_TRACKING_CACHE_STORAGE_KEY)
   window.localStorage.removeItem(ETF_RETURNS_CACHE_STORAGE_KEY)
   updateEtfCacheState(etfTrackingCacheState, 'cleared', etfTrackingRows.value.length, 0)
   updateEtfCacheState(etfReturnsCacheState, 'cleared', etfReturnRows.value.length, 0)
+  confirmingClearEtfCache.value = false
   showNotice('success', 'ETF缓存已清理', '已清理浏览器本地 ETF 接口和收益缓存；下次刷新会重新读取。')
 }
 
@@ -5031,10 +8202,49 @@ function dynamicSymbolGroupAvailable(name: string) {
   return Boolean(config.value?.symbol_groups.some((group) => group.name === name && group.symbols.length > 0))
 }
 
+function symbolGroupRefreshTitle(target: SymbolRefreshTarget) {
+  if (symbolGroupRefreshDisabledReason.value) return symbolGroupRefreshDisabledReason.value
+  if (target === 'index') return '重新读取指数列表并更新本地代码表缓存'
+  if (target === 'etf') return '重新读取 ETF 列表并更新本地代码表缓存'
+  return symbolCacheRefreshTitle.value
+}
+
+function requestSymbolGroupRefresh(target: SymbolRefreshTarget) {
+  pendingSymbolRefreshTarget.value = target
+  if (pendingSymbolRefreshDisabledReason.value) {
+    showNotice('info', '代码表未刷新', pendingSymbolRefreshDisabledReason.value)
+    pendingSymbolRefreshTarget.value = ''
+    return
+  }
+  showNotice('info', '确认刷新代码表', pendingSymbolRefreshConfirmText.value)
+}
+
+function cancelSymbolGroupRefresh() {
+  pendingSymbolRefreshTarget.value = ''
+  showNotice('info', '代码表未刷新', '股票、ETF、指数列表缓存未修改。')
+}
+
+function confirmSymbolGroupRefresh() {
+  if (pendingSymbolRefreshDisabledReason.value) {
+    showNotice('info', '代码表未刷新', pendingSymbolRefreshDisabledReason.value)
+    return
+  }
+  const target = pendingSymbolRefreshTarget.value
+  if (!target) {
+    showNotice('info', '代码表未刷新', '请先选择要刷新的代码表范围。')
+    return
+  }
+  void refreshShortcutGroup(target)
+}
+
 async function refreshShortcutGroup(target: SymbolRefreshTarget) {
-  if (loadingSymbolGroups.value) return
+  if (symbolGroupRefreshDisabledReason.value) {
+    showNotice('info', '代码表正在更新', symbolGroupRefreshDisabledReason.value)
+    return
+  }
   const targetGroup = target === 'index' ? '板块指数' : target === 'etf' ? 'ETF列表' : ''
   const targetLabel = target === 'index' ? '指数' : target === 'etf' ? 'ETF' : '代码表'
+  pendingSymbolRefreshTarget.value = ''
   refreshingSymbolGroup.value = target
   loadingSymbolGroups.value = true
   try {
@@ -5068,19 +8278,30 @@ async function refreshShortcutGroup(target: SymbolRefreshTarget) {
 }
 
 async function loadOverview(refresh: boolean, options: { includeRecords?: boolean } = {}) {
+  if (refresh) confirmingOverviewRefresh.value = false
   loadingOverview.value = true
   try {
     settings.data_root = normalizeDataRoot(settings.data_root)
     settings.tdx_path = normalizeTdxPath(settings.tdx_path)
     const includeRecords = options.includeRecords ?? activeView.value === 'cache'
+    const coverageWindow = overviewCoverageWindow()
     const params = new URLSearchParams({
       data_root: settings.data_root,
       adjust: settings.adjust,
       tdx_path: settings.tdx_path,
       refresh: String(refresh),
-      include_records: String(includeRecords)
+      include_records: String(includeRecords),
+      start: coverageWindow.start,
+      end: coverageWindow.end
     })
-    overview.value = await apiGet(`/overview?${params.toString()}`)
+    const nextOverview = await apiGet(`/overview?${params.toString()}`)
+    overview.value = includeRecords
+      ? nextOverview
+      : {
+          ...nextOverview,
+          records: overview.value?.records || [],
+          record_count: nextOverview.record_count ?? overview.value?.record_count ?? 0
+        }
     if (includeRecords && activeView.value === 'research' && activeResearchTab.value === 'etf') {
       void loadEtfReturns(false, { preferCache: true })
     }
@@ -5094,7 +8315,294 @@ async function loadOverview(refresh: boolean, options: { includeRecords?: boolea
   }
 }
 
+function requestOverviewRefresh() {
+  if (overviewRefreshDisabledReason.value) {
+    showNotice('info', '缓存扫描不可用', overviewRefreshDisabledReason.value)
+    return
+  }
+  confirmingOverviewRefresh.value = true
+  showNotice('info', '确认扫描缓存', overviewRefreshConfirmText.value)
+}
+
+function cancelOverviewRefresh() {
+  confirmingOverviewRefresh.value = false
+  showNotice('info', '缓存未扫描', 'SQLite 索引和缓存概览未刷新。')
+}
+
+function confirmOverviewRefresh() {
+  if (overviewRefreshDisabledReason.value) {
+    showNotice('info', '缓存扫描不可用', overviewRefreshDisabledReason.value)
+    confirmingOverviewRefresh.value = false
+    return
+  }
+  void loadOverview(true)
+}
+
+async function loadIndicatorFormulas() {
+  if (loadingIndicatorFormulas.value) return false
+  loadingIndicatorFormulas.value = true
+  try {
+    const params = new URLSearchParams({ data_root: normalizeDataRoot(settings.data_root) })
+    const data = await apiGet(`/indicators/formulas?${params.toString()}`)
+    indicatorFormulaRows.value = Array.isArray(data.records) ? data.records : []
+    return true
+  } catch (error) {
+    showError('指标公式加载失败', error)
+    return false
+  } finally {
+    loadingIndicatorFormulas.value = false
+  }
+}
+
+async function importIndicatorFormula() {
+  if (indicatorImportDisabledReason.value) {
+    if (!importingIndicatorFormula.value) showNotice('error', '指标公式参数不足', indicatorImportDisabledReason.value)
+    return
+  }
+  importingIndicatorFormula.value = true
+  try {
+    const data = await apiPost('/indicators/import-tdx', {
+      data_root: normalizeDataRoot(settings.data_root),
+      text: indicatorImportForm.text,
+      formula_id_prefix: indicatorImportForm.formula_id_prefix
+    })
+    await loadIndicatorFormulas()
+    const imported = Array.isArray(data.records) ? data.records : []
+    const first = imported[0]
+    if (first?.formula_id) {
+      priceTableForm.indicators = uniqueStringsInOrder([...selectedPriceIndicators.value, String(first.formula_id)]).join(',')
+      await apiPost('/indicators/mappings', {
+        data_root: normalizeDataRoot(settings.data_root),
+        formula_id: String(first.formula_id),
+        asset_type: indicatorMappingForm.asset_type,
+        timeframe: priceTableForm.timeframe,
+        enabled: true
+      })
+    }
+    indicatorImportForm.text = ''
+    confirmingImportIndicatorFormula.value = false
+    confirmingMapSelectedIndicators.value = false
+    confirmingComputeSelectedIndicators.value = false
+    showNotice('success', '指标公式已导入', `已导入 ${formatInt(imported.length)} 个输出指标。`)
+  } catch (error) {
+    showError('指标公式导入失败', error)
+  } finally {
+    importingIndicatorFormula.value = false
+  }
+}
+
+function requestImportIndicatorFormula() {
+  if (indicatorImportDisabledReason.value) {
+    showNotice('error', '指标公式参数不足', indicatorImportDisabledReason.value)
+    return
+  }
+  confirmingMapSelectedIndicators.value = false
+  confirmingComputeSelectedIndicators.value = false
+  confirmingImportIndicatorFormula.value = true
+  showNotice('info', '确认导入指标公式', indicatorImportConfirmText.value)
+}
+
+function cancelImportIndicatorFormula() {
+  confirmingImportIndicatorFormula.value = false
+  showNotice('info', '已取消导入指标公式', '公式文本、前缀和映射资产未修改。')
+}
+
+function confirmImportIndicatorFormula() {
+  if (indicatorImportDisabledReason.value) {
+    showNotice('error', '指标公式参数不足', indicatorImportDisabledReason.value)
+    return
+  }
+  if (!confirmingImportIndicatorFormula.value) {
+    requestImportIndicatorFormula()
+    return
+  }
+  importIndicatorFormula()
+}
+
+function requestMapSelectedIndicators() {
+  if (indicatorMappingDisabledReason.value) {
+    showNotice('error', '未选择指标', indicatorMappingDisabledReason.value)
+    return
+  }
+  confirmingImportIndicatorFormula.value = false
+  confirmingComputeSelectedIndicators.value = false
+  confirmingMapSelectedIndicators.value = true
+  showNotice('info', '确认绑定选中指标', indicatorMappingConfirmText.value)
+}
+
+function cancelMapSelectedIndicators() {
+  confirmingMapSelectedIndicators.value = false
+  showNotice('info', '已取消绑定指标', '本地指标映射未修改。')
+}
+
+function confirmMapSelectedIndicators() {
+  if (indicatorMappingDisabledReason.value) {
+    showNotice('error', '未选择指标', indicatorMappingDisabledReason.value)
+    return
+  }
+  if (!confirmingMapSelectedIndicators.value) {
+    requestMapSelectedIndicators()
+    return
+  }
+  mapSelectedIndicators()
+}
+
+function requestComputeSelectedIndicators() {
+  if (indicatorComputeDisabledReason.value) {
+    showNotice('error', '指标计算参数不足', indicatorComputeDisabledReason.value)
+    return
+  }
+  confirmingImportIndicatorFormula.value = false
+  confirmingMapSelectedIndicators.value = false
+  confirmingComputeSelectedIndicators.value = true
+  showNotice('info', '确认计算选中指标', indicatorComputeConfirmText.value)
+}
+
+function cancelComputeSelectedIndicators() {
+  confirmingComputeSelectedIndicators.value = false
+  showNotice('info', '已取消计算指标', '本地指标数据未修改。')
+}
+
+function confirmComputeSelectedIndicators() {
+  if (indicatorComputeDisabledReason.value) {
+    showNotice('error', '指标计算参数不足', indicatorComputeDisabledReason.value)
+    return
+  }
+  if (!confirmingComputeSelectedIndicators.value) {
+    requestComputeSelectedIndicators()
+    return
+  }
+  computeSelectedIndicators()
+}
+
+async function computeSelectedIndicators() {
+  const symbols = parseSymbols(priceTableForm.symbols)
+  const indicators = selectedPriceIndicators.value
+  if (indicatorComputeDisabledReason.value) {
+    if (!computingIndicators.value) showNotice('error', '指标计算参数不足', indicatorComputeDisabledReason.value)
+    return
+  }
+  computingIndicators.value = true
+  try {
+    const data = await apiPost('/indicators/compute', {
+      data_root: normalizeDataRoot(settings.data_root),
+      adjust: settings.adjust,
+      timeframe: priceTableForm.timeframe,
+      symbols,
+      formula_ids: indicators,
+      start: priceTableForm.start,
+      end: priceTableForm.end,
+      force: false
+    })
+    await loadOverview(true, { includeRecords: true })
+    confirmingComputeSelectedIndicators.value = false
+    showNotice('success', '指标计算完成', `已处理 ${formatInt(data.record_count)} 条指标任务。`)
+  } catch (error) {
+    showError('指标计算失败', error)
+  } finally {
+    computingIndicators.value = false
+  }
+}
+
+async function mapSelectedIndicators() {
+  const indicators = selectedPriceIndicators.value
+  if (indicatorMappingDisabledReason.value) {
+    if (!mappingIndicators.value) showNotice('error', '未选择指标', indicatorMappingDisabledReason.value)
+    return
+  }
+  mappingIndicators.value = true
+  try {
+    const firstSymbol = parseSymbols(priceTableForm.symbols)[0] || ''
+    await Promise.all(indicators.map((formulaId) => apiPost('/indicators/mappings', {
+      data_root: normalizeDataRoot(settings.data_root),
+      formula_id: formulaId,
+      stock_code: firstSymbol,
+      asset_type: firstSymbol ? '' : indicatorMappingForm.asset_type,
+      timeframe: priceTableForm.timeframe,
+      enabled: true
+    })))
+    confirmingMapSelectedIndicators.value = false
+    showNotice('success', '指标映射已保存', firstSymbol ? `已绑定到 ${firstSymbol}。` : `已绑定到 ${indicatorMappingForm.asset_type || '全部资产'}。`)
+  } catch (error) {
+    showError('指标映射失败', error)
+  } finally {
+    mappingIndicators.value = false
+  }
+}
+
+async function loadPriceTable() {
+  if (priceTableActionDisabledReason.value) {
+    if (!loadingPriceTable.value) showNotice('error', '股票数据表参数不足', priceTableActionDisabledReason.value)
+    return
+  }
+  confirmingLoadPriceTable.value = false
+  confirmingPriceTableCommonIndicators.value = false
+  loadingPriceTable.value = true
+  try {
+    const data = await apiPost('/prices/bars', {
+      data_root: normalizeDataRoot(settings.data_root),
+      adjust: settings.adjust,
+      timeframe: priceTableForm.timeframe,
+      symbols: parseSymbols(priceTableForm.symbols),
+      indicators: selectedPriceIndicators.value,
+      start: priceTableForm.start,
+      end: priceTableForm.end,
+      limit: 500,
+      order: 'desc',
+      compute_missing_indicators: true
+    })
+    priceTableRows.value = Array.isArray(data.records) ? data.records : []
+    showNotice('success', '股票数据表已读取', `已载入 ${formatInt(priceTableRows.value.length)} 行。`)
+  } catch (error) {
+    showError('股票数据表读取失败', error)
+  } finally {
+    loadingPriceTable.value = false
+  }
+}
+
+function requestLoadPriceTable() {
+  if (priceTableActionDisabledReason.value) {
+    showNotice('error', '股票数据表参数不足', priceTableActionDisabledReason.value)
+    return
+  }
+  confirmingPriceTableCommonIndicators.value = false
+  confirmingLoadPriceTable.value = true
+  showNotice('info', '确认读取股票数据表', priceTableLoadConfirmText.value)
+}
+
+function cancelLoadPriceTable() {
+  confirmingLoadPriceTable.value = false
+  showNotice('info', '股票数据表未读取', '当前页面表格未刷新。')
+}
+
+function confirmLoadPriceTable() {
+  if (priceTableActionDisabledReason.value) {
+    showNotice('error', '股票数据表参数不足', priceTableActionDisabledReason.value)
+    confirmingLoadPriceTable.value = false
+    return
+  }
+  void loadPriceTable()
+}
+
+function requestPriceTableCommonIndicators() {
+  confirmingLoadPriceTable.value = false
+  confirmingPriceTableCommonIndicators.value = true
+  showNotice('info', '确认应用常用均线', priceTableCommonIndicatorsConfirmText.value)
+}
+
+function cancelPriceTableCommonIndicators() {
+  confirmingPriceTableCommonIndicators.value = false
+  showNotice('info', '常用均线未应用', '股票数据表指标列未修改。')
+}
+
+function confirmPriceTableCommonIndicators() {
+  priceTableForm.indicators = 'ma5,ma10,ma20'
+  confirmingPriceTableCommonIndicators.value = false
+  showNotice('success', '常用均线已应用', '指标列已改为 ma5、ma10、ma20。')
+}
+
 async function refreshActiveView() {
+  confirmingTopbarRefresh.value = false
   refreshingTopbar.value = true
   try {
     if (activeView.value === 'cache') {
@@ -5117,7 +8625,32 @@ async function refreshActiveView() {
   }
 }
 
+function requestTopbarRefresh() {
+  if (topbarRefreshing.value) {
+    showNotice('info', '当前页面正在刷新', topbarRefreshStatusText.value)
+    return
+  }
+  confirmingTopbarRefresh.value = true
+  showNotice('info', '确认刷新当前页面', topbarRefreshConfirmText.value)
+}
+
+function cancelTopbarRefresh() {
+  confirmingTopbarRefresh.value = false
+  showNotice('info', '当前页面未刷新', '页面数据和本地索引未修改。')
+}
+
+function confirmTopbarRefresh() {
+  if (topbarRefreshing.value) {
+    showNotice('info', '当前页面正在刷新', topbarRefreshStatusText.value)
+    confirmingTopbarRefresh.value = false
+    return
+  }
+  void refreshActiveView()
+}
+
 async function previewPlan() {
+  confirmingPreviewPlan.value = false
+  confirmingStartDownload.value = false
   planning.value = true
   try {
     const data = await apiPost('/plan', payload())
@@ -5132,10 +8665,62 @@ async function previewPlan() {
   }
 }
 
-async function startDownload() {
+function requestPreviewPlan() {
+  const disabledReason = previewPlanDisabledReason.value
+  if (disabledReason) {
+    showNotice('info', '下载计划暂不可预览', disabledReason)
+    return
+  }
+  confirmingStartDownload.value = false
+  confirmingPreviewPlan.value = true
+  showNotice('info', '确认预览下载计划', previewPlanConfirmText.value)
+}
+
+function cancelPreviewPlan() {
+  confirmingPreviewPlan.value = false
+  showNotice('info', '下载计划未预览', '没有请求计划接口，当前预览结果未修改。')
+}
+
+function confirmPreviewPlan() {
+  const disabledReason = previewPlanDisabledReason.value
+  if (disabledReason) {
+    showNotice('info', '下载计划暂不可预览', disabledReason)
+    confirmingPreviewPlan.value = false
+    return
+  }
+  void previewPlan()
+}
+
+function requestStartDownload() {
+  const disabledReason = startDownloadDisabledReason.value
+  if (disabledReason) {
+    showNotice('info', '下载任务暂不可提交', disabledReason)
+    return
+  }
+  confirmingStartDownload.value = true
+  showNotice('info', '请确认执行下载', startDownloadConfirmStatusText.value)
+}
+
+function cancelStartDownload() {
+  confirmingStartDownload.value = false
+  showNotice('info', '已取消下载提交', '没有提交后台任务，本地行情缓存未修改。')
+}
+
+async function confirmStartDownload() {
+  const disabledReason = startDownloadDisabledReason.value
+  if (disabledReason) {
+    showNotice('info', '下载任务暂不可提交', disabledReason)
+    return
+  }
+  if (!confirmingStartDownload.value) {
+    requestStartDownload()
+    return
+  }
   downloading.value = true
   try {
-    const task = await apiPost('/download', payload())
+    showNotice('info', '正在提交下载任务', '已向本地 API 发起下载任务请求，等待任务编号返回。')
+    const task = await apiPost('/download', payload(), { timeoutMs: DOWNLOAD_SUBMIT_TIMEOUT_MS })
+    confirmingStartDownload.value = false
     selectedTaskId.value = task.id
     activeView.value = 'tasks'
     await loadTasks()
@@ -5148,6 +8733,7 @@ async function startDownload() {
 }
 
 async function runHistorySearch() {
+  confirmingRunHistorySearch.value = false
   runningResearch.value = 'history'
   try {
     historyResult.value = await apiPost('/research/history', {
@@ -5163,6 +8749,7 @@ async function runHistorySearch() {
       algorithm: historyForm.algorithm,
       forward_windows: parseNumberList(historyForm.forward_windows)
     })
+    historyResultSignature.value = historySearchSignature()
     showNotice('success', '历史相似完成', `匹配 ${formatInt(historyResult.value?.summary?.match_count)} 个窗口。`)
   } catch (error) {
     showError('历史相似失败', error)
@@ -5171,7 +8758,35 @@ async function runHistorySearch() {
   }
 }
 
+function requestRunHistorySearch() {
+  if (researchActionDisabledReason('history')) {
+    showNotice('error', '历史相似不可搜索', researchActionDisabledReason('history'))
+    return
+  }
+  confirmingRunCrossSearch.value = false
+  confirmingRunHistorySearch.value = true
+  showNotice('info', '确认搜索历史相似', historySearchConfirmText.value)
+}
+
+function cancelRunHistorySearch() {
+  confirmingRunHistorySearch.value = false
+  showNotice('info', '历史相似未搜索', '当前历史匹配结果和窗口 K 线未修改。')
+}
+
+function confirmRunHistorySearch() {
+  if (researchActionDisabledReason('history')) {
+    showNotice('error', '历史相似不可搜索', researchActionDisabledReason('history'))
+    return
+  }
+  if (!confirmingRunHistorySearch.value) {
+    requestRunHistorySearch()
+    return
+  }
+  void runHistorySearch()
+}
+
 async function runCrossSectionSearch() {
+  confirmingRunCrossSearch.value = false
   runningResearch.value = 'cross'
   try {
     crossResult.value = await apiPost('/research/cross-section', {
@@ -5188,6 +8803,7 @@ async function runCrossSectionSearch() {
       exclusion_bars: Number(crossForm.exclusion_bars || 0),
       forward_windows: parseNumberList(crossForm.forward_windows)
     })
+    crossResultSignature.value = crossSearchSignature()
     showNotice('success', '横截面搜索完成', `匹配 ${formatInt(crossResult.value?.summary?.match_count)} 个标的。`)
   } catch (error) {
     showError('横截面搜索失败', error)
@@ -5196,7 +8812,36 @@ async function runCrossSectionSearch() {
   }
 }
 
+function requestRunCrossSectionSearch() {
+  if (researchActionDisabledReason('cross')) {
+    showNotice('error', '横截面相似不可搜索', researchActionDisabledReason('cross'))
+    return
+  }
+  confirmingRunHistorySearch.value = false
+  confirmingRunCrossSearch.value = true
+  showNotice('info', '确认搜索横截面相似', crossSearchConfirmText.value)
+}
+
+function cancelRunCrossSectionSearch() {
+  confirmingRunCrossSearch.value = false
+  showNotice('info', '横截面相似未搜索', '当前横截面匹配结果和窗口 K 线未修改。')
+}
+
+function confirmRunCrossSectionSearch() {
+  if (researchActionDisabledReason('cross')) {
+    showNotice('error', '横截面相似不可搜索', researchActionDisabledReason('cross'))
+    return
+  }
+  if (!confirmingRunCrossSearch.value) {
+    requestRunCrossSectionSearch()
+    return
+  }
+  void runCrossSectionSearch()
+}
+
 async function runReviewSearch() {
+  confirmingRunReviewSearch.value = false
+  confirmingRunAiReview.value = false
   runningResearch.value = 'review'
   try {
     reviewResult.value = await apiPost('/research/review', {
@@ -5220,12 +8865,41 @@ async function runReviewSearch() {
   }
 }
 
+function requestRunReviewSearch() {
+  if (researchActionDisabledReason('review')) {
+    showNotice('error', '多股复盘不可生成', researchActionDisabledReason('review'))
+    return
+  }
+  confirmingRunAiReview.value = false
+  confirmingRunReviewSearch.value = true
+  showNotice('info', '确认生成多股复盘', reviewSearchConfirmText.value)
+}
+
+function cancelRunReviewSearch() {
+  confirmingRunReviewSearch.value = false
+  showNotice('info', '多股复盘未生成', '当前排序、K 线和锐评未修改。')
+}
+
+function confirmRunReviewSearch() {
+  if (researchActionDisabledReason('review')) {
+    showNotice('error', '多股复盘不可生成', researchActionDisabledReason('review'))
+    return
+  }
+  if (!confirmingRunReviewSearch.value) {
+    requestRunReviewSearch()
+    return
+  }
+  void runReviewSearch()
+}
+
 async function runEtfTrackerReview() {
   const selected = etfTrackerReviewSymbols.value
   if (!selected.length) {
     showNotice('error', 'ETF筛选为空', '请调整类型、跟踪指数或关键词。')
     return
   }
+  confirmingRunEtfTrackerReview.value = false
+  confirmingLoadEtfReview.value = false
   runningResearch.value = 'etf'
   try {
     reviewForm.symbols = selected.join('\n')
@@ -5254,7 +8928,63 @@ async function runEtfTrackerReview() {
   }
 }
 
+function requestRunEtfTrackerReview() {
+  if (etfTrackerActionDisabledReason.value) {
+    showNotice('error', 'ETF趋势对比不可生成', etfTrackerActionDisabledReason.value)
+    return
+  }
+  confirmingLoadEtfReview.value = false
+  confirmingRunEtfTrackerReview.value = true
+  showNotice('info', '确认生成 ETF 趋势对比', etfTrackerReviewConfirmText.value)
+}
+
+function cancelRunEtfTrackerReview() {
+  confirmingRunEtfTrackerReview.value = false
+  showNotice('info', 'ETF趋势对比未生成', '当前 ETF 趋势、复盘排序和 K 线未修改。')
+}
+
+function confirmRunEtfTrackerReview() {
+  if (etfTrackerActionDisabledReason.value) {
+    showNotice('error', 'ETF趋势对比不可生成', etfTrackerActionDisabledReason.value)
+    return
+  }
+  if (!confirmingRunEtfTrackerReview.value) {
+    requestRunEtfTrackerReview()
+    return
+  }
+  void runEtfTrackerReview()
+}
+
+function requestRunMarketRegimeResearch() {
+  if (researchActionDisabledReason('regime')) {
+    showNotice('error', '市场风偏研究不可运行', researchActionDisabledReason('regime'))
+    return
+  }
+  confirmingClearRegimeManualSymbols.value = false
+  confirmingRunRegimeResearch.value = true
+  showNotice('info', '确认运行市场风偏研究', regimeResearchConfirmText.value)
+}
+
+function cancelRunMarketRegimeResearch() {
+  confirmingRunRegimeResearch.value = false
+  showNotice('info', '市场风偏研究未运行', '当前市场风险偏好结果未修改。')
+}
+
+function confirmRunMarketRegimeResearch() {
+  if (researchActionDisabledReason('regime')) {
+    showNotice('error', '市场风偏研究不可运行', researchActionDisabledReason('regime'))
+    return
+  }
+  if (!confirmingRunRegimeResearch.value) {
+    requestRunMarketRegimeResearch()
+    return
+  }
+  void runMarketRegimeResearch()
+}
+
 async function runMarketRegimeResearch() {
+  confirmingRunRegimeResearch.value = false
+  confirmingClearRegimeManualSymbols.value = false
   runningResearch.value = 'regime'
   try {
     regimeResult.value = await apiPost('/research/market-regime', {
@@ -5297,6 +9027,7 @@ async function runMarketRegimeResearch() {
     activeRegimeSectionTab.value = 'overview'
     activeRegimeRaiKey.value = ''
     regimeRaiWindowStart.value = -1
+    regimeResultSignature.value = regimeSearchSignature()
     const phase = regimeResult.value?.risk_appetite?.phase || '已生成'
     showNotice('success', '市场风险偏好研究完成', `${phase} · ${formatInt(regimeResult.value?.summary?.asset_count)} 个资产。`)
   } catch (error) {
@@ -5306,13 +9037,46 @@ async function runMarketRegimeResearch() {
   }
 }
 
+function requestClearRegimeManualSymbols() {
+  if (regimeManualSymbolsClearDisabledReason.value) {
+    showNotice('info', '没有可清空标的', regimeManualSymbolsClearDisabledReason.value)
+    return
+  }
+  confirmingClearRegimeManualSymbols.value = true
+  showNotice('info', '确认清空手动标的', regimeManualSymbolsClearConfirmText.value)
+}
+
+function cancelClearRegimeManualSymbols() {
+  confirmingClearRegimeManualSymbols.value = false
+  showNotice('info', '已取消清空', '市场风偏手动补充标的未修改。')
+}
+
+function confirmClearRegimeManualSymbols() {
+  if (regimeManualSymbolsClearDisabledReason.value) {
+    showNotice('info', '没有可清空标的', regimeManualSymbolsClearDisabledReason.value)
+    return
+  }
+  if (!confirmingClearRegimeManualSymbols.value) {
+    requestClearRegimeManualSymbols()
+    return
+  }
+  const count = regimeManualSymbols.value.length
+  regimeForm.symbols = ''
+  confirmingClearRegimeManualSymbols.value = false
+  confirmingRunRegimeResearch.value = false
+  showNotice('success', '手动标的已清空', `已清空 ${formatInt(count)} 只手动补充标的。`)
+}
+
 async function runAiCommand() {
   if (!aiCommandForm.text.trim()) return
+  confirmingRunAiCommand.value = false
   runningAiCommand.value = true
+  aiCommandResultState.value = 'idle'
   try {
     const result = await apiPost('/ai/command', {
       ...researchPayloadBase(),
       tdx_path: settings.tdx_path,
+      end: aiCommandEndDate(),
       text: aiCommandForm.text,
       current_view: activeView.value,
       research_tab: activeResearchTab.value,
@@ -5322,13 +9086,69 @@ async function runAiCommand() {
       temperature: Number(aiSettings.temperature ?? 0)
     })
     aiCommandResult.value = result
-    applyAiCommandResult(result)
-    showNotice('success', 'AI 命令已应用', result.summary || '已根据命令更新参数。')
+    aiCommandResultState.value = (result.patches || []).length ? 'pending' : 'empty'
+    if (aiCommandResultState.value === 'pending') {
+      showNotice('info', 'AI 命令已解析', aiCommandApplyConfirmText.value)
+    } else {
+      showNotice('info', 'AI 命令已解析', result.summary || '没有可应用的参数变更。')
+    }
   } catch (error) {
+    aiCommandResultState.value = 'idle'
     showError('AI 命令失败', error)
   } finally {
     runningAiCommand.value = false
   }
+}
+
+function requestRunAiCommand() {
+  if (aiCommandDisabledReason.value) {
+    showNotice('info', 'AI 命令不可解析', aiCommandDisabledReason.value)
+    return
+  }
+  confirmingRunAiCommand.value = true
+  showNotice('info', '确认解析 AI 命令', aiCommandRunConfirmText.value)
+}
+
+function cancelRunAiCommand() {
+  confirmingRunAiCommand.value = false
+  showNotice('info', 'AI 命令未解析', '没有调用模型或本地规则，当前页面参数未修改。')
+}
+
+function confirmRunAiCommand() {
+  if (aiCommandDisabledReason.value) {
+    showNotice('info', 'AI 命令不可解析', aiCommandDisabledReason.value)
+    confirmingRunAiCommand.value = false
+    return
+  }
+  void runAiCommand()
+}
+
+function handleAiCommandInput() {
+  confirmingRunAiCommand.value = false
+  if (aiCommandResultState.value === 'pending') {
+    aiCommandResultState.value = 'cancelled'
+    showNotice('info', 'AI 命令参数未修改', '已取消上一条待确认结果。')
+  }
+  aiCommandResult.value = null
+  aiCommandResultState.value = 'idle'
+}
+
+function cancelAiCommandApply() {
+  if (aiCommandResultState.value !== 'pending') return
+  aiCommandResultState.value = 'cancelled'
+  showNotice('info', 'AI 命令参数未修改', '当前页面参数保持不变。')
+}
+
+function confirmAiCommandApply() {
+  const disabledReason = aiCommandApplyDisabledReason.value
+  if (disabledReason) {
+    showNotice('info', 'AI 命令暂不可应用', disabledReason)
+    return
+  }
+  if (!aiCommandResult.value) return
+  applyAiCommandResult(aiCommandResult.value)
+  aiCommandResultState.value = 'applied'
+  showNotice('success', 'AI 命令已应用', aiCommandResult.value.summary || '已根据命令更新参数。')
 }
 
 function applyAiCommandResult(result: Record<string, any>) {
@@ -5344,6 +9164,7 @@ function applyAiCommandPatch(patch: Record<string, any>) {
     return
   }
   if (target === 'symbolsText') {
+    cancelApplySymbolGroup()
     symbolsText.value = String(value || '')
     activeView.value = 'download'
     selectedGroup.value = 'custom'
@@ -5477,35 +9298,127 @@ function applyAiDateShortcut(target: string, key: string) {
   }
 }
 
-async function runAiWorkbench() {
-  if (!aiConfigReady.value) {
-    showNotice('error', 'AI 接口未配置', '请先在系统设置里填写接口 URL、API Key 和模型。')
+function requestLoadAiWorkbenchSymbols() {
+  if (aiWorkbenchLoadSymbolsDisabledReason.value) {
+    showNotice('info', '没有可载入标的', aiWorkbenchLoadSymbolsDisabledReason.value)
     return
   }
+  confirmingLoadAiWorkbenchSymbols.value = true
+  showNotice('info', '确认载入 AI 标的', aiWorkbenchLoadSymbolsConfirmText.value)
+}
+
+function cancelLoadAiWorkbenchSymbols() {
+  confirmingLoadAiWorkbenchSymbols.value = false
+  showNotice('info', '已取消载入', 'AI 工作台当前标的未修改。')
+}
+
+function confirmLoadAiWorkbenchSymbols() {
+  if (aiWorkbenchLoadSymbolsDisabledReason.value) {
+    showNotice('info', '没有可载入标的', aiWorkbenchLoadSymbolsDisabledReason.value)
+    return
+  }
+  if (!confirmingLoadAiWorkbenchSymbols.value) {
+    requestLoadAiWorkbenchSymbols()
+    return
+  }
+  const symbols = aiWorkbenchLoadSourceSymbols.value
+  aiWorkbenchForm.symbols = symbols.join('\n')
+  confirmingLoadAiWorkbenchSymbols.value = false
+  confirmingRunAiWorkbench.value = false
+  showNotice('success', 'AI 标的已载入', `已写入 ${formatInt(symbols.length)} 只标的。`)
+}
+
+function requestRunAiWorkbench() {
+  if (aiWorkbenchRunDisabledReason.value) {
+    showNotice('error', aiWorkbenchRunBlockedTitle(), aiWorkbenchRunDisabledReason.value)
+    return
+  }
+  confirmingLoadAiWorkbenchSymbols.value = false
+  confirmingRunAiWorkbench.value = true
+  showNotice('info', '确认发送 AI 任务', aiWorkbenchRunConfirmText.value)
+}
+
+function cancelRunAiWorkbench() {
+  confirmingRunAiWorkbench.value = false
+  showNotice('info', 'AI 任务未发送', '模型未调用，本地行情上下文未发送。')
+}
+
+function confirmRunAiWorkbench() {
+  if (aiWorkbenchRunDisabledReason.value) {
+    showNotice('error', aiWorkbenchRunBlockedTitle(), aiWorkbenchRunDisabledReason.value)
+    return
+  }
+  if (!confirmingRunAiWorkbench.value) {
+    requestRunAiWorkbench()
+    return
+  }
+  void runAiWorkbench()
+}
+
+async function runAiWorkbench() {
+  if (aiWorkbenchRunDisabledReason.value) {
+    showNotice('error', aiWorkbenchRunBlockedTitle(), aiWorkbenchRunDisabledReason.value)
+    return
+  }
+  confirmingRunAiWorkbench.value = false
+  confirmingLoadAiWorkbenchSymbols.value = false
   runningAiWorkbench.value = true
+  aiWorkbenchStreamStatus.value = 'preparing'
+  aiWorkbenchStreamText.value = ''
+  aiWorkbenchResult.value = null
+  const payload = {
+    ...researchPayloadBase(),
+    timeframe: aiWorkbenchForm.timeframe,
+    base_url: aiSettings.base_url.trim(),
+    api_key: aiSettings.api_key.trim(),
+    model: aiSettings.model.trim(),
+    prompt: aiWorkbenchForm.prompt,
+    skill_prompt: aiWorkbenchForm.skill_prompt,
+    symbols: parseSymbols(aiWorkbenchForm.symbols),
+    start: aiWorkbenchForm.start,
+    end: aiWorkbenchForm.end,
+    temperature: Number(aiSettings.temperature ?? 0.2),
+    max_charts: numberOrDefault(aiWorkbenchForm.max_charts, 3)
+  }
   try {
-    aiWorkbenchResult.value = await apiPost('/ai/stock-agent', {
-      ...researchPayloadBase(),
-      timeframe: aiWorkbenchForm.timeframe,
-      base_url: aiSettings.base_url.trim(),
-      api_key: aiSettings.api_key.trim(),
-      model: aiSettings.model.trim(),
-      prompt: aiWorkbenchForm.prompt,
-      skill_prompt: aiWorkbenchForm.skill_prompt,
-      symbols: parseSymbols(aiWorkbenchForm.symbols),
-      start: aiWorkbenchForm.start,
-      end: aiWorkbenchForm.end,
-      temperature: Number(aiSettings.temperature ?? 0.2),
-      max_symbols: numberOrDefault(aiWorkbenchForm.max_symbols, 20),
-      max_rows: numberOrDefault(aiWorkbenchForm.max_rows, 240),
-      max_charts: numberOrDefault(aiWorkbenchForm.max_charts, 3)
+    aiWorkbenchResult.value = await apiPostStream('/ai/stock-agent-stream', payload, {
+      context: (data) => {
+        aiWorkbenchResult.value = {
+          content: aiWorkbenchStreamText.value,
+          ...data
+        }
+        aiWorkbenchStreamStatus.value = 'streaming'
+      },
+      delta: (data) => {
+        aiWorkbenchStreamText.value += String(data.content || '')
+        if (aiWorkbenchResult.value) {
+          aiWorkbenchResult.value = {
+            ...aiWorkbenchResult.value,
+            content: aiWorkbenchStreamText.value
+          }
+        }
+        aiWorkbenchStreamStatus.value = 'streaming'
+      },
+      done: (data) => {
+        aiWorkbenchStreamText.value = String(data.content || aiWorkbenchStreamText.value)
+        aiWorkbenchResult.value = data
+        aiWorkbenchStreamStatus.value = 'done'
+      }
     })
     showNotice('success', 'AI 模块已生成', '模型已读取受限本地行情上下文并返回结果。')
   } catch (error) {
+    aiWorkbenchStreamStatus.value = 'error'
     showError('AI 模块运行失败', error)
   } finally {
     runningAiWorkbench.value = false
   }
+}
+
+function aiWorkbenchRunBlockedTitle() {
+  if (!aiConfigReady.value) return 'AI 接口未配置'
+  if (!aiSelectedSymbols.value.length) return '未选择标的'
+  if (!aiWorkbenchForm.prompt.trim()) return '未填写任务目标'
+  return 'AI 任务不可发送'
 }
 
 async function importAiSkillPrompt(event: Event) {
@@ -5518,6 +9431,7 @@ async function importAiSkillPrompt(event: Event) {
       showNotice('error', 'Skill 文件过大', '请导入 200,000 字符以内的 Markdown 或纯文本。')
       return
     }
+    confirmingClearAiSkillPrompt.value = false
     aiWorkbenchForm.skill_prompt = text
     showNotice('success', 'Skill 已导入', `${file.name} 已载入 AI 模块提示词。`)
   } catch (error) {
@@ -5527,19 +9441,77 @@ async function importAiSkillPrompt(event: Event) {
   }
 }
 
-function downloadMarketRegimeJson() {
-  if (!regimeResult.value) {
-    showNotice('info', '没有可导出结果', '先运行市场风险偏好研究。')
+function requestClearAiSkillPrompt() {
+  if (aiSkillPromptClearDisabledReason.value) {
+    showNotice('info', '没有可清空 Skill', aiSkillPromptClearDisabledReason.value)
     return
   }
-  const date = formatDateOnly(regimeResult.value.summary?.as_of) || regimeForm.end || todayText()
-  downloadJson(`market-regime-${date}.json`, regimeResult.value)
+  confirmingClearAiSkillPrompt.value = true
+  showNotice('info', '确认清空 Skill 提示词', aiSkillPromptClearConfirmText.value)
+}
+
+function cancelClearAiSkillPrompt() {
+  confirmingClearAiSkillPrompt.value = false
+  showNotice('info', '已取消清空', 'AI 工作台侧载 Skill 提示词未修改。')
+}
+
+function confirmClearAiSkillPrompt() {
+  if (aiSkillPromptClearDisabledReason.value) {
+    showNotice('info', '没有可清空 Skill', aiSkillPromptClearDisabledReason.value)
+    return
+  }
+  if (!confirmingClearAiSkillPrompt.value) {
+    requestClearAiSkillPrompt()
+    return
+  }
+  aiWorkbenchForm.skill_prompt = ''
+  confirmingClearAiSkillPrompt.value = false
+  showNotice('success', 'Skill 提示词已清空', 'AI 工作台将回到默认提示词。')
+}
+
+function requestMarketRegimeJsonExport() {
+  if (regimeExportDisabledReason.value) {
+    showNotice('info', '没有可导出结果', regimeExportDisabledReason.value)
+    return
+  }
+  confirmingRegimeExport.value = true
+  showNotice('info', '确认导出市场风偏 JSON', regimeExportConfirmText.value)
+}
+
+function cancelMarketRegimeJsonExport() {
+  confirmingRegimeExport.value = false
+  showNotice('info', '市场风偏 JSON 未导出', '没有下载文件。')
+}
+
+function confirmMarketRegimeJsonExport() {
+  if (regimeExportDisabledReason.value) {
+    showNotice('info', '没有可导出结果', regimeExportDisabledReason.value)
+    confirmingRegimeExport.value = false
+    return
+  }
+  if (!confirmingRegimeExport.value) {
+    requestMarketRegimeJsonExport()
+    return
+  }
+  downloadMarketRegimeJson()
+}
+
+function downloadMarketRegimeJson() {
+  const result = regimeResult.value
+  if (regimeExportDisabledReason.value) {
+    showNotice('info', '没有可导出结果', regimeExportDisabledReason.value)
+    return
+  }
+  if (!result) return
+  confirmingRegimeExport.value = false
+  downloadJson(regimeExportFilename.value, result)
+  showNotice('success', '市场风偏 JSON 已导出', regimeExportFilename.value)
 }
 
 function loadEtfTrackerSymbolsToReview() {
   const selected = etfTrackerReviewSymbols.value
-  if (!selected.length) {
-    showNotice('error', 'ETF筛选为空', '请调整类型、跟踪指数或关键词。')
+  if (etfLoadReviewDisabledReason.value) {
+    showNotice('error', '无法载入多股复盘', etfLoadReviewDisabledReason.value)
     return
   }
   reviewForm.symbols = selected.join('\n')
@@ -5553,14 +9525,71 @@ function loadEtfTrackerSymbolsToReview() {
   aiReviewOutput.value = null
   reviewResultSignature.value = ''
   etfTrackerResultSignature.value = ''
+  confirmingLoadEtfReview.value = false
   showNotice('success', '已载入多股复盘', `已写入 ${formatInt(selected.length)} 只 ETF。`)
 }
 
-async function runAiReview(options: { fallbackToLocal?: boolean } = {}) {
-  if (!reviewResult.value?.ai?.messages?.length) {
-    showNotice('error', 'AI 证据缺失', '请先生成多股复盘。')
+function requestLoadEtfTrackerSymbolsToReview() {
+  if (etfLoadReviewDisabledReason.value) {
+    showNotice('error', '无法载入多股复盘', etfLoadReviewDisabledReason.value)
     return
   }
+  confirmingLoadEtfReview.value = true
+  showNotice('info', '确认载入多股复盘', etfLoadReviewConfirmText.value)
+}
+
+function cancelLoadEtfTrackerSymbolsToReview() {
+  confirmingLoadEtfReview.value = false
+  showNotice('info', '已取消载入', '多股复盘参数未修改。')
+}
+
+function confirmLoadEtfTrackerSymbolsToReview() {
+  if (etfLoadReviewDisabledReason.value) {
+    showNotice('error', '无法载入多股复盘', etfLoadReviewDisabledReason.value)
+    return
+  }
+  if (!confirmingLoadEtfReview.value) {
+    requestLoadEtfTrackerSymbolsToReview()
+    return
+  }
+  confirmingLoadEtfReview.value = false
+  loadEtfTrackerSymbolsToReview()
+}
+
+function requestRunAiReview() {
+  if (reviewAiActionDisabledReason.value) {
+    showNotice('error', 'AI 覆盖不可用', reviewAiActionDisabledReason.value)
+    return
+  }
+  confirmingRunAiReview.value = true
+  showNotice('info', '确认 AI 覆盖复盘', reviewAiConfirmText.value)
+}
+
+function cancelRunAiReview() {
+  confirmingRunAiReview.value = false
+  showNotice('info', 'AI 覆盖未执行', '当前复盘与锐评输出未修改。')
+}
+
+function confirmRunAiReview() {
+  if (reviewAiActionDisabledReason.value) {
+    showNotice('error', 'AI 覆盖不可用', reviewAiActionDisabledReason.value)
+    return
+  }
+  if (!confirmingRunAiReview.value) {
+    requestRunAiReview()
+    return
+  }
+  void runAiReview()
+}
+
+async function runAiReview(options: { fallbackToLocal?: boolean } = {}) {
+  const result = reviewResult.value
+  if (reviewAiActionDisabledReason.value) {
+    if (!runningAiReview.value) showNotice('error', 'AI 证据缺失', reviewAiActionDisabledReason.value)
+    return
+  }
+  if (!result) return
+  confirmingRunAiReview.value = false
   if (!aiConfigReady.value) {
     aiReviewOutput.value = null
     if (options.fallbackToLocal) {
@@ -5577,7 +9606,7 @@ async function runAiReview(options: { fallbackToLocal?: boolean } = {}) {
       api_key: aiSettings.api_key.trim(),
       model: aiSettings.model.trim(),
       messages: reviewAiMessagesForRequest(),
-      evidence: reviewResult.value.ai.evidence || {},
+      evidence: result.ai.evidence || {},
       temperature: Number(aiSettings.temperature ?? 0.2)
     })
     showNotice('success', 'AI 输出已生成', '模型返回已解析为复盘、分析和视频锐评。')
@@ -5589,7 +9618,26 @@ async function runAiReview(options: { fallbackToLocal?: boolean } = {}) {
   }
 }
 
+function requestResetAiPromptSettings() {
+  confirmingResetAiPromptSettings.value = true
+  showNotice('info', '确认恢复默认提示词', resetAiPromptSettingsConfirmText.value)
+}
+
+function cancelResetAiPromptSettings() {
+  confirmingResetAiPromptSettings.value = false
+  showNotice('info', '已取消恢复默认提示词', 'AI 自定义提示词草稿未修改。')
+}
+
+function confirmResetAiPromptSettings() {
+  if (!confirmingResetAiPromptSettings.value) {
+    requestResetAiPromptSettings()
+    return
+  }
+  resetAiPromptSettings()
+}
+
 function resetAiPromptSettings() {
+  confirmingResetAiPromptSettings.value = false
   aiPromptDraft.system = ''
   aiPromptDraft.user = defaultAiUserPrompt()
   aiPromptSaved.value = false
@@ -5616,16 +9664,28 @@ function defaultAiUserPrompt() {
   return '请基于当前多股复盘证据生成逐股锐评卡片，保持 JSON 输出格式，重点强化排序理由、当前性质和明日验证。'
 }
 
+function builtinStockDataSkillPrompt() {
+  return [
+    '你是 TDX Downloader 的本地股票数据助手。',
+    '默认使用当前保存的 AI 接口参数，不要求用户重复提供 API Key。',
+    '筛选、排序、取前 N 时优先使用后端本地 SQLite 行情索引 ai_price_bars。',
+    '不要编造股票池；无法从本地数据验证时明确说明本地数据不足。',
+    '输出仅用于本地行情研究，不构成投资建议。'
+  ].join('\n')
+}
+
 function saveActiveResearchSnapshot() {
   saveResearchSnapshot(activeResearchTab.value)
 }
 
 function saveResearchSnapshot(tab: ResearchTabKey) {
   const result = researchResultFor(tab)
-  if (!result) {
-    showNotice('info', '没有可保存结果', '先运行当前研究模块，再保存快照。')
+  const disabledReason = resultActionDisabledReason(tab)
+  if (disabledReason) {
+    showNotice('info', '没有可保存结果', disabledReason)
     return
   }
+  if (!result) return
   const snapshot: ResearchSnapshot = {
     id: `${tab}-${Date.now()}`,
     tab,
@@ -5636,11 +9696,15 @@ function saveResearchSnapshot(tab: ResearchTabKey) {
     result: cloneJson(result)
   }
   researchSnapshots.value = [snapshot, ...researchSnapshots.value].slice(0, MAX_RESEARCH_SNAPSHOTS)
+  confirmingResearchSnapshotLoadId.value = ''
+  confirmingResearchSnapshotDeleteId.value = ''
   persistResearchSnapshots()
   showNotice('success', '快照已保存', `${activeResearchMetaFor(tab).label}结果已保存到本机浏览器。`)
 }
 
 function loadResearchSnapshot(snapshot: ResearchSnapshot) {
+  confirmingResearchSnapshotLoadId.value = ''
+  confirmingResearchSnapshotDeleteId.value = ''
   activeResearchTab.value = snapshot.tab
   const base = snapshot.payload?.base || {}
   if (base.data_root) settings.data_root = normalizeDataRoot(String(base.data_root))
@@ -5656,16 +9720,59 @@ function loadResearchSnapshot(snapshot: ResearchSnapshot) {
     normalizeRegimePercentFields()
   }
   setResearchResult(snapshot.tab, cloneJson(snapshot.result))
+  if (snapshot.tab === 'history') historyResultSignature.value = historySearchSignature()
+  if (snapshot.tab === 'cross') crossResultSignature.value = crossSearchSignature()
   if (snapshot.tab === 'review') reviewResultSignature.value = reviewSearchSignature()
   if (snapshot.tab === 'etf') {
     etfTrackerResultSignature.value = etfTrackerSearchSignature()
     reviewResultSignature.value = ''
   }
+  if (snapshot.tab === 'regime') regimeResultSignature.value = regimeSearchSignature()
   showNotice('success', '快照已载入', snapshot.title)
+}
+
+function requestLoadResearchSnapshot(snapshot: ResearchSnapshot) {
+  confirmingResearchSnapshotLoadId.value = snapshot.id
+  confirmingResearchSnapshotDeleteId.value = ''
+  showNotice('info', '确认载入快照', `将用“${snapshot.title}”覆盖当前研究表单和结果。`)
+}
+
+function cancelLoadResearchSnapshot() {
+  confirmingResearchSnapshotLoadId.value = ''
+  showNotice('info', '已取消载入', '当前研究表单和结果未修改。')
+}
+
+function confirmLoadResearchSnapshot(snapshot: ResearchSnapshot) {
+  if (confirmingResearchSnapshotLoadId.value !== snapshot.id) {
+    requestLoadResearchSnapshot(snapshot)
+    return
+  }
+  loadResearchSnapshot(snapshot)
+}
+
+function requestDeleteResearchSnapshot(snapshotId: string) {
+  confirmingResearchSnapshotLoadId.value = ''
+  confirmingResearchSnapshotDeleteId.value = snapshotId
+  showNotice('info', '确认删除快照', '再次点击该行的“删除”才会移除本地研究快照。')
+}
+
+function cancelDeleteResearchSnapshot() {
+  confirmingResearchSnapshotDeleteId.value = ''
+  showNotice('info', '已取消删除', '研究快照未修改。')
+}
+
+function confirmDeleteResearchSnapshot(snapshotId: string) {
+  if (confirmingResearchSnapshotDeleteId.value !== snapshotId) {
+    requestDeleteResearchSnapshot(snapshotId)
+    return
+  }
+  deleteResearchSnapshot(snapshotId)
 }
 
 function deleteResearchSnapshot(snapshotId: string) {
   researchSnapshots.value = researchSnapshots.value.filter((snapshot) => snapshot.id !== snapshotId)
+  confirmingResearchSnapshotLoadId.value = ''
+  confirmingResearchSnapshotDeleteId.value = ''
   persistResearchSnapshots()
   showNotice('info', '快照已删除', '本地研究快照列表已更新。')
 }
@@ -5683,12 +9790,47 @@ async function loadTasks(options: { notify?: boolean; silent?: boolean } = {}) {
   }
 }
 
+function requestClearTaskHistory() {
+  if (clearTasksDisabledReason.value) {
+    showNotice('info', '无法清空任务历史', clearTasksDisabledReason.value)
+    return
+  }
+  confirmingClearTasks.value = true
+}
+
+function cancelClearTaskHistory() {
+  if (clearTasksCancelDisabledReason.value) {
+    showNotice('info', '暂不能取消清理', clearTasksCancelDisabledReason.value)
+    return
+  }
+  confirmingClearTasks.value = false
+}
+
+function confirmClearTaskHistory() {
+  const disabledReason = clearTasksConfirmDisabledReason.value
+  if (disabledReason) {
+    showNotice('info', '任务历史未清理', disabledReason)
+    return
+  }
+  if (!confirmingClearTasks.value) {
+    requestClearTaskHistory()
+    return
+  }
+  void clearTaskHistory()
+}
+
 async function clearTaskHistory() {
+  const disabledReason = clearTasksConfirmDisabledReason.value
+  if (disabledReason) {
+    showNotice('info', '任务历史未清理', disabledReason)
+    return
+  }
   clearingTasks.value = true
   try {
     const data = await apiDelete('/tasks')
     await loadTasks()
     if (!tasks.value.some((task) => task.id === selectedTaskId.value)) selectedTaskId.value = tasks.value[0]?.id || ''
+    confirmingClearTasks.value = false
     showNotice('success', '执行历史已清理', `已清理 ${formatInt(data.removed_count)} 条历史任务。`)
   } catch (error) {
     showError('清理任务失败', error)
@@ -5701,7 +9843,82 @@ function selectTask(taskId: string) {
   selectedTaskId.value = taskId
 }
 
+function taskStatusLabel(status: string) {
+  return TASK_STATUS_LABELS[String(status || '')] || status || '未知'
+}
+
+function taskCanPause(task: TaskPayload) {
+  return ['queued', 'running'].includes(String(task.status || '')) && task.control !== 'pause'
+}
+
+function taskCanResume(task: TaskPayload) {
+  return ['paused', 'pausing'].includes(String(task.status || ''))
+}
+
+function taskCanCancel(task: TaskPayload) {
+  return ['queued', 'running', 'pausing', 'paused', 'cancelling'].includes(String(task.status || ''))
+}
+
+function taskHasControls(task: TaskPayload) {
+  return taskCanPause(task) || taskCanResume(task) || taskCanCancel(task)
+}
+
+function taskControlBusy(task: TaskPayload) {
+  return controllingTaskId.value === task.id || String(task.status || '') === 'cancelling'
+}
+
+function taskPauseTitle(task: TaskPayload) {
+  if (taskControlBusy(task)) return '任务控制请求处理中'
+  if (taskCanPause(task)) return '暂停该后台任务'
+  return `当前状态为${taskStatusLabel(task.status)}，不能暂停`
+}
+
+function taskResumeTitle(task: TaskPayload) {
+  if (taskControlBusy(task)) return '任务控制请求处理中'
+  if (taskCanResume(task)) return '继续该后台任务'
+  return `当前状态为${taskStatusLabel(task.status)}，不能继续`
+}
+
+function taskCancelTitle(task: TaskPayload) {
+  if (taskControlBusy(task)) return '任务控制请求处理中'
+  if (taskCanCancel(task)) return '终止该后台任务'
+  return `当前状态为${taskStatusLabel(task.status)}，不能终止`
+}
+
+async function controlTask(task: TaskPayload, action: 'pause' | 'resume' | 'cancel') {
+  if (taskControlBusy(task)) {
+    showNotice('info', '任务控制处理中', '请等待当前控制请求返回。')
+    return
+  }
+  const disabled =
+    action === 'pause'
+      ? !taskCanPause(task)
+      : action === 'resume'
+        ? !taskCanResume(task)
+        : !taskCanCancel(task)
+  if (disabled) {
+    showNotice('info', '任务状态已变化', '当前任务状态不支持该操作，请刷新任务列表确认。')
+    return
+  }
+  const labels = { pause: '暂停', resume: '继续', cancel: '终止' }
+  controllingTaskId.value = task.id
+  try {
+    const updated = await apiPost(`/tasks/${task.id}/${action}`, {})
+    selectedTaskId.value = updated.id || task.id
+    await loadTasks({ silent: true })
+    showNotice('success', `已请求${labels[action]}`, `任务 ${task.id.slice(0, 12)} 状态为 ${taskStatusLabel(updated.status)}。`)
+  } catch (error) {
+    showError(`任务${labels[action]}失败`, error)
+  } finally {
+    controllingTaskId.value = ''
+  }
+}
+
 async function pickDirectory(field: DirectoryField) {
+  if (directoryPickDisabledReason.value) {
+    showNotice('info', '目录选择进行中', directoryPickDisabledReason.value)
+    return
+  }
   pickingDirectory.value = field
   try {
     const data = await apiPost('/pick-directory', {
@@ -5727,15 +9944,35 @@ async function openDirectoryBrowser(field: DirectoryField, reason = '') {
   directoryBrowserField.value = field
   directoryBrowserReason.value = reason
   directoryBrowserOpen.value = true
-  const initialPath = settings[field] || (field === 'data_root' ? settings.data_root : '')
+  const initialPath = directoryInitialPath(field)
   await loadDirectoryBrowser(initialPath)
+  await nextTick()
+  directoryBrowserPathInput.value?.focus()
+  directoryBrowserPathInput.value?.select()
+}
+
+function requestLoadDirectoryBrowser(path: string) {
+  if (directoryBrowserLoading.value) {
+    showNotice('info', '目录正在读取', '请等待当前目录读取完成。')
+    return
+  }
+  void loadDirectoryBrowser(path)
 }
 
 async function loadDirectoryBrowser(path: string) {
+  if (directoryBrowserLoading.value) {
+    showNotice('info', '目录正在读取', '请等待当前目录读取完成。')
+    return
+  }
+  const targetPath = String(path || '').trim()
+  if (!targetPath) {
+    directoryBrowserError.value = directoryBrowserOpenDisabledReason.value || '先输入或选择一个目录路径'
+    return
+  }
   directoryBrowserLoading.value = true
   directoryBrowserError.value = ''
   try {
-    const query = encodeURIComponent(path || '')
+    const query = encodeURIComponent(targetPath)
     const data = await apiGet(`/directories?path=${query}`)
     directoryBrowserPath.value = String(data.path || '')
     directoryBrowserParent.value = String(data.parent || '')
@@ -5750,9 +9987,15 @@ async function loadDirectoryBrowser(path: string) {
 }
 
 async function confirmDirectoryBrowserPath() {
+  const disabledReason = directoryBrowserConfirmDisabledReason.value
+  if (disabledReason) {
+    showNotice('info', '目录暂不可用', disabledReason)
+    return
+  }
   const field = directoryBrowserField.value
-  if (!field || !directoryBrowserPath.value) return
-  settings[field] = field === 'data_root' ? normalizeDataRoot(directoryBrowserPath.value) : normalizeTdxPath(directoryBrowserPath.value)
+  const selectedPath = directoryBrowserPath.value.trim()
+  if (!field || !selectedPath) return
+  settings[field] = field === 'data_root' ? normalizeDataRoot(selectedPath) : normalizeTdxPath(selectedPath)
   closeDirectoryBrowser()
   await loadSymbolGroups(true)
   showNotice('success', '目录已选择', `${directoryFieldLabel(field)} 已更新。`)
@@ -5771,50 +10014,372 @@ function directoryFieldLabel(field: DirectoryField | '') {
   return '文件夹'
 }
 
-function applySymbolGroup() {
-  if (selectedGroup.value === 'custom') return
-  const group = config.value?.symbol_groups.find((item) => item.name === selectedGroup.value)
-  if (group) symbolsText.value = group.symbols.join('\n')
+function directoryInitialPath(field: DirectoryField) {
+  const configured = String(settings[field] || '').trim()
+  if (configured) return configured
+  const dataRoot = String(settings.data_root || '').trim()
+  if (dataRoot) return dataRoot
+  return '/data'
+}
+
+function directoryPickerTitle(field: DirectoryField) {
+  if (pickingDirectory.value && pickingDirectory.value !== field) return `正在选择${directoryFieldLabel(pickingDirectory.value)}`
+  if (runningInContainer.value) return `浏览当前服务可访问的${directoryFieldLabel(field)}目录`
+  return `选择${directoryFieldLabel(field)}`
+}
+
+function directoryPickTitle(field: DirectoryField) {
+  return directoryPickDisabledReason.value || directoryPickerTitle(field)
+}
+
+function requestApplySymbolGroup(event: Event) {
+  const nextGroup = String((event.target as HTMLSelectElement | null)?.value || 'custom')
+  if (nextGroup === 'custom') {
+    cancelApplySymbolGroup()
+    selectedGroup.value = 'custom'
+    return
+  }
+  if (nextGroup === selectedGroup.value) {
+    cancelApplySymbolGroup()
+    return
+  }
+  const group = config.value?.symbol_groups.find((item) => item.name === nextGroup)
+  if (!group) {
+    showNotice('error', '代码来源不可用', '当前代码来源不存在，请刷新代码表缓存后重试。')
+    selectedGroup.value = previousDownloadSymbolGroup.value || 'custom'
+    pendingDownloadSymbolGroup.value = ''
+    previousDownloadSymbolGroup.value = ''
+    return
+  }
+  previousDownloadSymbolGroup.value = selectedGroup.value
+  pendingDownloadSymbolGroup.value = group.name
+  showNotice('info', '确认应用代码来源', downloadSymbolGroupConfirmText.value)
+}
+
+function cancelApplySymbolGroup() {
+  if (pendingDownloadSymbolGroup.value) {
+    selectedGroup.value = previousDownloadSymbolGroup.value || 'custom'
+  }
+  pendingDownloadSymbolGroup.value = ''
+  previousDownloadSymbolGroup.value = ''
+}
+
+function confirmApplySymbolGroup() {
+  const disabledReason = downloadSymbolGroupConfirmDisabledReason.value
+  if (disabledReason) {
+    showNotice('error', '代码来源不可用', disabledReason)
+    cancelApplySymbolGroup()
+    return
+  }
+  const group = pendingDownloadSymbolGroupRecord.value
+  if (!group) return
+  symbolsText.value = group.symbols.join('\n')
+  selectedGroup.value = group.name
+  pendingDownloadSymbolGroup.value = ''
+  previousDownloadSymbolGroup.value = ''
+  showNotice('success', '代码来源已应用', `已填入 ${formatInt(group.symbols.length)} 只${group.name}标的。`)
+}
+
+function handleDownloadSymbolsInput() {
+  if (pendingDownloadSymbolGroup.value) cancelApplySymbolGroup()
+  selectedGroup.value = 'custom'
 }
 
 function replaceAiSymbolsFromGroup() {
-  const limit = Math.max(1, Math.trunc(Number(aiWorkbenchForm.max_symbols) || 20))
+  if (aiSymbolReplaceGroupDisabledReason.value) {
+    showNotice('error', '无法替换标的', aiSymbolReplaceGroupDisabledReason.value)
+    return
+  }
+  confirmingLoadAiWorkbenchSymbols.value = false
+  confirmingRunAiWorkbench.value = false
+  confirmingClearAiSymbols.value = false
+  pendingAiSymbolAction.value = ''
+  pendingAiSymbolFilterResult.value = null
   const allSymbols = uniqueStringsInOrder(aiCurrentSymbolRows.value.map((row) => row.symbol))
-  const symbols = allSymbols.slice(0, limit)
-  aiWorkbenchForm.symbols = symbols.join('\n')
-  const suffix = allSymbols.length > symbols.length ? `，按上限取前 ${formatInt(symbols.length)} / ${formatInt(allSymbols.length)} 只。` : `，共 ${formatInt(symbols.length)} 只。`
+  aiWorkbenchForm.symbols = allSymbols.join('\n')
+  const suffix = `，共 ${formatInt(allSymbols.length)} 只。`
   showNotice('success', 'AI 标的已替换', `${aiCurrentSymbolGroup.value?.name || '当前分类'}${suffix}`)
 }
 
-function appendVisibleAiSymbols() {
-  const limit = Math.max(1, Math.trunc(Number(aiWorkbenchForm.max_symbols) || 20))
+function appendAiSymbols(rows: Array<{ symbol: string }>, title: string) {
+  confirmingLoadAiWorkbenchSymbols.value = false
+  confirmingRunAiWorkbench.value = false
+  confirmingClearAiSymbols.value = false
+  pendingAiSymbolAction.value = ''
+  pendingAiSymbolFilterResult.value = null
   const beforeCount = aiSelectedSymbols.value.length
   const symbols = uniqueStringsInOrder([
     ...aiSelectedSymbols.value,
-    ...aiSymbolVisibleRows.value.map((row) => row.symbol)
-  ]).slice(0, limit)
+    ...rows.map((row) => row.symbol)
+  ])
   aiWorkbenchForm.symbols = symbols.join('\n')
   const addedCount = Math.max(0, symbols.length - beforeCount)
-  showNotice('success', 'AI 标的已追加', `已追加 ${formatInt(addedCount)} 只，当前 ${formatInt(symbols.length)} / ${formatInt(limit)} 只。`)
+  showNotice('success', title, `已追加 ${formatInt(addedCount)} 只，当前 ${formatInt(symbols.length)} 只。`)
+}
+
+function appendFilteredAiSymbols() {
+  if (aiSymbolAppendFilteredDisabledReason.value) {
+    showNotice('error', '无法追加标的', aiSymbolAppendFilteredDisabledReason.value)
+    return
+  }
+  appendAiSymbols(aiFilteredSymbolRows.value, 'AI 标的已追加')
+}
+
+function appendPageAiSymbols() {
+  if (aiSymbolAppendPageDisabledReason.value) {
+    showNotice('error', '无法追加标的', aiSymbolAppendPageDisabledReason.value)
+    return
+  }
+  appendAiSymbols(aiPagedSymbolRows.value, 'AI 标的已追加')
+}
+
+function selectTopAiSymbols() {
+  if (aiSymbolTopNDisabledReason.value) {
+    showNotice('error', '无法选中前 N', aiSymbolTopNDisabledReason.value)
+    return
+  }
+  const count = aiSymbolTopNCount.value
+  aiSymbolTopN.value = count
+  const symbols = uniqueStringsInOrder(aiSortedSymbolRows.value.slice(0, count).map((row) => row.symbol))
+  confirmingLoadAiWorkbenchSymbols.value = false
+  confirmingRunAiWorkbench.value = false
+  confirmingClearAiSymbols.value = false
+  pendingAiSymbolAction.value = ''
+  pendingAiSymbolFilterResult.value = null
+  aiWorkbenchForm.symbols = symbols.join('\n')
+  showNotice('success', 'AI 标的已替换', `已选当前排序前 ${formatInt(symbols.length)} 只。`)
+}
+
+function requestAiSymbolAction(action: AiSymbolPendingAction) {
+  pendingAiSymbolAction.value = action
+  confirmingClearAiSymbols.value = false
+  confirmingLoadAiWorkbenchSymbols.value = false
+  if (aiSymbolPendingActionDisabledReason.value) {
+    showNotice('error', 'AI 标的操作不可用', aiSymbolPendingActionDisabledReason.value)
+    pendingAiSymbolAction.value = ''
+    if (action === 'filterResult') pendingAiSymbolFilterResult.value = null
+    return
+  }
+  showNotice('info', `确认${aiSymbolPendingActionLabel.value}`, aiSymbolPendingActionText.value)
+}
+
+function cancelAiSymbolAction() {
+  const label = aiSymbolPendingActionLabel.value || 'AI 标的操作'
+  if (pendingAiSymbolAction.value === 'filterResult') pendingAiSymbolFilterResult.value = null
+  pendingAiSymbolAction.value = ''
+  showNotice('info', `已取消${label}`, 'AI 工作台标的未修改。')
+}
+
+function confirmAiSymbolAction() {
+  if (aiSymbolPendingActionDisabledReason.value) {
+    showNotice('error', 'AI 标的操作不可用', aiSymbolPendingActionDisabledReason.value)
+    return
+  }
+  const action = pendingAiSymbolAction.value
+  if (action === 'topN') {
+    selectTopAiSymbols()
+    return
+  }
+  if (action === 'replaceGroup') {
+    replaceAiSymbolsFromGroup()
+    return
+  }
+  if (action === 'appendFiltered') {
+    appendFilteredAiSymbols()
+    return
+  }
+  if (action === 'appendPage') {
+    appendPageAiSymbols()
+    return
+  }
+  if (action === 'filterResult') {
+    confirmAiSymbolFilterResult()
+    return
+  }
+  showNotice('error', 'AI 标的操作不可用', '请先选择要确认的 AI 标的操作')
+}
+
+function confirmAiSymbolFilterResult() {
+  if (!pendingAiSymbolFilterResult.value) {
+    showNotice('error', 'AI 筛选结果不可用', '当前没有待确认的 AI 筛选结果。')
+    pendingAiSymbolAction.value = ''
+    return
+  }
+  const result = pendingAiSymbolFilterResult.value
+  applyAiCommandResult(result)
+  const selected = parseSymbols(aiWorkbenchForm.symbols)
+  const totalCount = Number(result.selected_symbol_count || selected.length)
+  pendingAiSymbolFilterResult.value = null
+  pendingAiSymbolAction.value = ''
+  confirmingLoadAiWorkbenchSymbols.value = false
+  confirmingRunAiWorkbench.value = false
+  confirmingClearAiSymbols.value = false
+  showNotice('success', '自然语言筛选已载入', `匹配 ${formatInt(totalCount)} 只，已载入 ${formatInt(selected.length)} 只标的。`)
+}
+
+function requestClearAiSelectedSymbols() {
+  if (aiSymbolClearDisabledReason.value) {
+    showNotice('info', '没有可清空标的', aiSymbolClearDisabledReason.value)
+    return
+  }
+  confirmingClearAiSymbols.value = true
+  showNotice('info', '确认清空 AI 标的', aiSymbolClearConfirmStatusText.value)
+}
+
+function cancelClearAiSelectedSymbols() {
+  confirmingClearAiSymbols.value = false
+  showNotice('info', '已取消清空', 'AI 工作台已选标的未修改。')
+}
+
+function confirmClearAiSelectedSymbols() {
+  if (aiSymbolClearDisabledReason.value) {
+    showNotice('info', '没有可清空标的', aiSymbolClearDisabledReason.value)
+    return
+  }
+  if (!confirmingClearAiSymbols.value) {
+    requestClearAiSelectedSymbols()
+    return
+  }
+  const count = aiSelectedSymbols.value.length
+  aiWorkbenchForm.symbols = ''
+  confirmingLoadAiWorkbenchSymbols.value = false
+  confirmingRunAiWorkbench.value = false
+  confirmingClearAiSymbols.value = false
+  pendingAiSymbolAction.value = ''
+  pendingAiSymbolFilterResult.value = null
+  showNotice('success', 'AI 标的已清空', `已清空 ${formatInt(count)} 只已选标的。`)
 }
 
 function toggleAiSymbol(symbol: string) {
   const normalized = normalizeSymbol(symbol)
   if (!normalized) return
+  confirmingLoadAiWorkbenchSymbols.value = false
+  confirmingRunAiWorkbench.value = false
+  confirmingClearAiSymbols.value = false
+  if (pendingAiSymbolAction.value) {
+    pendingAiSymbolAction.value = ''
+    pendingAiSymbolFilterResult.value = null
+  }
   const selected = aiSelectedSymbolSet.value.has(normalized)
     ? aiSelectedSymbols.value.filter((item) => item !== normalized)
     : [...aiSelectedSymbols.value, normalized]
   aiWorkbenchForm.symbols = uniqueStringsInOrder(selected).join('\n')
 }
 
+function toggleAiSymbolSort(key: AiSymbolSortKey) {
+  if (aiSymbolSort.key !== key) {
+    aiSymbolSort.key = key
+    aiSymbolSort.direction = 'desc'
+    return
+  }
+  aiSymbolSort.direction = aiSymbolSort.direction === 'desc' ? 'asc' : 'desc'
+}
+
+function aiSymbolSortIndicator(key: AiSymbolSortKey) {
+  if (aiSymbolSort.key !== key) return ''
+  return aiSymbolSort.direction === 'desc' ? '↓' : '↑'
+}
+
+function aiSymbolAriaSort(key: AiSymbolSortKey) {
+  if (aiSymbolSort.key !== key) return 'none'
+  return aiSymbolSort.direction === 'desc' ? 'descending' : 'ascending'
+}
+
+function aiSymbolSortAriaLabel(column: { key: AiSymbolSortKey; label: string }) {
+  if (aiSymbolSort.key !== column.key) return `${column.label}列，点击后按降序排列`
+  if (aiSymbolSort.direction === 'desc') return `${column.label}列，当前降序，点击后按升序排列`
+  return `${column.label}列，当前升序，点击后按降序排列`
+}
+
+function aiSymbolSelectionLabel(row: { symbol: string; name?: unknown; assetLabel?: unknown }) {
+  const name = String(row.name || row.assetLabel || '').trim()
+  return name ? `选择 ${row.symbol} ${name}` : `选择 ${row.symbol}`
+}
+
+async function loadAiSymbolMetrics(force: boolean, notify: boolean) {
+  const groupName = aiCurrentSymbolGroup.value?.name || ''
+  const symbols = uniqueStringsInOrder(aiCurrentSymbolRows.value.map((row) => row.symbol))
+  pendingAiSymbolRunAction.value = ''
+  if (force && aiSymbolMetricsDisabledReason.value) {
+    if (!loadingAiSymbolMetrics.value) showNotice('error', '无法刷新指标', aiSymbolMetricsDisabledReason.value)
+    return false
+  }
+  if (!groupName || !symbols.length) {
+    aiSymbolMetricRows.value = []
+    aiSymbolMetricGroupName.value = ''
+    return false
+  }
+  if (!force && aiSymbolMetricGroupName.value === groupName && aiSymbolMetricRows.value.length) return true
+  if (loadingAiSymbolMetrics.value) return false
+  loadingAiSymbolMetrics.value = true
+  try {
+    const data = await apiPost('/symbol-metrics', {
+      data_root: normalizeDataRoot(settings.data_root),
+      adjust: settings.adjust,
+      symbols,
+      end: aiWorkbenchForm.end || todayText()
+    })
+    aiSymbolMetricRows.value = Array.isArray(data.records) ? data.records : []
+    aiSymbolMetricGroupName.value = groupName
+    if (notify) {
+      showNotice('success', '标的指标已刷新', `读取 ${formatInt(data.record_count)} / ${formatInt(data.requested_count)} 只最新日线。`)
+    }
+    return true
+  } catch (error) {
+    showError('标的指标加载失败', error)
+    return false
+  } finally {
+    loadingAiSymbolMetrics.value = false
+  }
+}
+
+function requestAiSymbolRunAction(action: Exclude<AiSymbolRunPendingAction, ''>) {
+  pendingAiSymbolRunAction.value = action
+  pendingAiSymbolAction.value = ''
+  pendingAiSymbolFilterResult.value = null
+  confirmingClearAiSymbols.value = false
+  if (aiSymbolRunPendingDisabledReason.value) {
+    showNotice('error', 'AI 标的操作不可执行', aiSymbolRunPendingDisabledReason.value)
+    pendingAiSymbolRunAction.value = ''
+    return
+  }
+  showNotice('info', `确认${aiSymbolRunPendingActionLabel.value}`, aiSymbolRunPendingText.value)
+}
+
+function cancelAiSymbolRunAction() {
+  pendingAiSymbolRunAction.value = ''
+  showNotice('info', 'AI 标的操作未执行', '当前标的指标、筛选结果和已选标的未修改。')
+}
+
+function confirmAiSymbolRunAction() {
+  const action = pendingAiSymbolRunAction.value
+  if (!action) {
+    showNotice('info', 'AI 标的操作未执行', '请先选择要确认的 AI 标的操作。')
+    return
+  }
+  if (aiSymbolRunPendingDisabledReason.value) {
+    showNotice('error', 'AI 标的操作不可执行', aiSymbolRunPendingDisabledReason.value)
+    pendingAiSymbolRunAction.value = ''
+    return
+  }
+  pendingAiSymbolRunAction.value = ''
+  if (action === 'metrics') void loadAiSymbolMetrics(true, true)
+  if (action === 'filter') void runAiSymbolFilter()
+}
+
 async function runAiSymbolFilter() {
   const text = aiSymbolNaturalQuery.value.trim()
-  if (!text || runningAiSymbolFilter.value) return
+  if (aiSymbolFilterDisabledReason.value) {
+    if (!runningAiSymbolFilter.value) showNotice('error', '无法执行 AI 筛选', aiSymbolFilterDisabledReason.value)
+    return
+  }
+  pendingAiSymbolRunAction.value = ''
   runningAiSymbolFilter.value = true
   try {
     const result = await apiPost('/ai/command', {
       ...researchPayloadBase(),
       tdx_path: settings.tdx_path,
+      end: aiCommandEndDate(),
       text,
       current_view: 'ai',
       research_tab: activeResearchTab.value,
@@ -5823,19 +10388,11 @@ async function runAiSymbolFilter() {
       model: aiSettings.model.trim(),
       temperature: Number(aiSettings.temperature ?? 0)
     })
-    applyAiCommandResult(result)
-    const selected = parseSymbols(aiWorkbenchForm.symbols)
-    const limit = Math.max(1, Math.trunc(Number(aiWorkbenchForm.max_symbols) || 20))
-    const totalCount = Number(result.selected_symbol_count || selected.length)
-    if (selected.length > limit) {
-      aiWorkbenchForm.symbols = selected.slice(0, limit).join('\n')
-    }
-    const loadedCount = parseSymbols(aiWorkbenchForm.symbols).length
-    const message = totalCount > loadedCount
-      ? `匹配 ${formatInt(totalCount)} 只，按标的上限载入前 ${formatInt(loadedCount)} 只。`
-      : (loadedCount ? `已载入 ${formatInt(loadedCount)} 只标的。` : (result.summary || '已应用筛选结果。'))
-    showNotice('success', '自然语言筛选完成', message)
+    pendingAiSymbolFilterResult.value = result
+    requestAiSymbolAction('filterResult')
   } catch (error) {
+    pendingAiSymbolFilterResult.value = null
+    pendingAiSymbolAction.value = ''
     showError('自然语言筛选失败', error)
   } finally {
     runningAiSymbolFilter.value = false
@@ -5843,19 +10400,49 @@ async function runAiSymbolFilter() {
 }
 
 function applyAllAssetsRecentUpdate() {
-  const days = Math.max(1, Math.trunc(Number(allAssetsLookbackDays.value) || DEFAULT_ALL_ASSETS_LOOKBACK_DAYS))
-  allAssetsLookbackDays.value = days
-  if (!allAssetSymbols.value.length) {
-    showNotice('error', '全资产更新不可用', '当前代码库为空，请先刷新指数或 ETF 列表。')
+  const disabledReason = allAssetsUpdateDisabledReason.value
+  if (disabledReason) {
+    showNotice('error', '全资产更新不可用', disabledReason)
     return
   }
+  const days = allAssetsUpdateDays.value
+  allAssetsLookbackDays.value = days
+  cancelApplySymbolGroup()
   selectedGroup.value = 'custom'
   symbolsText.value = allAssetSymbols.value.join('\n')
   settings.start = tradingLookbackStartText(days)
   settings.end = latestTradingDayText()
   planRows.value = []
   planSummary.value = {}
+  confirmingAllAssetsUpdate.value = false
   showNotice('success', '已应用全资产更新', `已载入 ${formatInt(allAssetSymbols.value.length)} 只资产，时间窗为近 ${days} 个交易日。`)
+}
+
+function requestAllAssetsRecentUpdate() {
+  const disabledReason = allAssetsUpdateDisabledReason.value
+  if (disabledReason) {
+    showNotice('error', '全资产更新不可用', disabledReason)
+    return
+  }
+  confirmingAllAssetsUpdate.value = true
+  showNotice('info', '确认应用全资产', allAssetsUpdateConfirmText.value)
+}
+
+function cancelAllAssetsRecentUpdate() {
+  confirmingAllAssetsUpdate.value = false
+  showNotice('info', '已取消全资产更新', '下载任务标的、日期和当前预览计划未修改。')
+}
+
+function confirmAllAssetsRecentUpdate() {
+  if (allAssetsUpdateDisabledReason.value) {
+    showNotice('error', '全资产更新不可用', allAssetsUpdateDisabledReason.value)
+    return
+  }
+  if (!confirmingAllAssetsUpdate.value) {
+    requestAllAssetsRecentUpdate()
+    return
+  }
+  applyAllAssetsRecentUpdate()
 }
 
 function normalizeDownloadTimeframes(values: unknown[]) {
@@ -5878,6 +10465,9 @@ function clearPlanPreview() {
 }
 
 function toggleDownloadTimeframe(timeframe: string) {
+  if (pendingDownloadTimeframeAction.value) {
+    pendingDownloadTimeframeAction.value = ''
+  }
   const current = selectedDownloadTimeframes.value
   let selected = current.filter((item) => item !== timeframe)
   if (current.includes(timeframe)) {
@@ -5894,6 +10484,10 @@ function toggleDownloadTimeframe(timeframe: string) {
   clearPlanPreview()
 }
 
+function sameDownloadTimeframes(left: string[], right: string[]) {
+  return left.length === right.length && left.every((item, index) => item === right[index])
+}
+
 function selectAllDownloadTimeframes() {
   selectedTimeframes.value = [...downloadTimeframeOptions.value]
   clearPlanPreview()
@@ -5902,6 +10496,44 @@ function selectAllDownloadTimeframes() {
 function selectDefaultDownloadTimeframe() {
   selectedTimeframes.value = normalizeDownloadTimeframes(config.value?.defaults?.timeframes || ['1d'])
   clearPlanPreview()
+}
+
+function requestDownloadTimeframeAction(action: DownloadTimeframePendingAction) {
+  pendingDownloadTimeframeAction.value = action
+  if (downloadTimeframePendingDisabledReason.value) {
+    showNotice('info', '下载周期未修改', downloadTimeframePendingDisabledReason.value)
+    pendingDownloadTimeframeAction.value = ''
+    return
+  }
+  if (sameDownloadTimeframes(selectedDownloadTimeframes.value, downloadTimeframePendingSelection.value)) {
+    showNotice('info', '下载周期未修改', '当前已经是该周期选择。')
+    pendingDownloadTimeframeAction.value = ''
+    return
+  }
+  showNotice('info', '确认修改下载周期', downloadTimeframePendingText.value)
+}
+
+function cancelDownloadTimeframeAction() {
+  pendingDownloadTimeframeAction.value = ''
+  showNotice('info', '下载周期未修改', '当前周期选择和预览计划未修改。')
+}
+
+function confirmDownloadTimeframeAction() {
+  if (downloadTimeframePendingDisabledReason.value) {
+    showNotice('info', '下载周期未修改', downloadTimeframePendingDisabledReason.value)
+    return
+  }
+  const action = pendingDownloadTimeframeAction.value
+  if (action === 'all') {
+    selectAllDownloadTimeframes()
+  } else if (action === 'default') {
+    selectDefaultDownloadTimeframe()
+  } else {
+    showNotice('info', '下载周期未修改', '请先选择要应用的周期快捷操作。')
+    return
+  }
+  pendingDownloadTimeframeAction.value = ''
+  showNotice('success', '下载周期已更新', `当前周期：${downloadTimeframeSummary.value}；预览计划已清空。`)
 }
 
 function cacheSymbolsForAssetType(type: AssetShortcutType) {
@@ -6014,30 +10646,58 @@ function symbolsForAssetType(type: AssetShortcutType) {
   return cacheSymbols.length ? cacheSymbols : groupSymbolsForAssetType(type)
 }
 
+function requestCrossUniverseFromAssetType(type: AssetShortcutType) {
+  const symbols = symbolsForAssetType(type)
+  const label = ASSET_SHORTCUT_LABELS[type]
+  if (!symbols.length) {
+    showNotice('error', `${label}候选为空`, '当前配置没有可用标的，请先刷新指数或 ETF 列表。')
+    return
+  }
+  pendingCrossUniverseAction.value = type
+  showNotice('info', '确认覆盖候选标的', crossUniversePendingStatusText.value)
+}
+
+function cancelCrossUniverseAction() {
+  pendingCrossUniverseAction.value = ''
+}
+
+function confirmCrossUniverseAction() {
+  const action = pendingCrossUniverseAction.value
+  if (!action) return
+  setCrossUniverseFromAssetType(action)
+}
+
 function setCrossUniverseFromAssetType(type: AssetShortcutType) {
   const symbols = symbolsForAssetType(type)
-  const labels: Record<AssetShortcutType, string> = { etf: 'ETF', stock: '个股', index: '指数' }
+  const label = ASSET_SHORTCUT_LABELS[type]
   if (!symbols.length) {
-    showNotice('error', `${labels[type]}候选为空`, '当前配置没有可用标的，请先刷新指数或 ETF 列表。')
+    pendingCrossUniverseAction.value = ''
+    showNotice('error', `${label}候选为空`, '当前配置没有可用标的，请先刷新指数或 ETF 列表。')
     return
   }
   crossForm.universe_symbols = symbols.join('\n')
-  showNotice('success', '候选标的已更新', `已填入 ${formatInt(symbols.length)} 个${labels[type]}候选。`)
+  pendingCrossUniverseAction.value = ''
+  showNotice('success', '候选标的已更新', `已填入 ${formatInt(symbols.length)} 个${label}候选。`)
 }
 
-function openReviewSymbolPicker(type: ReviewSymbolPickerType) {
+async function openReviewSymbolPicker(type: ReviewSymbolPickerType) {
+  cancelReviewSymbolPendingAction()
   reviewSymbolPickerOpen.value = true
   reviewSymbolPickerType.value = type
   reviewSymbolPickerCategory.value = defaultReviewSymbolCategory(type)
   reviewSymbolPickerKeyword.value = ''
   prefillReviewSymbolSelection()
+  await nextTick()
+  reviewSymbolPickerSearchInput.value?.focus()
 }
 
 function closeReviewSymbolPicker() {
+  cancelReviewSymbolPendingAction()
   reviewSymbolPickerOpen.value = false
 }
 
 function setReviewSymbolPickerType(type: ReviewSymbolPickerType) {
+  cancelReviewSymbolPendingAction()
   reviewSymbolPickerType.value = type
   reviewSymbolPickerCategory.value = defaultReviewSymbolCategory(type)
   reviewSymbolPickerKeyword.value = ''
@@ -6112,8 +10772,7 @@ function isTdxSpecialSectorIndex(text: string) {
 function prefillReviewSymbolSelection() {
   const current = new Set(parseSymbols(reviewForm.symbols))
   const currentGroupSymbols = categoryFilteredReviewSymbolPickerRows.value.map((row) => row.symbol)
-  const selected = currentGroupSymbols.filter((symbol) => current.has(symbol))
-  reviewSymbolPickerSelection.value = selected.length ? selected : currentGroupSymbols
+  reviewSymbolPickerSelection.value = currentGroupSymbols.filter((symbol) => current.has(symbol))
 }
 
 function isReviewSymbolSelected(symbol: string) {
@@ -6121,6 +10780,7 @@ function isReviewSymbolSelected(symbol: string) {
 }
 
 function toggleReviewSymbol(symbol: string) {
+  cancelReviewSymbolPendingAction()
   if (isReviewSymbolSelected(symbol)) {
     reviewSymbolPickerSelection.value = reviewSymbolPickerSelection.value.filter((item) => item !== symbol)
     return
@@ -6129,28 +10789,75 @@ function toggleReviewSymbol(symbol: string) {
 }
 
 function selectFilteredReviewSymbols() {
+  cancelReviewSymbolPendingAction()
+  if (reviewSymbolPickerSelectFilteredDisabledReason.value) {
+    showNotice('info', '没有可选标的', reviewSymbolPickerSelectFilteredDisabledReason.value)
+    return
+  }
   reviewSymbolPickerSelection.value = uniqueStringsInOrder([
     ...reviewSymbolPickerSelection.value,
     ...filteredReviewSymbolPickerRows.value.map((row) => row.symbol)
   ])
+  showNotice('success', '已选当前结果', `当前弹窗已选 ${formatInt(reviewSymbolPickerSelection.value.length)} 只。`)
 }
 
 function selectAllReviewSymbols() {
+  cancelReviewSymbolPendingAction()
+  if (reviewSymbolPickerSelectAllDisabledReason.value) {
+    showNotice('info', '没有可选标的', reviewSymbolPickerSelectAllDisabledReason.value)
+    return
+  }
   reviewSymbolPickerSelection.value = categoryFilteredReviewSymbolPickerRows.value.map((row) => row.symbol)
+  showNotice('success', '已选当前分类', `当前分类 ${formatInt(reviewSymbolPickerSelection.value.length)} 只已选中。`)
 }
 
 function clearReviewSymbolSelection() {
+  cancelReviewSymbolPendingAction()
+  if (reviewSymbolPickerClearDisabledReason.value) {
+    showNotice('info', '没有可清空标的', reviewSymbolPickerClearDisabledReason.value)
+    return
+  }
   reviewSymbolPickerSelection.value = []
 }
 
+function requestReviewSymbolPickerApply(mode: Exclude<ReviewSymbolPendingAction, ''>) {
+  const disabledReason = reviewSymbolPickerApplyDisabledReason.value
+  if (disabledReason) {
+    showNotice('info', '复盘标的未更新', disabledReason)
+    return
+  }
+  pendingReviewSymbolAction.value = mode
+  showNotice('info', mode === 'replace' ? '确认替换复盘标的' : '确认追加复盘标的', reviewSymbolPickerStatusText.value)
+}
+
+function cancelReviewSymbolPendingAction() {
+  pendingReviewSymbolAction.value = ''
+}
+
+function confirmReviewSymbolPickerApply() {
+  const mode = pendingReviewSymbolAction.value
+  if (!mode) return
+  applyReviewSymbolSelection(mode)
+}
+
 function applyReviewSymbolSelection(mode: 'append' | 'replace') {
+  const disabledReason = reviewSymbolPickerApplyDisabledReason.value
+  if (disabledReason) {
+    pendingReviewSymbolAction.value = ''
+    showNotice('info', '复盘标的未更新', disabledReason)
+    return
+  }
   const selected = reviewSymbolPickerSelection.value
-  if (!selected.length) return
+  if (!selected.length) {
+    pendingReviewSymbolAction.value = ''
+    return
+  }
   const symbols = mode === 'append' ? uniqueStringsInOrder([...parseSymbols(reviewForm.symbols), ...selected]) : selected
   reviewForm.symbols = symbols.join('\n')
   reviewResult.value = null
   aiReviewOutput.value = null
   reviewResultSignature.value = ''
+  pendingReviewSymbolAction.value = ''
   closeReviewSymbolPicker()
   showNotice('success', '复盘标的已更新', `${mode === 'append' ? '追加' : '替换'} ${formatInt(selected.length)} 只${reviewSymbolPickerTypeLabel.value}。`)
 }
@@ -6178,6 +10885,56 @@ function researchPayloadBase() {
     adjust: settings.adjust,
     timeframe: researchTimeframe.value
   }
+}
+
+function aiCommandEndDate() {
+  if (activeView.value === 'ai') return aiWorkbenchForm.end || latestTradingDayText()
+  if (activeView.value === 'download') return settings.end || latestTradingDayText()
+  if (activeView.value === 'research') {
+    if (activeResearchTab.value === 'review') return reviewForm.end || latestTradingDayText()
+    if (activeResearchTab.value === 'cross') return crossForm.end || latestTradingDayText()
+    if (activeResearchTab.value === 'regime') return regimeForm.end || latestTradingDayText()
+    if (activeResearchTab.value === 'history') return historyForm.as_of || latestTradingDayText()
+    if (activeResearchTab.value === 'etf') return etfTrackerForm.end || latestTradingDayText()
+  }
+  return latestTradingDayText()
+}
+
+function historySearchSignature() {
+  return JSON.stringify({
+    data_root: normalizeDataRoot(settings.data_root),
+    adjust: settings.adjust,
+    timeframe: researchTimeframe.value,
+    symbol: historyForm.symbol,
+    window_start: historyForm.window_start || null,
+    as_of: historyForm.as_of,
+    window_size: Number(historyForm.window_size || 20),
+    candidate_n: Number(historyForm.candidate_n || 100),
+    top_n: Number(historyForm.top_n || 10),
+    exclusion_bars: Number(historyForm.exclusion_bars || 0),
+    nearby_gap_days: Number(historyForm.nearby_gap_days || 20),
+    algorithm: historyForm.algorithm,
+    forward_windows: parseNumberList(historyForm.forward_windows)
+  })
+}
+
+function crossSearchSignature() {
+  return JSON.stringify({
+    data_root: normalizeDataRoot(settings.data_root),
+    adjust: settings.adjust,
+    timeframe: researchTimeframe.value,
+    target_symbol: crossForm.target_symbol,
+    universe_symbols: parseSymbols(crossForm.universe_symbols),
+    start: crossForm.start,
+    end: crossForm.end,
+    search_mode: crossForm.search_mode,
+    traversal_start: crossForm.traversal_start,
+    traversal_end: crossForm.traversal_end,
+    top_n: Number(crossForm.top_n || 20),
+    date_tolerance_bars: Number(crossForm.date_tolerance_bars || 0),
+    exclusion_bars: Number(crossForm.exclusion_bars || 0),
+    forward_windows: parseNumberList(crossForm.forward_windows)
+  })
 }
 
 function reviewSearchSignature() {
@@ -6211,6 +10968,45 @@ function etfTrackerSearchSignature() {
     min_swing_return: Number(etfTrackerForm.min_swing_return || 0),
     min_segment_bars: Number(etfTrackerForm.min_segment_bars || 1),
     top_n: Number(etfTrackerForm.top_n || 30)
+  })
+}
+
+function regimeSearchSignature() {
+  return JSON.stringify({
+    data_root: normalizeDataRoot(settings.data_root),
+    adjust: settings.adjust,
+    timeframe: '1d',
+    tdx_path: settings.tdx_path,
+    benchmark_symbol: regimeForm.benchmark_symbol,
+    symbols: parseSymbols(regimeForm.symbols),
+    universe_groups: activeRegimeUniverseGroups.value,
+    start: regimeForm.start,
+    end: regimeForm.end,
+    forward_windows: parseNumberList(regimeForm.forward_windows),
+    benchmark_rally_60_threshold: percentOrDefault(regimeForm.benchmark_rally_60_threshold, 8),
+    benchmark_pullback_20_threshold: percentOrDefault(regimeForm.benchmark_pullback_20_threshold, -3),
+    pullback_20_threshold: percentOrDefault(regimeForm.pullback_20_threshold, -6),
+    pullback_60_threshold: percentOrDefault(regimeForm.pullback_60_threshold, -10),
+    liquidity_high_percentile: percentOrDefault(regimeForm.liquidity_high_percentile, 80),
+    liquidity_mid_percentile: percentOrDefault(regimeForm.liquidity_mid_percentile, 35),
+    liquidity_low_percentile: percentOrDefault(regimeForm.liquidity_low_percentile, 20),
+    volatility_high_percentile: percentOrDefault(regimeForm.volatility_high_percentile, 80),
+    volatility_low_percentile: percentOrDefault(regimeForm.volatility_low_percentile, 20),
+    high_position_drawdown_threshold: percentOrDefault(regimeForm.high_position_drawdown_threshold, -10),
+    high_position_return_percentile: percentOrDefault(regimeForm.high_position_return_percentile, 80),
+    leader_return_5d_threshold: percentOrDefault(regimeForm.leader_return_5d_threshold, 3),
+    stress_ma20_break_threshold: percentOrDefault(regimeForm.stress_ma20_break_threshold, 60),
+    stress_return_5d_threshold: percentOrDefault(regimeForm.stress_return_5d_threshold, 0),
+    cash_stress_score_threshold: percentOrDefault(regimeForm.cash_stress_score_threshold, 62),
+    cash_preference_proxy_threshold: percentOrDefault(regimeForm.cash_preference_proxy_threshold, 60),
+    risk_expansion_breadth_threshold: percentOrDefault(regimeForm.risk_expansion_breadth_threshold, 60),
+    risk_contraction_breadth_threshold: percentOrDefault(regimeForm.risk_contraction_breadth_threshold, 40),
+    risk_release_breadth_threshold: percentOrDefault(regimeForm.risk_release_breadth_threshold, 45),
+    high_liquidity_selloff_threshold: percentOrDefault(regimeForm.high_liquidity_selloff_threshold, 60),
+    concentration_top_n: numberOrDefault(regimeForm.concentration_top_n, 20),
+    daily_report_days: numberOrDefault(regimeForm.daily_report_days, 20),
+    flow_candidate_limit: numberOrDefault(regimeForm.flow_candidate_limit, 30),
+    risk_timeline_days: numberOrDefault(regimeForm.risk_timeline_days, 60)
   })
 }
 
@@ -6321,7 +11117,9 @@ function downloadJson(filename: string, value: unknown) {
   URL.revokeObjectURL(url)
 }
 
-function saveSettings() {
+function saveSettings(scope: 'system' | 'ai' = 'system') {
+  if (scope === 'system') confirmingResetSettings.value = false
+  if (scope === 'ai') confirmingResetAiPromptSettings.value = false
   settings.data_root = normalizeDataRoot(settings.data_root)
   settings.tdx_path = normalizeTdxPath(settings.tdx_path)
   ensureAiPromptDraft()
@@ -6353,10 +11151,46 @@ function saveSettings() {
       }
     })
   )
-  showNotice('success', '设置已保存', '下次打开控制台会自动使用当前路径、运行参数和 AI 锐评设置。')
+  markSettingsSaved(scope)
+}
+
+function markSettingsSaved(scope: 'system' | 'ai') {
+  const text = `已保存 · ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`
+  if (scope === 'ai') {
+    aiSettingsSaveFeedback.value = text
+    settingsSaveFeedback.value = ''
+    showNotice('success', 'AI 设置已保存', '大模型命令框、AI 工作台和复盘 AI 会读取当前参数。')
+  } else {
+    settingsSaveFeedback.value = text
+    aiSettingsSaveFeedback.value = ''
+    showNotice('success', '设置已保存', '下次打开控制台会自动使用当前路径、运行参数和 API Key。')
+  }
+  window.setTimeout(() => {
+    if (scope === 'ai' && aiSettingsSaveFeedback.value === text) aiSettingsSaveFeedback.value = ''
+    if (scope === 'system' && settingsSaveFeedback.value === text) settingsSaveFeedback.value = ''
+  }, 4200)
+}
+
+function requestResetSettings() {
+  confirmingResetSettings.value = true
+  showNotice('info', '确认恢复默认设置', resetSettingsConfirmText.value)
+}
+
+function cancelResetSettings() {
+  confirmingResetSettings.value = false
+  showNotice('info', '已取消恢复默认', '系统设置保持不变。')
+}
+
+function confirmResetSettings() {
+  if (!confirmingResetSettings.value) {
+    requestResetSettings()
+    return
+  }
+  resetSettings()
 }
 
 function resetSettings() {
+  confirmingResetSettings.value = false
   window.localStorage.removeItem(SETTINGS_STORAGE_KEY)
   Object.assign(settings, config.value?.defaults || {})
   Object.assign(aiSettings, defaultAiSettings())
@@ -6370,10 +11204,31 @@ function resetSettings() {
   researchTimeframe.value = selectedDownloadTimeframes.value[0] || '1d'
   planRows.value = []
   planSummary.value = {}
+  settingsSaveFeedback.value = ''
+  aiSettingsSaveFeedback.value = ''
   showNotice('info', '已恢复默认', '已恢复 API 提供的默认路径、运行参数和默认 AI 设置。')
 }
 
+function requestResetResizableCards() {
+  confirmingResetResizableCards.value = true
+  showNotice('info', '确认还原卡片尺寸', '该操作会清除当前页面全部手动调整的卡片尺寸。')
+}
+
+function cancelResetResizableCards() {
+  confirmingResetResizableCards.value = false
+  showNotice('info', '已取消还原', '卡片尺寸保持不变。')
+}
+
+function confirmResetResizableCards() {
+  if (!confirmingResetResizableCards.value) {
+    requestResetResizableCards()
+    return
+  }
+  resetResizableCards()
+}
+
 function resetResizableCards() {
+  confirmingResetResizableCards.value = false
   clearResizableCardInlineSize(true)
   document.body.classList.add('card-resize-resetting')
   window.requestAnimationFrame(() => {
@@ -6489,30 +11344,140 @@ function fuyaoCalendarAvailable() {
   return Boolean(fuyaoSettings.api_key.trim() || config.value?.integrations?.fuyao_calendar?.configured)
 }
 
-async function apiGet(path: string, options: { headers?: Record<string, string> } = {}) {
-  const response = await fetch(`${API_BASE}${path}`, { headers: options.headers || {} })
+async function apiGet(path: string, options: { headers?: Record<string, string>; timeoutMs?: number } = {}) {
+  const response = await fetchWithTimeout(
+    `${API_BASE}${path}`,
+    { headers: options.headers || {} },
+    options.timeoutMs ?? API_GET_TIMEOUT_MS
+  )
   if (!response.ok) throw new Error(await response.text())
   return response.json()
 }
 
 async function apiDelete(path: string) {
-  const response = await fetch(`${API_BASE}${path}`, { method: 'DELETE' })
+  const response = await fetchWithTimeout(`${API_BASE}${path}`, { method: 'DELETE' }, API_POST_TIMEOUT_MS)
   if (!response.ok) throw new Error(await response.text())
   return response.json()
 }
 
-async function apiPost(path: string, body: Record<string, any>) {
+async function apiPost(path: string, body: Record<string, any>, options: { timeoutMs?: number } = {}) {
+  const response = await fetchWithTimeout(
+    `${API_BASE}${path}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    },
+    options.timeoutMs ?? API_POST_TIMEOUT_MS
+  )
+  if (!response.ok) throw new Error(await response.text())
+  return response.json()
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error(`请求超时：${Math.round(timeoutMs / 1000)} 秒内未收到响应。`)
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
+async function apiPostStream(
+  path: string,
+  body: Record<string, any>,
+  handlers: {
+    context?: (data: Record<string, any>) => void
+    delta?: (data: Record<string, any>) => void
+    done?: (data: Record<string, any>) => void
+  }
+) {
   const response = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
     body: JSON.stringify(body)
   })
   if (!response.ok) throw new Error(await response.text())
-  return response.json()
+  if (!response.body) throw new Error('浏览器不支持流式响应。')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finalPayload: Record<string, any> | null = null
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const frames = buffer.split(/\n\n/)
+    buffer = frames.pop() || ''
+    for (const frame of frames) {
+      const event = parseSseEvent(frame)
+      if (!event) continue
+      if (event.type === 'error') {
+        throw new Error(String(event.data.detail || 'AI 流式接口返回错误。'))
+      }
+      if (event.type === 'context') handlers.context?.(event.data)
+      if (event.type === 'delta') handlers.delta?.(event.data)
+      if (event.type === 'done') {
+        finalPayload = event.data
+        handlers.done?.(event.data)
+      }
+    }
+  }
+  const tail = buffer.trim()
+  if (tail) {
+    const event = parseSseEvent(tail)
+    if (event?.type === 'error') throw new Error(String(event.data.detail || 'AI 流式接口返回错误。'))
+    if (event?.type === 'done') {
+      finalPayload = event.data
+      handlers.done?.(event.data)
+    }
+  }
+  if (!finalPayload) throw new Error('AI 流式接口未返回完成事件。')
+  return finalPayload
+}
+
+function parseSseEvent(frame: string): { type: string; data: Record<string, any> } | null {
+  const lines = frame.split(/\r?\n/)
+  const type = lines.find((line) => line.startsWith('event:'))?.slice(6).trim() || 'message'
+  const dataText = lines
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trimStart())
+    .join('\n')
+  if (!dataText) return null
+  return { type, data: JSON.parse(dataText) }
 }
 
 function parseSymbols(text: string) {
   return text.split(/[\s,;，、]+/).map((item) => item.trim()).filter(Boolean)
+}
+
+function parseIndicatorIds(text: string) {
+  return uniqueStringsInOrder(
+    String(text || '')
+      .split(/[\s,;，、]+/)
+      .map((item) => item.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, ''))
+      .filter(Boolean)
+  )
+}
+
+function isIndicatorSelected(formulaId: unknown) {
+  const normalized = String(formulaId || '').trim().toLowerCase()
+  return Boolean(normalized && selectedPriceIndicators.value.includes(normalized))
+}
+
+function togglePriceIndicator(formulaId: unknown) {
+  const normalized = String(formulaId || '').trim().toLowerCase()
+  if (!normalized) return
+  const current = selectedPriceIndicators.value
+  priceTableForm.indicators = current.includes(normalized)
+    ? current.filter((item) => item !== normalized).join(',')
+    : [...current, normalized].join(',')
 }
 
 function normalizeSymbol(value: string) {
@@ -6641,6 +11606,112 @@ function applyDateShortcut(target: DateRangeFields, key: DateShortcutKey) {
   target.end = range.end
 }
 
+function requestDownloadDateShortcut(key: DateShortcutKey) {
+  pendingDownloadDateShortcut.value = key
+  if (downloadDateShortcutPendingDisabledReason.value) {
+    showNotice('info', '下载日期未修改', downloadDateShortcutPendingDisabledReason.value)
+    pendingDownloadDateShortcut.value = ''
+    return
+  }
+  if (isDateShortcutActive(settings, key)) {
+    showNotice('info', '下载日期未修改', '当前已经是该日期快捷区间。')
+    pendingDownloadDateShortcut.value = ''
+    return
+  }
+  showNotice('info', '确认修改下载日期', downloadDateShortcutPendingText.value)
+}
+
+function cancelDownloadDateShortcut() {
+  pendingDownloadDateShortcut.value = ''
+  showNotice('info', '下载日期未修改', '当前日期区间和预览计划未修改。')
+}
+
+function confirmDownloadDateShortcut() {
+  if (downloadDateShortcutPendingDisabledReason.value) {
+    showNotice('info', '下载日期未修改', downloadDateShortcutPendingDisabledReason.value)
+    return
+  }
+  const key = pendingDownloadDateShortcut.value
+  if (!key) {
+    showNotice('info', '下载日期未修改', '请先选择要应用的日期快捷操作。')
+    return
+  }
+  applyDateShortcut(settings, key)
+  clearPlanPreview()
+  pendingDownloadDateShortcut.value = ''
+  showNotice('success', '下载日期已更新', `当前区间：${settings.start} 至 ${settings.end}；预览计划已清空。`)
+}
+
+function requestResearchDateShortcut(target: ResearchDateShortcutTarget, key: DateShortcutKey) {
+  pendingResearchDateShortcut.value = { target, key }
+  if (researchDateShortcutPendingDisabledReason.value) {
+    showNotice('info', '研究日期未修改', researchDateShortcutPendingDisabledReason.value)
+    pendingResearchDateShortcut.value = null
+    return
+  }
+  if (researchDateShortcutAlreadyActive(target, key)) {
+    showNotice('info', '研究日期未修改', '当前已经是该日期快捷区间。')
+    pendingResearchDateShortcut.value = null
+    return
+  }
+  showNotice('info', '确认修改研究日期', researchDateShortcutPendingText.value)
+}
+
+function cancelResearchDateShortcut() {
+  pendingResearchDateShortcut.value = null
+  showNotice('info', '研究日期未修改', '当前研究参数和结果未修改。')
+}
+
+function confirmResearchDateShortcut() {
+  const pending = pendingResearchDateShortcut.value
+  if (!pending) {
+    showNotice('info', '研究日期未修改', '请先选择要应用的日期快捷操作。')
+    return
+  }
+  if (researchDateShortcutPendingDisabledReason.value) {
+    showNotice('info', '研究日期未修改', researchDateShortcutPendingDisabledReason.value)
+    return
+  }
+  const targetLabel = researchDateShortcutPendingTargetLabel.value
+  applyResearchDateShortcut(pending.target, pending.key)
+  pendingResearchDateShortcut.value = null
+  showNotice('success', '研究日期已更新', `${targetLabel}已更新；请重新运行研究刷新结果。`)
+}
+
+function applyResearchDateShortcut(target: ResearchDateShortcutTarget, key: DateShortcutKey) {
+  if (target === 'history') {
+    applyHistoryDateShortcut(key)
+    return
+  }
+  if (target === 'crossTarget') {
+    applyDateShortcut(crossForm, key)
+    return
+  }
+  if (target === 'crossCandidate') {
+    applyCandidateDateShortcut(key)
+    return
+  }
+  if (target === 'review') {
+    applyDateShortcut(reviewForm, key)
+    return
+  }
+  if (target === 'etf') {
+    applyDateShortcut(etfTrackerForm, key)
+    return
+  }
+  if (target === 'regime') applyDateShortcut(regimeForm, key)
+}
+
+function researchDateShortcutAlreadyActive(target: ResearchDateShortcutTarget, key: DateShortcutKey) {
+  if (target === 'history') return isHistoryDateShortcutActive(key)
+  if (target === 'crossTarget') return isDateShortcutActive(crossForm, key)
+  if (target === 'crossCandidate') return isCandidateDateShortcutActive(key)
+  if (target === 'review') return isDateShortcutActive(reviewForm, key)
+  if (target === 'etf') return isDateShortcutActive(etfTrackerForm, key)
+  if (target === 'regime') return isDateShortcutActive(regimeForm, key)
+  return false
+}
+
 function applyCandidateDateShortcut(key: DateShortcutKey) {
   const range = dateRangeForShortcut(key)
   crossForm.traversal_start = range.start
@@ -6676,6 +11747,12 @@ function dateRangeForShortcut(key: DateShortcutKey): DateRangeFields {
   const start = new Date()
   start.setFullYear(start.getFullYear() - 1)
   return { start: formatDateText(start), end }
+}
+
+function overviewCoverageWindow(): DateRangeFields {
+  const start = isDateText(settings.start) ? settings.start : tradingLookbackStartText(20)
+  const end = isDateText(settings.end) ? settings.end : latestTradingDayText()
+  return start <= end ? { start, end } : { start: end, end }
 }
 
 function formatDateText(date: Date) {
@@ -6795,11 +11872,27 @@ function formatBytes(value: unknown) {
 }
 
 function formatAmountValue(value: unknown) {
-  const amount = Number(value)
+  if (value === null || value === undefined || value === '') return '-'
+  const amount = Number(value) * 10000
   if (!Number.isFinite(amount)) return '-'
   if (Math.abs(amount) >= 100000000) return `${(amount / 100000000).toFixed(2)}亿`
   if (Math.abs(amount) >= 10000) return `${(amount / 10000).toFixed(1)}万`
   return amount.toFixed(0)
+}
+
+function formatLargeNumberValue(value: unknown) {
+  if (value === null || value === undefined || value === '') return '-'
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '-'
+  if (Math.abs(number) >= 100000000) return `${(number / 100000000).toFixed(2)}亿`
+  if (Math.abs(number) >= 10000) return `${(number / 10000).toFixed(1)}万`
+  return number.toFixed(0)
+}
+
+function finiteNumberOrNull(value: unknown) {
+  if (value === null || value === undefined || value === '') return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
 }
 
 function numberValue(value: unknown) {
@@ -6835,6 +11928,28 @@ function uniqueStringsInOrder(values: unknown[]) {
   return output
 }
 
+function compareAiSymbolValues(left: unknown, right: unknown) {
+  const leftEmpty = left === null || left === undefined || left === ''
+  const rightEmpty = right === null || right === undefined || right === ''
+  if (leftEmpty && rightEmpty) return 0
+  if (leftEmpty) return -1
+  if (rightEmpty) return 1
+  if (typeof left === 'boolean' || typeof right === 'boolean') {
+    return Number(Boolean(left)) - Number(Boolean(right))
+  }
+  const leftNumber = Number(left)
+  const rightNumber = Number(right)
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+    return leftNumber - rightNumber
+  }
+  const leftText = String(left)
+  const rightText = String(right)
+  if (/^\d{4}-\d{2}-\d{2}/.test(leftText) && /^\d{4}-\d{2}-\d{2}/.test(rightText)) {
+    return Date.parse(leftText) - Date.parse(rightText)
+  }
+  return leftText.localeCompare(rightText, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+}
+
 function sortTimeframes(values: unknown[]) {
   return uniqueStrings(values).sort((left, right) => timeframeRank(left) - timeframeRank(right) || left.localeCompare(right))
 }
@@ -6859,6 +11974,7 @@ function displayRecord(row: Record<string, any>) {
     ...row,
     asset_type: labels.get(String(row.asset_type || '')) || row.asset_type,
     status: STATUS_LABELS[String(row.status || '')] || row.status,
+    coverage_status: STATUS_LABELS[String(row.coverage_status || '')] || row.coverage_status,
     action: STATUS_LABELS[String(row.action || '')] || row.action,
     reason: STATUS_LABELS[String(row.reason || '')] || row.reason,
     before_status: STATUS_LABELS[String(row.before_status || '')] || row.before_status,
@@ -6871,6 +11987,11 @@ function displayCacheRecord(row: Record<string, any>) {
     ...displayRecord(row),
     start_at: formatDateTimeText(row.start_at),
     end_at: formatDateTimeText(row.end_at),
+    coverage_ratio: formatRatioText(row.coverage_ratio),
+    coverage_start_at: formatDateTimeText(row.coverage_start_at),
+    coverage_end_at: formatDateTimeText(row.coverage_end_at),
+    coverage_first_missing_at: formatDateTimeText(row.coverage_first_missing_at),
+    coverage_last_missing_at: formatDateTimeText(row.coverage_last_missing_at),
     modified_at: formatDateTimeText(row.modified_at),
     file_size_bytes: formatBytes(row.file_size_bytes),
     path: row.path || '',
@@ -6883,8 +12004,36 @@ function setCachePageSize(size: number) {
   cachePagination.page = 1
 }
 
+type PaginationAction = 'first' | 'prev' | 'next' | 'last'
+
+function normalizePageNumber(page: number, totalPages: number) {
+  return Math.min(Math.max(1, Math.trunc(page || 1)), Math.max(1, totalPages))
+}
+
+function paginationActionDisabled(action: PaginationAction, page: number, totalPages: number) {
+  const current = normalizePageNumber(page, totalPages)
+  if (action === 'first' || action === 'prev') return current <= 1
+  return current >= Math.max(1, totalPages)
+}
+
+function paginationActionTitle(action: PaginationAction, page: number, totalPages: number, label = '表格') {
+  const current = normalizePageNumber(page, totalPages)
+  const total = Math.max(1, totalPages)
+  const disabled = paginationActionDisabled(action, current, total)
+  if (disabled && (action === 'first' || action === 'prev')) return `${label}已在第一页`
+  if (disabled) return `${label}已在最后一页`
+  if (action === 'first') return `跳到${label}第一页`
+  if (action === 'prev') return `跳到${label}上一页（第 ${current - 1} 页）`
+  if (action === 'next') return `跳到${label}下一页（第 ${current + 1} 页）`
+  return `跳到${label}最后一页（第 ${total} 页）`
+}
+
+function pageSizeButtonTitle(size: number, currentSize: number, label = '表格') {
+  return size === currentSize ? `${label}当前每页 ${size} 条` : `${label}切换为每页 ${size} 条`
+}
+
 function goCachePage(page: number) {
-  cachePagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), cacheTotalPages.value)
+  cachePagination.page = normalizePageNumber(page, cacheTotalPages.value)
 }
 
 function setPlanPageSize(size: number) {
@@ -6893,7 +12042,7 @@ function setPlanPageSize(size: number) {
 }
 
 function goPlanPage(page: number) {
-  planPagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), planTotalPages.value)
+  planPagination.page = normalizePageNumber(page, planTotalPages.value)
 }
 
 function setEtfTrackerPageSize(size: number) {
@@ -6902,7 +12051,16 @@ function setEtfTrackerPageSize(size: number) {
 }
 
 function goEtfTrackerPage(page: number) {
-  etfTrackerPagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), etfTrackerTotalPages.value)
+  etfTrackerPagination.page = normalizePageNumber(page, etfTrackerTotalPages.value)
+}
+
+function setAiSymbolPageSize(size: number) {
+  aiSymbolPagination.pageSize = size
+  aiSymbolPagination.page = 1
+}
+
+function goAiSymbolPage(page: number) {
+  aiSymbolPagination.page = normalizePageNumber(page, aiSymbolTotalPages.value)
 }
 
 function setRegimeFlowCandidatePageSize(size: number) {
@@ -6911,7 +12069,7 @@ function setRegimeFlowCandidatePageSize(size: number) {
 }
 
 function goRegimeFlowCandidatePage(page: number) {
-  regimeFlowCandidatePagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), regimeFlowCandidateTotalPages.value)
+  regimeFlowCandidatePagination.page = normalizePageNumber(page, regimeFlowCandidateTotalPages.value)
 }
 
 function setRegimeMarketScopePageSize(size: number) {
@@ -6920,7 +12078,34 @@ function setRegimeMarketScopePageSize(size: number) {
 }
 
 function goRegimeMarketScopePage(page: number) {
-  regimeMarketScopePagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), regimeMarketScopeTotalPages.value)
+  regimeMarketScopePagination.page = normalizePageNumber(page, regimeMarketScopeTotalPages.value)
+}
+
+function requestRegimeParameterPreset(key: RegimeParameterPresetKey) {
+  const preset = REGIME_PARAMETER_PRESETS.find((item) => item.key === key)
+  if (!preset) {
+    showNotice('error', '参数预设不可用', '待应用的风险偏好参数预设不存在。')
+    return
+  }
+  pendingRegimePresetKey.value = key
+  showNotice('info', '确认应用参数预设', regimePresetConfirmText.value)
+}
+
+function cancelRegimeParameterPreset() {
+  pendingRegimePresetKey.value = ''
+  showNotice('info', '参数预设未应用', '当前高级参数未修改。')
+}
+
+function confirmRegimeParameterPreset() {
+  const disabledReason = regimePresetConfirmDisabledReason.value
+  if (disabledReason) {
+    showNotice('error', '参数预设不可用', disabledReason)
+    pendingRegimePresetKey.value = ''
+    return
+  }
+  const key = pendingRegimePresetKey.value
+  if (!key) return
+  applyRegimeParameterPreset(key)
 }
 
 function applyRegimeParameterPreset(key: RegimeParameterPresetKey) {
@@ -6929,6 +12114,7 @@ function applyRegimeParameterPreset(key: RegimeParameterPresetKey) {
   for (const [field, value] of Object.entries(preset.values)) {
     ;(regimeForm as Record<string, any>)[field] = value
   }
+  pendingRegimePresetKey.value = ''
   showNotice('info', '风险偏好参数已切换', `${preset.label}：${preset.detail}`)
 }
 
@@ -6959,7 +12145,7 @@ function setTaskEventPageSize(size: number) {
 }
 
 function goTaskEventPage(page: number) {
-  taskEventPagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), taskEventTotalPages.value)
+  taskEventPagination.page = normalizePageNumber(page, taskEventTotalPages.value)
 }
 
 function setTaskResultPageSize(size: number) {
@@ -6968,7 +12154,7 @@ function setTaskResultPageSize(size: number) {
 }
 
 function goTaskResultPage(page: number) {
-  taskResultPagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), taskResultTotalPages.value)
+  taskResultPagination.page = normalizePageNumber(page, taskResultTotalPages.value)
 }
 
 function setTaskQualityIssuePageSize(size: number) {
@@ -6977,7 +12163,7 @@ function setTaskQualityIssuePageSize(size: number) {
 }
 
 function goTaskQualityIssuePage(page: number) {
-  taskQualityIssuePagination.page = Math.min(Math.max(1, Math.trunc(page || 1)), taskQualityIssueTotalPages.value)
+  taskQualityIssuePagination.page = normalizePageNumber(page, taskQualityIssueTotalPages.value)
 }
 
 function parseQualityGateIssues(errorText: unknown): TaskQualityIssue[] {
@@ -7040,8 +12226,15 @@ function formatResearchValue(key: string, value: unknown) {
 }
 
 function formatPercentValue(value: unknown) {
+  if (value === null || value === undefined || value === '') return '-'
   const number = Number(value)
   return Number.isFinite(number) ? `${(number * 100).toFixed(2)}%` : '-'
+}
+
+function formatRatioText(value: unknown) {
+  if (value === null || value === undefined || value === '') return '-'
+  const number = Number(value)
+  return Number.isFinite(number) ? `${(number * 100).toFixed(1)}%` : '-'
 }
 
 function trendMeterWidth(value: unknown) {
@@ -7051,6 +12244,7 @@ function trendMeterWidth(value: unknown) {
 }
 
 function formatDecimalValue(value: unknown, digits = 2) {
+  if (value === null || value === undefined || value === '') return '-'
   const number = Number(value)
   return Number.isFinite(number) ? number.toFixed(digits) : '-'
 }
@@ -7227,6 +12421,14 @@ function isInlineReviewBlock(block: ReviewMarkdownBlock) {
 
 function showNotice(type: NoticePayload['type'], title: string, body: string) {
   notice.value = { type, title, body }
+}
+
+function noticeRole(payload: NoticePayload) {
+  return payload.type === 'error' ? 'alert' : 'status'
+}
+
+function noticeAriaLive(payload: NoticePayload) {
+  return payload.type === 'error' ? 'assertive' : 'polite'
 }
 
 function showError(title: string, error: unknown) {

@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 
 from ..constants import TASK_HISTORY_LIMIT
-from ..task_store import _get_task, _task_payload, _tasks, _tasks_lock
+from ..task_store import _append_event, _get_task, _request_task_control, _task_payload, _tasks, _tasks_lock
 
 
 def register_tasks_routes(app: FastAPI) -> None:
@@ -20,6 +20,30 @@ def register_tasks_routes(app: FastAPI) -> None:
         task = _get_task(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="任务不存在。")
+        return _task_payload(task)
+
+    @app.post("/api/tasks/{task_id}/pause")
+    def pause_task(task_id: str) -> dict[str, Any]:
+        task = _request_task_control(task_id, "pause")
+        if task is None:
+            raise HTTPException(status_code=404, detail="任务不存在。")
+        _append_event(task_id, {"stage": "task_pause_requested", "message": "已请求暂停任务。"})
+        return _task_payload(task)
+
+    @app.post("/api/tasks/{task_id}/resume")
+    def resume_task(task_id: str) -> dict[str, Any]:
+        task = _request_task_control(task_id, "resume")
+        if task is None:
+            raise HTTPException(status_code=404, detail="任务不存在。")
+        _append_event(task_id, {"stage": "task_resume_requested", "message": "已请求继续任务。"})
+        return _task_payload(task)
+
+    @app.post("/api/tasks/{task_id}/cancel")
+    def cancel_task(task_id: str) -> dict[str, Any]:
+        task = _request_task_control(task_id, "cancel")
+        if task is None:
+            raise HTTPException(status_code=404, detail="任务不存在。")
+        _append_event(task_id, {"stage": "task_cancel_requested", "message": "已请求终止任务。"})
         return _task_payload(task)
 
     @app.delete("/api/tasks")

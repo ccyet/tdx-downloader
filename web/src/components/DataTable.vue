@@ -1,19 +1,32 @@
 <template>
-  <div class="data-table-shell">
-    <div v-if="rows.length && hasHiddenColumns" class="data-table-toolbar">
+  <div class="data-table-shell" :aria-busy="loading ? 'true' : 'false'">
+    <EmptyState v-if="loading" :title="loadingTitle || '正在读取数据'" :body="loadingText || '请稍候，数据返回后会自动更新表格。'" />
+    <div v-else-if="rows.length && hasHiddenColumns" class="data-table-toolbar">
       <span>显示 {{ visibleColumns.length }} / {{ columns.length }} 列 · 更多指标</span>
-      <button class="table-expand-toggle" type="button" @click="expanded = !expanded">
+      <button
+        class="table-expand-toggle"
+        type="button"
+        :aria-expanded="expanded ? 'true' : 'false'"
+        :title="expanded ? '收起更多指标列' : '展开查看全部指标列'"
+        @click="expanded = !expanded"
+      >
         {{ expanded ? '收起表格' : '展开查看' }}
       </button>
     </div>
-    <div v-if="rows.length" class="table-wrap" :class="{ expanded }">
-      <table>
+    <p v-if="!loading && rows.length" class="table-state-note" aria-live="polite">
+      {{ tableStateText }}
+    </p>
+    <div v-if="!loading && rows.length" class="table-wrap" :class="{ expanded }">
+      <table :aria-label="tableLabel">
+        <caption class="sr-only">{{ tableStateText }}</caption>
         <thead>
           <tr>
             <th
               v-for="column in visibleColumns"
               :key="column.key"
+              :class="columnClass(column)"
               :aria-sort="ariaSort(column)"
+              scope="col"
             >
               <button
                 class="table-sort-button"
@@ -33,7 +46,7 @@
             <td
               v-for="column in visibleColumns"
               :key="column.key"
-              :class="cellToneClass(column, row[column.key])"
+              :class="[columnClass(column), cellToneClass(column, row[column.key])]"
               :title="String(row[column.key] ?? '')"
             >
               <span :class="['cell-badge', cellToneClass(column, row[column.key])]">
@@ -44,7 +57,7 @@
         </tbody>
       </table>
     </div>
-    <EmptyState v-else :title="empty || '暂无数据'" body="" />
+    <EmptyState v-else-if="!loading" :title="emptyTitle || empty || '暂无数据'" :body="emptyBody || ''" />
   </div>
 </template>
 
@@ -74,6 +87,12 @@ const props = defineProps<{
   rows: Array<Record<string, unknown>>
   columns: DataTableColumn[]
   empty: string
+  emptyTitle?: string
+  emptyBody?: string
+  loading?: boolean
+  loadingTitle?: string
+  loadingText?: string
+  ariaLabel?: string
 }>()
 
 const expanded = ref(false)
@@ -83,6 +102,16 @@ const hasHiddenColumns = computed(() => props.columns.length > DEFAULT_COMPACT_C
 const visibleColumns = computed(() =>
   expanded.value || !hasHiddenColumns.value ? props.columns : props.columns.slice(0, DEFAULT_COMPACT_COLUMN_COUNT)
 )
+const tableLabel = computed(() => props.ariaLabel || '数据表')
+const tableStateText = computed(() => {
+  const sortedText = sortState.value
+    ? `，按${columnLabel(sortState.value.key)}${sortState.value.direction === 'desc' ? '降序' : '升序'}排列`
+    : ''
+  const columnText = hasHiddenColumns.value
+    ? `，当前显示 ${visibleColumns.value.length} / ${props.columns.length} 列`
+    : `，共 ${props.columns.length} 列`
+  return `${tableLabel.value}：共 ${props.rows.length} 行${columnText}${sortedText}`
+})
 const sortedRows = computed(() => {
   const state = sortState.value
   if (!state) return props.rows
@@ -126,6 +155,22 @@ function sortAriaLabel(column: DataTableColumn) {
 function ariaSort(column: DataTableColumn) {
   if (sortState.value?.key !== column.key) return 'none'
   return sortState.value.direction === 'desc' ? 'descending' : 'ascending'
+}
+
+function columnLabel(key: string) {
+  return props.columns.find((column) => column.key === key)?.label || key
+}
+
+function columnClass(column: DataTableColumn) {
+  return `column-${columnKind(column)}`
+}
+
+function columnKind(column: DataTableColumn) {
+  const key = `${column.key} ${column.label}`
+  if (/日期|时间|date|time/i.test(key)) return 'date'
+  if (/状态|动作|原因|来源|类型|类别|阶段|分组|资产池|代码|名称|指数|理由|标的|symbol|name|status|type|category|source/i.test(key)) return 'text'
+  if (/排名|评分|数量|数$|行数|K线|K数|收益|涨幅|回撤|占比|覆盖|胜率|价格|最新价|收盘|成交额|成交量|市值|换手|YTD|MA|RS|rank|score|count|rows|return|rate|amount|volume|value|price/i.test(key)) return 'number'
+  return 'text'
 }
 
 function cellText(value: unknown) {

@@ -34,6 +34,35 @@ def test_directory_picker_falls_back_to_container_browser() -> None:
     assert "openDirectoryBrowser(field, extractErrorMessage(error))" in source
     assert "apiGet(`/directories?path=${query}`)" in source
     assert "使用当前目录" in source
+    assert "directoryInitialPath(field)" in source
+    assert "return '/data'" in source
+
+
+def test_directory_browser_actions_explain_disabled_state_and_guard_calls() -> None:
+    source = APP_VUE.read_text(encoding="utf-8")
+
+    assert "directoryPickDisabledReason" in source
+    assert "directoryPickDisabled" in source
+    assert "directoryPickTitle" in source
+    assert source.count(':disabled="directoryPickDisabled"') >= 4
+    assert source.count(':title="directoryPickTitle(') >= 4
+    assert "showNotice('info', '目录选择进行中', directoryPickDisabledReason.value)" in source
+    assert "directoryBrowserOpenDisabledReason" in source
+    assert "directoryBrowserConfirmDisabledReason" in source
+    assert "directoryBrowserStatusText" in source
+    assert ':title="directoryBrowserOpenDisabledReason ||' in source
+    assert ':title="directoryBrowserConfirmDisabledReason ||' in source
+    assert "requestLoadDirectoryBrowser" in source
+    assert "showNotice('info', '目录正在读取', '请等待当前目录读取完成。')" in source
+    assert '@keyup.enter="requestLoadDirectoryBrowser(directoryBrowserPath)"' in source
+    assert '@click="requestLoadDirectoryBrowser(directoryBrowserPath)"' in source
+    assert '@click="requestLoadDirectoryBrowser(directoryBrowserParent)"' in source
+    assert '@click="requestLoadDirectoryBrowser(entry.path)"' in source
+    assert '@click="loadDirectoryBrowser(entry.path)"' not in source
+    assert ':disabled="directoryBrowserLoading || !entry.readable"' in source
+    assert "showNotice('info', '目录暂不可用', disabledReason)" in source
+    assert "if (!targetPath)" in source
+    assert "先输入或选择一个目录路径" in source
 
 
 def test_settings_exposes_external_api_examples() -> None:

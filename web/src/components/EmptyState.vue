@@ -1,5 +1,5 @@
 <template>
-  <div class="empty-state">
+  <div class="empty-state" role="status" aria-live="polite">
     <strong>{{ title }}</strong>
     <span>{{ body }}</span>
   </div>

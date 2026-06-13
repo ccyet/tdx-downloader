@@ -19,13 +19,22 @@ def test_global_card_surfaces_are_resizable_and_resettable() -> None:
     styles = STYLES.read_text(encoding="utf-8")
 
     assert "还原卡片尺寸" in app
+    assert "confirmingResetResizableCards" in app
+    assert "requestResetResizableCards" in app
+    assert "cancelResetResizableCards" in app
+    assert "confirmResetResizableCards" in app
     assert "resetResizableCards" in app
+    assert "还原前需要确认" in app
+    assert "该操作会清除当前页面全部手动调整的卡片尺寸" in app
+    assert '@click="resetResizableCards"' not in app
     assert "normalizeResizableCardWidths" in app
     assert "clearResizableCardInlineSize(false)" in app
     assert "data-resizable-card" in panel
     assert "data-resizable-card" in metric_card
     assert "data-resizable-card" in kline_chart
     assert ".resizable-card" in styles
+    assert ".resize-reset-actions" in styles
+    assert ".resize-reset-button.danger" in styles
     assert "resize: vertical" in styles
     assert "width: 100% !important" in styles
     assert "max-inline-size: 100%" in styles

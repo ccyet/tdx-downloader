@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Standalone TDX data download and cache management web app"
 requires-python = ">=3.11"
 dependencies = [
-  "altair>=5,<6",
   "fastapi>=0.110,<1",
   "numpy>=1.26,<3",
   "pandas>=2.2,<3",
@@ -12,7 +11,6 @@ dependencies = [
   "pyarrow>=15",
   "python-dateutil>=2.8",
   "pytz>=2024.1",
-  "streamlit>=1.35,<2",
   "tzdata>=2024.1",
   "uvicorn>=0.29,<1",
   "watchdog>=4",

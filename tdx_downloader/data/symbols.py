@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Any
 
 import pandas as pd
 
-from tdx_downloader.data.catalog import catalog_path_for
+from tdx_downloader.data.catalog import catalog_path_for, connect_catalog
 from tdx_downloader.data.schema import TIMEFRAME_DIR_NAMES, normalize_symbol, unique_symbols
 
 SYMBOL_METADATA_COLUMNS = ["stock_code", "stock_name", "source", "path"]
@@ -178,13 +179,23 @@ def _load_catalog_symbol_metadata(data_root: str | Path) -> pd.DataFrame:
             CASE WHEN status IN ('cached', 'available', 'ok') THEN 0 ELSE 1 END,
             end_at DESC
     """
-    with sqlite3.connect(path) as connection:
-        frame = pd.read_sql_query(sql, connection)
+    try:
+        with closing(connect_catalog(path, read_only=True)) as connection:
+            frame = pd.read_sql_query(sql, connection)
+    except (sqlite3.OperationalError, pd.errors.DatabaseError) as exc:
+        if _is_catalog_metadata_unavailable(exc):
+            return _metadata_frame([])
+        raise
     rows = [
         {"stock_code": row.stock_code, "stock_name": row.stock_name, "source": "catalog", "path": str(path)}
         for row in frame.itertuples(index=False)
     ]
     return _metadata_frame(rows).drop_duplicates(subset=["stock_code"], keep="first").reset_index(drop=True)
+
+
+def _is_catalog_metadata_unavailable(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "database is locked" in message or "no such table" in message
 
 
 def _read_symbol_metadata_cache_payload(*, data_root: str | Path, tdx_path: str | Path) -> dict[str, Any] | None:

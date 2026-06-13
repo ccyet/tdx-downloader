@@ -6,7 +6,8 @@ from fastapi import FastAPI, HTTPException, Query
 import pandas as pd
 
 from tdx_downloader.data.catalog import query_catalog
-from tdx_downloader.data.manager import normalize_symbol_tuple, normalize_timeframes
+from tdx_downloader.data.indicators import load_indicator_values, normalize_formula_ids
+from tdx_downloader.data.manager import DataManagementService, normalize_symbol_tuple, normalize_timeframes
 from tdx_downloader.data.schema import parse_time_window
 from tdx_downloader.data.storage import load_local_bars
 
@@ -77,11 +78,13 @@ def register_prices_routes(app: FastAPI) -> None:
         timeframe: str = "1d",
         symbols: str = "",
         asset_types: str = "stock",
+        indicators: str = "",
         start: str = "",
         end: str = "",
         limit: int = Query(default=PRICE_BARS_DEFAULT_LIMIT, ge=1, le=PRICE_BARS_MAX_LIMIT),
         offset: int = Query(default=0, ge=0),
         order: str = "asc",
+        compute_missing_indicators: bool = True,
     ) -> dict[str, Any]:
         payload = schemas.PriceBarsPayload(
             data_root=data_root,
@@ -89,11 +92,13 @@ def register_prices_routes(app: FastAPI) -> None:
             timeframe=timeframe,
             symbols=_split_query_values(symbols),
             asset_types=_split_query_values(asset_types),
+            indicators=_split_query_values(indicators),
             start=start or schemas.PriceBarsPayload().start,
             end=end or schemas.PriceBarsPayload().end,
             limit=limit,
             offset=offset,
             order=order,
+            compute_missing_indicators=compute_missing_indicators,
         )
         return _price_bars_response(payload)
 
@@ -107,6 +112,17 @@ def _price_bars_response(payload: schemas.PriceBarsPayload) -> dict[str, Any]:
         timeframe = normalize_timeframes([payload.timeframe])[0]
         order = _normalize_price_order(payload.order)
         symbols, names, asset_types, symbol_stats = _resolve_price_symbols(payload, timeframe=timeframe)
+        indicator_ids = normalize_formula_ids(payload.indicators)
+        if indicator_ids and payload.compute_missing_indicators:
+            service = DataManagementService(payload.data_root, adjust=payload.adjust)
+            service.compute_indicators(
+                symbols=symbols,
+                formula_ids=indicator_ids,
+                timeframe=timeframe,
+                start=payload.start,
+                end=payload.end,
+                force=False,
+            )
         page, scanned_symbol_count, has_more = _load_price_bars_page(
             payload,
             timeframe=timeframe,
@@ -115,6 +131,7 @@ def _price_bars_response(payload: schemas.PriceBarsPayload) -> dict[str, Any]:
             asset_types=asset_types,
             symbol_stats=symbol_stats,
             order=order,
+            indicator_ids=indicator_ids,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -131,10 +148,11 @@ def _price_bars_response(payload: schemas.PriceBarsPayload) -> dict[str, Any]:
         "offset": payload.offset,
         "next_offset": next_offset,
         "has_more": has_more,
+        "indicators": list(indicator_ids),
         "symbol_count": len(symbols),
         "scanned_symbol_count": scanned_symbol_count,
         "record_count": len(records),
-        "columns": list(PRICE_BAR_COLUMNS),
+        "columns": list(PRICE_BAR_COLUMNS) + list(indicator_ids),
         "records": records,
     }
 
@@ -223,6 +241,7 @@ def _load_price_bars_page(
     asset_types: dict[str, str],
     symbol_stats: dict[str, dict[str, Any]],
     order: str,
+    indicator_ids: tuple[str, ...] = (),
 ) -> tuple[pd.DataFrame, int, bool]:
     needed = payload.limit + 1
     skipped_rows = 0
@@ -248,6 +267,21 @@ def _load_price_bars_page(
         scanned_symbol_count += 1
         if bars.empty:
             continue
+        if indicator_ids:
+            indicator_values = load_indicator_values(
+                data_root=payload.data_root,
+                timeframe=timeframe,
+                adjust=payload.adjust,
+                symbols=[symbol],
+                formula_ids=indicator_ids,
+                start=payload.start,
+                end=payload.end,
+            )
+            if not indicator_values.empty:
+                bars = bars.merge(indicator_values, on=["date", "stock_code"], how="left")
+            else:
+                for indicator_id in indicator_ids:
+                    bars[indicator_id] = pd.NA
         bars = _sort_price_bars(bars, order=order)
         row_count = len(bars)
         if skipped_rows + row_count <= payload.offset:
@@ -263,7 +297,8 @@ def _load_price_bars_page(
         return pd.DataFrame(columns=pd.Index(PRICE_BAR_COLUMNS)), scanned_symbol_count, False
     page = pd.concat(frames, ignore_index=True)
     has_more = len(page) > payload.limit
-    page = page.head(payload.limit).loc[:, PRICE_BAR_COLUMNS]
+    columns = list(PRICE_BAR_COLUMNS) + [indicator for indicator in indicator_ids if indicator in page.columns]
+    page = page.head(payload.limit).loc[:, columns]
     return page.reset_index(drop=True), scanned_symbol_count, has_more
 
 

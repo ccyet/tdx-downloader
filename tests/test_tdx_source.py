@@ -145,6 +145,54 @@ def test_fetch_tdx_bars_derives_15m_from_1m_when_5m_empty() -> None:
     ]
 
 
+def test_fetch_tdx_bars_reports_batch_timing_metrics() -> None:
+    fake = _PeriodFakeTq({"1d": _tdx_payload(pd.date_range("2026-05-25", periods=1), opens=[10], highs=[11], lows=[9], closes=[10.5])})
+    events: list[dict[str, object]] = []
+
+    tdx.fetch_tdx_bars(
+        symbols=("000001.SZ",),
+        timeframe="1d",
+        start="2026-05-25",
+        end="2026-05-25",
+        tq_client=fake,
+        progress_callback=events.append,
+    )
+
+    done = next(event for event in events if event["stage"] == "tdx_batch_done")
+    assert done["rows_returned"] == 1
+    assert "tdx_call_ms" in done
+    assert "normalize_ms" in done
+    assert "total_ms" in done
+
+
+def test_aggregate_5m_to_30m_does_not_cross_midday_break() -> None:
+    morning = pd.date_range("2026-05-25 11:05:00", "2026-05-25 11:30:00", freq="5min")
+    afternoon = pd.date_range("2026-05-25 13:05:00", "2026-05-25 13:30:00", freq="5min")
+    dates = morning.append(afternoon)
+    bars = pd.DataFrame(
+        {
+            "date": dates,
+            "stock_code": ["000001.SZ"] * len(dates),
+            "open": list(range(10, 10 + len(dates))),
+            "high": list(range(11, 11 + len(dates))),
+            "low": list(range(9, 9 + len(dates))),
+            "close": [value + 0.5 for value in range(10, 10 + len(dates))],
+            "volume": [100.0] * len(dates),
+            "amount": [1000.0] * len(dates),
+        }
+    )
+
+    aggregated = tdx.aggregate_5m_bars_to_timeframe(
+        bars,
+        timeframe="30m",
+        start="2026-05-25 11:00:00",
+        end="2026-05-25 13:30:00",
+    )
+
+    assert aggregated["date"].tolist() == [pd.Timestamp("2026-05-25 11:30:00"), pd.Timestamp("2026-05-25 13:30:00")]
+    assert aggregated["volume"].tolist() == [600.0, 600.0]
+
+
 def test_fetch_tdx_etf_tracking_info_normalizes_track_index_payload() -> None:
     class FakeTq:
         def __init__(self) -> None:

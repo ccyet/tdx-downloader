@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import re
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 import pandas as pd
 
+from tdx_downloader.data.ai_index import (
+    ai_index_path_for,
+    ensure_ai_price_index,
+    query_ai_price_index,
+    rank_symbols_by_ai_price_index,
+)
 from tdx_downloader.data.catalog import infer_asset_type, query_catalog
 from tdx_downloader.data.manager import normalize_symbol_tuple
 from tdx_downloader.data.schema import normalize_symbol
 from tdx_downloader.data.storage import load_local_bars
 from tdx_downloader.data.symbols import load_symbol_metadata, resolve_symbol_names
 
-from ..ai_client import call_compatible_chat, call_stock_agent_ai
+from ..ai_client import call_compatible_chat, call_stock_agent_ai, call_stock_agent_ai_stream
 from ..constants import AI_STOCK_AGENT_MAX_CHART_CANDLES
 from ..schemas import AICommandPayload, AIStockAgentPayload
 from ..serialization import _json_value, _records
@@ -45,6 +53,53 @@ def register_ai_routes(app: FastAPI) -> None:
             }
         )
 
+    @app.post("/api/ai/stock-agent-stream")
+    def ai_stock_agent_stream(payload: AIStockAgentPayload) -> StreamingResponse:
+        try:
+            context = _stock_data_context(payload)
+            messages = _stock_agent_messages(payload, context)
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        def events():
+            content_parts: list[str] = []
+            yield _sse_event(
+                "context",
+                _json_value(
+                    {
+                        "messages": messages,
+                        "data_context": context,
+                        "chart_items": context.get("chart_items", []),
+                        "disclaimer": "仅用于本地行情研究，不构成投资建议。",
+                    }
+                ),
+            )
+            try:
+                for delta in call_stock_agent_ai_stream(payload, messages):
+                    content_parts.append(delta)
+                    yield _sse_event("delta", {"content": delta})
+            except (RuntimeError, ValueError) as exc:
+                yield _sse_event("error", {"detail": str(exc)})
+                return
+            yield _sse_event(
+                "done",
+                _json_value(
+                    {
+                        "content": "".join(content_parts),
+                        "messages": messages,
+                        "data_context": context,
+                        "chart_items": context.get("chart_items", []),
+                        "disclaimer": "仅用于本地行情研究，不构成投资建议。",
+                    }
+                ),
+            )
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
 
 def _plan_ai_command(payload: AICommandPayload) -> dict[str, Any]:
     text = payload.text.strip()
@@ -64,6 +119,8 @@ def _plan_ai_command(payload: AICommandPayload) -> dict[str, Any]:
             warnings.append(f"模型命令解析失败，已使用本地规则：{exc}")
     else:
         warnings.append("AI 命令解析未配置模型，已使用本地规则。")
+    if local_plan["selected_symbols"] or local_plan.get("symbol_query_handled"):
+        patches = _drop_model_symbol_patches(patches)
     seen_targets = {str(patch.get("target") or "") for patch in patches}
     patches.extend(patch for patch in local_plan["patches"] if str(patch.get("target") or "") not in seen_targets)
     if not patches:
@@ -82,11 +139,18 @@ def _plan_ai_command(payload: AICommandPayload) -> dict[str, Any]:
     }
 
 
+def _sse_event(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+
+
+def _drop_model_symbol_patches(patches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [patch for patch in patches if str(patch.get("target") or "") not in _SYMBOL_PATCH_TARGETS]
+
+
 def _local_command_plan(payload: AICommandPayload) -> dict[str, Any]:
     text = payload.text.strip()
     patches: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    selected_symbols = _symbols_from_command(payload)
+    selected_symbols, warnings = _symbols_from_command(payload)
     if selected_symbols:
         target = _symbol_patch_target(payload)
         patches.append(
@@ -108,6 +172,7 @@ def _local_command_plan(payload: AICommandPayload) -> dict[str, Any]:
         "patches": patches,
         "selected_symbols": selected_symbols,
         "warnings": warnings,
+        "symbol_query_handled": _symbol_query_handled(text),
     }
 
 
@@ -137,13 +202,17 @@ def _command_model_ready(payload: AICommandPayload) -> bool:
 
 def _command_model_messages(payload: AICommandPayload) -> list[dict[str, str]]:
     allowed = sorted(_ALLOWED_COMMAND_TARGETS)
+    stock_skill = _builtin_stock_data_skill()
     system = (
         "你是 TDX 本地行情工作台的命令解析器。只把用户中文命令解析为 JSON，不要解释。"
         "输出必须是严格 JSON 对象，字段只能包含 summary、patches、warnings。"
         "patches 是数组，每项包含 target、value、summary。target 必须来自白名单。"
+        "涉及股票池筛选、排序、取前N时，不要直接输出任何 *.symbols 或 symbolsText patch；"
+        "只识别其它参数，股票池由后端本地索引执行。"
         "百分比字段若是 regimeForm.*，value 用用户界面百分数，例如 65 表示 65%。"
         "reviewForm.min_swing_return 用比例小数，例如 0.05 表示 5%。"
         "不要输出 API key、不要请求外部数据、不要执行交易。"
+        f"\n\n内置股票数据 skill:\n{stock_skill}"
     )
     user = {
         "command": payload.text,
@@ -232,17 +301,27 @@ def _finite_number(value: object) -> float | None:
     return number if pd.notna(number) else None
 
 
-def _symbols_from_command(payload: AICommandPayload) -> list[str]:
-    text = payload.text.upper()
-    selector = _symbol_selector(text)
+def _symbols_from_command(payload: AICommandPayload) -> tuple[list[str], list[str]]:
+    text = payload.text
+    selector = _symbol_selector(text.upper())
     if not selector:
         explicit = normalize_symbol_tuple(_split_symbol_like_text(payload.text))
-        return list(explicit)
-    return _symbols_by_selector(
+        return _rank_or_limit_command_symbols(payload, list(explicit))
+    symbols = _symbols_by_selector(
         selector=selector,
         data_root=payload.data_root,
         tdx_path=payload.tdx_path,
         timeframe=payload.timeframe,
+    )
+    return _rank_or_limit_command_symbols(payload, symbols)
+
+
+def _symbol_query_handled(text: str) -> bool:
+    return bool(
+        _symbol_selector(text.upper())
+        or _split_symbol_like_text(text)
+        or _command_rank_metric(text)
+        or _command_price_filters(text)
     )
 
 
@@ -277,6 +356,8 @@ def _symbols_by_selector(*, selector: str, data_root: str, tdx_path: str, timefr
             names[symbol] = name
             if _selector_matches(selector, symbol, name):
                 symbols.add(symbol)
+    if symbols:
+        return sorted(symbols)
     try:
         catalog = query_catalog(data_root=data_root, timeframes=(timeframe,), statuses=("cached", "available", "ok"))
     except Exception:  # noqa: BLE001
@@ -290,6 +371,278 @@ def _symbols_by_selector(*, selector: str, data_root: str, tdx_path: str, timefr
             if _selector_matches(selector, symbol, name):
                 symbols.add(symbol)
     return sorted(symbols)
+
+
+def _rank_or_limit_command_symbols(payload: AICommandPayload, symbols: list[str]) -> tuple[list[str], list[str]]:
+    if not symbols:
+        return [], []
+    limit = _command_symbol_limit(payload.text)
+    metric = _command_rank_metric(payload.text)
+    filtered_symbols, warnings = _filter_symbols_by_local_conditions(payload, symbols)
+    if not filtered_symbols:
+        return [], warnings
+    if metric:
+        ranked, rank_warnings = _rank_symbols_by_local_metric(
+            payload=payload,
+            symbols=filtered_symbols,
+            metric=metric,
+            limit=limit,
+            ascending=_command_rank_ascending(payload.text),
+        )
+        return ranked, [*warnings, *rank_warnings]
+    if limit is not None:
+        return filtered_symbols[:limit], warnings
+    return filtered_symbols, warnings
+
+
+def _filter_symbols_by_local_conditions(payload: AICommandPayload, symbols: list[str]) -> tuple[list[str], list[str]]:
+    filters = _command_price_filters(payload.text)
+    if not filters:
+        return symbols, []
+    start, end = _command_condition_window(payload)
+    warnings: list[str] = []
+    frame, index_info = _query_symbols_by_local_price_index(
+        payload=payload,
+        symbols=symbols,
+        start=start,
+        end=end,
+    )
+    if frame.empty:
+        return [], [f"未找到 {end} 前后的本地日线数据，未选择标的。"]
+    latest = _latest_filter_rows(frame)
+    if latest.empty:
+        return [], [f"未找到 {end} 前后的有效本地日线数据，未选择标的。"]
+    filtered = latest
+    descriptions: list[str] = []
+    for price_filter in filters:
+        field = str(price_filter["field"])
+        operator = str(price_filter["operator"])
+        threshold = float(price_filter["threshold"])
+        if field not in filtered.columns:
+            continue
+        values = pd.to_numeric(filtered[field], errors="coerce")
+        mask = values.gt(threshold) if operator == "gt" else values.lt(threshold)
+        filtered = filtered.loc[mask].copy()
+        descriptions.append(_price_filter_description(price_filter))
+    ordered = [
+        str(symbol)
+        for symbol in filtered.sort_values("return_1d", ascending=False, kind="mergesort")["stock_code"].tolist()
+    ]
+    if descriptions:
+        warnings.append(f"已按本地日线筛选：{'、'.join(descriptions)}；窗口 {start} 至 {end}。")
+    if index_info.get("rows_indexed"):
+        warnings.append(
+            f"已使用 AI 行情索引 {index_info['table']} 执行本地筛选：{index_info['start']} 至 {index_info['end']}。"
+        )
+    if not ordered:
+        warnings.append("本地行情中没有满足条件的标的。")
+    return ordered, warnings
+
+
+def _rank_symbols_by_local_metric_frame(
+    *,
+    payload: AICommandPayload,
+    symbols: list[str],
+    start: str,
+    end: str,
+    metric: str,
+    limit: int | None,
+    ascending: bool,
+) -> tuple[list[str], pd.DataFrame, dict[str, Any]]:
+    return rank_symbols_by_ai_price_index(
+        data_root=payload.data_root,
+        adjust=payload.adjust,
+        timeframe="1d",
+        symbols=symbols,
+        start=start,
+        end=end,
+        metric=metric,
+        limit=limit,
+        ascending=ascending,
+        tdx_path=payload.tdx_path,
+    )
+
+
+def _query_symbols_by_local_price_index(
+    *,
+    payload: AICommandPayload,
+    symbols: list[str],
+    start: str,
+    end: str,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    index_info = ensure_ai_price_index(
+        data_root=payload.data_root,
+        adjust=payload.adjust,
+        timeframe="1d",
+        symbols=symbols,
+        start=start,
+        end=end,
+        tdx_path=payload.tdx_path,
+    )
+    frame = query_ai_price_index(
+        data_root=payload.data_root,
+        adjust=payload.adjust,
+        timeframe="1d",
+        symbols=symbols,
+        start=start,
+        end=end,
+    )
+    return frame, index_info
+
+
+def _command_symbol_limit(text: str) -> int | None:
+    patterns = (
+        r"(?:TOP|top)\s*(\d{1,4})",
+        r"前\s*(\d{1,4})\s*(?:个|只|支|名|家)?",
+        r"(?:最高|最大|最多|最低|最小|最少)\s*的?\s*(\d{1,4})\s*(?:个|只|支|名|家)?",
+        r"(?:取|选|选择|保留)\s*(?:前)?\s*(\d{1,4})\s*(?:个|只|支)?(?:股票|标的|个股)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        value = int(match.group(1))
+        if value > 0:
+            return value
+    return None
+
+
+def _command_rank_metric(text: str) -> str:
+    if "成交额" in text or "成交金额" in text:
+        return "amount"
+    if "成交量" in text or "交易量" in text:
+        return "volume"
+    if "收盘价" in text or "最新价" in text:
+        return "close"
+    return ""
+
+
+def _command_rank_ascending(text: str) -> bool:
+    return any(keyword in text for keyword in ("最低", "最小", "最少", "倒数"))
+
+
+def _rank_symbols_by_local_metric(
+    *,
+    payload: AICommandPayload,
+    symbols: list[str],
+    metric: str,
+    limit: int | None,
+    ascending: bool,
+) -> tuple[list[str], list[str]]:
+    rank_date = _command_rank_date(payload.text)
+    end = rank_date or pd.Timestamp.today().date().isoformat()
+    start = rank_date or (pd.Timestamp(end) - pd.Timedelta(days=30)).date().isoformat()
+    metric_label = _COMMAND_RANK_METRIC_LABELS.get(metric, metric)
+    warnings: list[str] = []
+    ranked_symbols, ranked, index_info = _rank_symbols_by_local_metric_frame(
+        payload=payload,
+        symbols=symbols,
+        start=start,
+        end=end,
+        metric=metric,
+        limit=limit,
+        ascending=ascending,
+    )
+    if ranked.empty:
+        date_label = f"{rank_date} " if rank_date else ""
+        return [], [f"未找到{date_label}本地日线{metric_label}，未选择标的。"]
+    if limit is not None and len(ranked_symbols) < limit:
+        warnings.append(f"仅找到 {len(ranked_symbols)} 个有{metric_label}数据的标的，少于命令要求的 {limit} 个。")
+    if index_info.get("rows_indexed"):
+        warnings.append(
+            f"已使用 AI 行情索引 {index_info['table']} 执行本地排序：{index_info['start']} 至 {index_info['end']}。"
+        )
+    return ranked_symbols, warnings
+
+
+_COMMAND_RANK_METRIC_LABELS = {
+    "amount": "成交额",
+    "volume": "成交量",
+    "close": "价格",
+}
+
+
+def _command_price_filters(text: str) -> list[dict[str, Any]]:
+    filters: list[dict[str, Any]] = []
+    return_filter = _command_return_filter(text)
+    if return_filter:
+        filters.append(return_filter)
+    return filters
+
+
+def _command_return_filter(text: str) -> dict[str, Any] | None:
+    normalized = text.replace("％", "%")
+    patterns = (
+        (r"(?:涨幅|涨跌幅|收益率|收益)\s*(?:大于|超过|高于|>=|≥)\s*(-?\d+(?:\.\d+)?)\s*%?", "gt"),
+        (r"(?:涨幅|涨跌幅|收益率|收益)\s*(?:小于|低于|少于|<=|≤)\s*(-?\d+(?:\.\d+)?)\s*%?", "lt"),
+        (r"(?:跌幅)\s*(?:大于|超过|高于|>=|≥)\s*(\d+(?:\.\d+)?)\s*%?", "lt"),
+    )
+    for pattern, operator in patterns:
+        match = re.search(pattern, normalized)
+        if not match:
+            continue
+        threshold = float(match.group(1)) / 100.0
+        if "跌幅" in match.group(0):
+            threshold = -abs(threshold)
+        return {"field": "return_1d", "operator": operator, "threshold": threshold}
+    return None
+
+
+def _command_condition_window(payload: AICommandPayload) -> tuple[str, str]:
+    date_text = _command_rank_date(payload.text)
+    end = date_text or _payload_end_date(payload) or pd.Timestamp.today().date().isoformat()
+    start = (pd.Timestamp(end) - pd.Timedelta(days=10)).date().isoformat()
+    return start, end
+
+
+def _payload_end_date(payload: AICommandPayload) -> str:
+    try:
+        return pd.Timestamp(payload.end).date().isoformat()
+    except (TypeError, ValueError):
+        return ""
+
+
+def _latest_filter_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    ranked = frame.copy()
+    ranked["ts"] = pd.to_datetime(ranked["ts"], errors="coerce")
+    ranked["close"] = pd.to_numeric(ranked["close"], errors="coerce")
+    ranked = ranked.dropna(subset=["stock_code", "ts", "close"]).sort_values(["stock_code", "ts"])
+    if ranked.empty:
+        return ranked
+    ranked["previous_close"] = ranked.groupby("stock_code", sort=False)["close"].shift(1)
+    ranked["return_1d"] = ranked["close"] / ranked["previous_close"] - 1.0
+    return ranked.groupby("stock_code", sort=False).tail(1).dropna(subset=["return_1d"])
+
+
+def _price_filter_description(price_filter: dict[str, Any]) -> str:
+    field = str(price_filter.get("field") or "")
+    operator = str(price_filter.get("operator") or "")
+    threshold = float(price_filter.get("threshold") or 0)
+    label = {"return_1d": "当日涨幅"}.get(field, field)
+    operator_text = "大于" if operator == "gt" else "小于"
+    return f"{label}{operator_text}{threshold * 100:g}%"
+
+
+def _command_rank_date(text: str) -> str:
+    normalized = text.replace("／", "/").replace("－", "-").replace("．", ".")
+    full = re.search(r"(?<!\d)((?:19|20)\d{2})[年/\-.](\d{1,2})[月/\-.](\d{1,2})日?", normalized)
+    if full:
+        return _iso_command_date(int(full.group(1)), int(full.group(2)), int(full.group(3)))
+    month_day = re.search(r"(?<!\d)(\d{1,2})月(\d{1,2})日", normalized)
+    if month_day:
+        return _iso_command_date(_command_default_year(), int(month_day.group(1)), int(month_day.group(2)))
+    return ""
+
+
+def _command_default_year() -> int:
+    return int(pd.Timestamp.today().year)
+
+
+def _iso_command_date(year: int, month: int, day: int) -> str:
+    try:
+        return pd.Timestamp(year=year, month=month, day=day).date().isoformat()
+    except ValueError:
+        return ""
 
 
 def _selector_matches(selector: str, symbol: str, name: str) -> bool:
@@ -309,7 +662,7 @@ def _selector_matches(selector: str, symbol: str, name: str) -> bool:
 
 
 def _split_symbol_like_text(text: str) -> list[str]:
-    return [item for item in text.replace("，", " ").replace("、", " ").replace(";", " ").split() if any(char.isdigit() for char in item)]
+    return re.findall(r"\d{6}(?:\.(?:SH|SZ|BJ))?", text, flags=re.IGNORECASE)
 
 
 def _symbol_patch_target(payload: AICommandPayload) -> str:
@@ -382,13 +735,6 @@ def _general_parameter_patches(payload: AICommandPayload) -> list[dict[str, Any]
         asset_type = _asset_type_from_text(text)
         if asset_type:
             patches.append(_patch("cacheFilters.assetType", asset_type, f"缓存资产筛选 {asset_type}"))
-    if payload.current_view == "ai":
-        max_rows = _int_after_any_label(text, ("最大数据行", "数据行", "max_rows"))
-        if max_rows is not None:
-            patches.append(_patch("aiWorkbenchForm.max_rows", max_rows, f"AI 数据行上限设为 {max_rows}"))
-        max_symbols = _int_after_any_label(text, ("最大标的数", "标的数", "max_symbols"))
-        if max_symbols is not None:
-            patches.append(_patch("aiWorkbenchForm.max_symbols", max_symbols, f"AI 标的上限设为 {max_symbols}"))
     if payload.current_view == "settings":
         if "后复权" in text or "hfq" in text.lower():
             patches.append(_patch("settings.adjust", "hfq", "复权设为 hfq"))
@@ -636,8 +982,14 @@ _ALLOWED_COMMAND_TARGETS = {
     "aiWorkbenchForm.prompt",
     "aiWorkbenchForm.skill_prompt",
     "aiWorkbenchForm.timeframe",
-    "aiWorkbenchForm.max_symbols",
-    "aiWorkbenchForm.max_rows",
+}
+
+_SYMBOL_PATCH_TARGETS = {
+    "symbolsText",
+    "crossForm.universe_symbols",
+    "reviewForm.symbols",
+    "regimeForm.symbols",
+    "aiWorkbenchForm.symbols",
 }
 
 _UI_PERCENT_TARGETS = {
@@ -680,8 +1032,6 @@ _INTEGER_TARGETS = {
     "reviewForm.min_segment_bars",
     "etfTrackerForm.top_n",
     "etfTrackerForm.min_segment_bars",
-    "aiWorkbenchForm.max_symbols",
-    "aiWorkbenchForm.max_rows",
 }
 _BOOLEAN_TARGETS = {
     "settings.strict_after_update",
@@ -763,7 +1113,7 @@ def _command_summary(text: str, patches: list[dict[str, Any]]) -> str:
 
 
 def _stock_data_context(payload: AIStockAgentPayload) -> dict[str, Any]:
-    symbols = normalize_symbol_tuple(payload.symbols)[: payload.max_symbols]
+    symbols = normalize_symbol_tuple(payload.symbols)
     if not symbols:
         raise ValueError("AI 股票数据接口至少需要 1 个标的代码。")
     bars = load_local_bars(
@@ -786,6 +1136,12 @@ def _stock_data_context(payload: AIStockAgentPayload) -> dict[str, Any]:
         "adjust": payload.adjust,
         "start": payload.start,
         "end": payload.end,
+        "local_index": {
+            "type": "sqlite",
+            "path": str(ai_index_path_for(payload.data_root)),
+            "tables": ["ai_price_bars"],
+            "skill": "stock_data_query",
+        },
         "row_count": int(len(bars)),
         "record_limit": payload.max_rows,
         "records": records,
@@ -849,6 +1205,7 @@ def _stock_agent_messages(payload: AIStockAgentPayload, context: dict[str, Any])
         "你是本地股票数据研究助手。只能基于用户提供的本地行情 JSON 与用户提示词回答；"
         "不要声称调用了外部行情、新闻或交易接口。优先使用 Markdown 输出，包含清晰小标题、要点和必要表格；"
         "输出需注明研究用途，不构成投资建议。"
+        f"\n\n内置股票数据 skill:\n{_builtin_stock_data_skill()}"
     )
     skill = payload.skill_prompt.strip()
     prompt = payload.prompt.strip()
@@ -863,3 +1220,11 @@ def _stock_agent_messages(payload: AIStockAgentPayload, context: dict[str, Any])
         {"role": "system", "content": system},
         {"role": "user", "content": json.dumps(user_content, ensure_ascii=False, default=str)},
     ]
+
+
+def _builtin_stock_data_skill() -> str:
+    path = Path(__file__).resolve().parents[2] / "skills" / "stock_data_query.md"
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "优先使用后端本地行情索引进行股票筛选、排序和取前 N；不要编造股票池。"

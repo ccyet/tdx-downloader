@@ -44,6 +44,22 @@ def test_etf_tracker_reuses_multi_review_pipeline() -> None:
     assert "ETF趋势对比" in source
 
 
+def test_etf_tracker_review_generation_requires_confirmation() -> None:
+    source = APP_VUE.read_text(encoding="utf-8")
+
+    assert "confirmingRunEtfTrackerReview" in source
+    assert "etfTrackerReviewConfirmText" in source
+    assert "requestRunEtfTrackerReview" in source
+    assert "cancelRunEtfTrackerReview" in source
+    assert "confirmRunEtfTrackerReview" in source
+    assert '@submit.prevent="requestRunEtfTrackerReview"' in source
+    assert '@submit.prevent="runEtfTrackerReview"' not in source
+    assert "生成 ETF 趋势对比前需要确认" in source
+    assert "确认生成 ETF 趋势对比" in source
+    assert "ETF趋势对比未生成" in source
+    assert "当前 ETF 趋势、复盘排序和 K 线未修改" in source
+
+
 def test_etf_tracker_loads_tdx_tracking_api_metadata() -> None:
     source = APP_VUE.read_text(encoding="utf-8")
 
@@ -75,12 +91,20 @@ def test_etf_tracker_displays_return_windows_and_merge_option() -> None:
 
 def test_etf_tracker_uses_persistent_client_cache_and_status_surface() -> None:
     source = APP_VUE.read_text(encoding="utf-8")
+    styles = (APP_VUE.parent / "styles.css").read_text(encoding="utf-8")
 
     assert "ETF_TRACKING_CACHE_STORAGE_KEY" in source
     assert "ETF_RETURNS_CACHE_STORAGE_KEY" in source
     assert "restoreEtfClientCache" in source
     assert "writeEtfClientCache" in source
-    assert "clearEtfClientCache" in source
+    assert "requestClearEtfClientCache" in source
+    assert "cancelClearEtfClientCache" in source
+    assert "confirmClearEtfClientCache" in source
+    assert "confirmingClearEtfCache" in source
+    assert "清理前需要确认" in source
+    assert "确认清理浏览器本地 ETF 缓存" in source
+    assert "ETF 浏览器缓存未修改" in source
+    assert "@click=\"clearEtfClientCache\"" not in source
     assert "function etfApiCacheSource" in source
     assert "cache?.scope === 'disk'" in source
     assert "磁盘缓存" in source
@@ -88,6 +112,25 @@ def test_etf_tracker_uses_persistent_client_cache_and_status_surface() -> None:
     assert "loadEtfTracking(false, { preferCache: true })" in source
     assert "loadEtfReturns(false, { preferCache: true })" in source
     assert "缓存状态" in source
+    assert "etfTrackingRefreshDisabledReason" in source
+    assert "etfReturnsRefreshDisabledReason" in source
+    assert "type EtfRefreshPendingAction = '' | 'tracking' | 'returns'" in source
+    assert "pendingEtfRefreshAction" in source
+    assert "pendingEtfRefreshConfirmText" in source
+    assert "requestEtfRefreshAction" in source
+    assert "cancelEtfRefreshAction" in source
+    assert "confirmEtfRefreshAction" in source
+    assert "刷新 TDX ETF 接口前需要确认" in source
+    assert "刷新 ETF 收益率前需要确认" in source
+    assert "当前 ETF 接口缓存和收益率缓存未修改" in source
+    assert '@click="requestEtfRefreshAction(\'tracking\')"' in source
+    assert '@click="requestEtfRefreshAction(\'returns\')"' in source
+    assert '@click="loadEtfTracking(true)"' not in source
+    assert '@click="loadEtfReturns(true)"' not in source
+    assert "当前没有可计算收益率的 ETF 标的" in source
+    assert "showNotice('info', 'ETF收益率未计算'" in source
+    assert ".etf-cache-actions" in styles
+    assert ".etf-cache-confirm-text" in styles
 
 
 def test_etf_tracker_has_professional_workbench_sections() -> None:
@@ -175,6 +218,32 @@ def test_review_symbol_picker_has_category_filters_and_bounded_rendering() -> No
     assert 'v-for="row in reviewSymbolPickerVisibleRows"' in source
 
 
+def test_review_symbol_picker_actions_are_explicit_and_guarded() -> None:
+    source = APP_VUE.read_text(encoding="utf-8")
+
+    assert "type ReviewSymbolPendingAction = '' | 'append' | 'replace'" in source
+    assert "pendingReviewSymbolAction" in source
+    assert "requestReviewSymbolPickerApply" in source
+    assert "cancelReviewSymbolPendingAction" in source
+    assert "confirmReviewSymbolPickerApply" in source
+    assert "reviewSymbolPickerPendingActionLabel" in source
+    assert "reviewSymbolPickerSelectFilteredDisabledReason" in source
+    assert "reviewSymbolPickerSelectAllDisabledReason" in source
+    assert "reviewSymbolPickerClearDisabledReason" in source
+    assert "reviewSymbolPickerApplyDisabledReason" in source
+    assert "reviewSymbolPickerStatusText" in source
+    assert ':title="reviewSymbolPickerApplyDisabledReason ||' in source
+    assert "追加选中前需要确认" in source
+    assert "替换标的前需要确认" in source
+    assert "@click=\"requestReviewSymbolPickerApply('append')\"" in source
+    assert "@click=\"requestReviewSymbolPickerApply('replace')\"" in source
+    assert '@click="applyReviewSymbolSelection(' not in source
+    assert "先选择要写入多股复盘的标的" in source
+    assert "showNotice('info', '复盘标的未更新', disabledReason)" in source
+    assert "reviewSymbolPickerSelection.value = currentGroupSymbols.filter((symbol) => current.has(symbol))" in source
+    assert "selected.length ? selected : currentGroupSymbols" not in source
+
+
 def test_review_symbol_picker_categories_cover_etf_and_sector_taxonomy() -> None:
     source = APP_VUE.read_text(encoding="utf-8")
 
@@ -208,6 +277,29 @@ def test_symbol_group_refresh_uses_persistent_metadata_refresh_endpoint() -> Non
     assert "symbolMetadataCacheLabel" in source
     assert "apiPost('/symbol-metadata/refresh'" in source
     assert "更新代码表缓存" in source
+
+
+def test_etf_tracker_load_review_action_explains_disabled_state() -> None:
+    source = APP_VUE.read_text(encoding="utf-8")
+
+    assert "etfLoadReviewDisabledReason" in source
+    assert "etfLoadReviewDisabled" in source
+    assert "当前 ETF 筛选结果为空，无法载入多股复盘" in source
+    assert "无法载入多股复盘" in source
+
+
+def test_etf_tracker_load_review_requires_confirmation_before_overwrite() -> None:
+    source = APP_VUE.read_text(encoding="utf-8")
+
+    assert "confirmingLoadEtfReview" in source
+    assert "etfLoadReviewConfirmText" in source
+    assert "requestLoadEtfTrackerSymbolsToReview" in source
+    assert "cancelLoadEtfTrackerSymbolsToReview" in source
+    assert "confirmLoadEtfTrackerSymbolsToReview" in source
+    assert "载入多股复盘前需要确认" in source
+    assert "多股复盘参数未修改" in source
+    assert "将用当前 ETF 筛选结果覆盖多股复盘参数" in source
+    assert '@click="loadEtfTrackerSymbolsToReview"' not in source
 
 
 def test_etf_category_handles_bond_money_code_ranges_when_name_is_generic() -> None:

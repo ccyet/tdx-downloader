@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Query
 import pandas as pd
 
 from tdx_downloader.data.catalog import ASSET_TYPE_LABELS
-from tdx_downloader.data.manager import normalize_symbol_tuple, shortcut_symbol_groups
+from tdx_downloader.data.manager import QUICK_SYMBOL_GROUPS, normalize_symbol_tuple, shortcut_symbol_groups
 from tdx_downloader.data.parallels_runtime import (
     etf_tracking_with_runtime,
     refresh_symbol_metadata_with_runtime,
@@ -26,6 +26,7 @@ from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES, normalize_symbol
 from tdx_downloader.data.storage import load_daily_bars, load_local_bars
 from tdx_downloader.data.symbols import DEFAULT_STOCK_NAME_BY_CODE, load_symbol_metadata, symbol_metadata_cache_info
 from tdx_downloader.data.tdx import DEFAULT_ETF_TRACKING_INDEX_SYMBOLS
+from tdx_downloader.data.tdx_worker_client import TdxWorkerClient, WorkerUnavailable
 
 from .. import schemas
 from ..constants import (
@@ -60,8 +61,7 @@ def register_config_routes(app: FastAPI) -> None:
     @app.get("/api/config")
     def config() -> dict[str, Any]:
         today = date.today()
-        symbol_metadata = load_symbol_metadata(DEFAULT_DATA_ROOT, tdx_path=DEFAULT_TDX_PATH)
-        groups = _api_shortcut_symbol_groups(symbol_metadata)
+        groups = _static_shortcut_symbol_groups()
         return {
             "defaults": {
                 "data_root": DEFAULT_DATA_ROOT,
@@ -77,13 +77,14 @@ def register_config_routes(app: FastAPI) -> None:
             "timeframes": list(SUPPORTED_TIMEFRAMES),
             "asset_types": [{"value": key, "label": label} for key, label in ASSET_TYPE_LABELS.items()],
             "symbol_groups": groups,
-            "symbol_names": _symbol_group_names(groups, symbol_metadata=symbol_metadata),
+            "symbol_names": _symbol_group_names(groups, symbol_metadata=pd.DataFrame()),
             "integrations": {
                 "fuyao_calendar": {
                     "configured": has_fuyao_api_key(),
                 }
             },
             "runtime": "parallels" if should_use_parallels_runtime() else "local",
+            "worker": _worker_status(),
             "symbol_metadata_cache": symbol_metadata_cache_info(data_root=DEFAULT_DATA_ROOT, tdx_path=DEFAULT_TDX_PATH),
         }
 
@@ -131,6 +132,21 @@ def register_config_routes(app: FastAPI) -> None:
             "groups": sorted_groups,
             "symbol_names": _symbol_group_names(sorted_groups, symbol_metadata=symbol_metadata),
             "symbol_metadata_cache": symbol_metadata_cache_info(data_root=payload.data_root, tdx_path=payload.tdx_path),
+        }
+
+    @app.post("/api/symbol-metrics")
+    def symbol_metrics(payload: schemas.SymbolMetricsPayload) -> dict[str, Any]:
+        symbols = normalize_symbol_tuple(payload.symbols)
+        records = _local_symbol_metric_records(
+            data_root=payload.data_root,
+            adjust=payload.adjust,
+            symbols=symbols,
+            end=payload.end,
+        )
+        return {
+            "records": records,
+            "record_count": len(records),
+            "requested_count": len(symbols),
         }
 
     @app.get("/api/etf-tracking")
@@ -228,6 +244,10 @@ def _api_shortcut_symbol_groups(symbol_metadata: pd.DataFrame) -> list[dict[str,
         metadata=symbol_metadata,
         include_catalog_universe=not _has_non_catalog_symbol_metadata(symbol_metadata),
     )
+
+
+def _static_shortcut_symbol_groups() -> list[dict[str, list[str] | str]]:
+    return [{"name": name, "symbols": list(symbols)} for name, symbols in QUICK_SYMBOL_GROUPS.items()]
 
 
 def _has_non_catalog_symbol_metadata(symbol_metadata: pd.DataFrame) -> bool:
@@ -423,6 +443,54 @@ def _sort_symbols_by_amount(symbols: list[str], scores: dict[str, float]) -> lis
     return sorted(symbols, key=sort_key)
 
 
+def _local_symbol_metric_records(
+    *,
+    data_root: str,
+    adjust: str,
+    symbols: tuple[str, ...],
+    end: str,
+) -> list[dict[str, Any]]:
+    if not symbols:
+        return []
+    end_ts = pd.Timestamp(end)
+    start = (end_ts - pd.Timedelta(days=30)).date().isoformat()
+    bars = load_daily_bars(
+        data_root=data_root,
+        adjust=adjust,
+        symbols=symbols,
+        start=start,
+        end=end,
+    )
+    if bars.empty:
+        return []
+    frame = bars.copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame = frame.dropna(subset=["stock_code", "date"]).sort_values(["stock_code", "date"])
+    if frame.empty:
+        return []
+    latest_by_symbol = {
+        str(symbol): row
+        for symbol, row in frame.groupby("stock_code", sort=False).tail(1).set_index("stock_code").iterrows()
+    }
+    records: list[dict[str, Any]] = []
+    for symbol in symbols:
+        row = latest_by_symbol.get(symbol)
+        if row is None:
+            continue
+        records.append(
+            {
+                "symbol": symbol,
+                "latest_date": row["date"].date().isoformat(),
+                "close": _finite_float(row.get("close")),
+                "amount": _finite_float(row.get("amount")),
+                "volume": _finite_float(row.get("volume")),
+                "market_value": None,
+                "turnover_rate": None,
+            }
+        )
+    return records
+
+
 def _local_etf_return_records(
     *,
     data_root: str,
@@ -544,3 +612,21 @@ def _enrich_etf_tracking_names(frame: pd.DataFrame, *, data_root: str, tdx_path:
     result = frame.copy()
     result["tracking_name"] = result["tracking_symbol"].map(lambda symbol: names.get(normalize_symbol(symbol), ""))
     return result
+
+
+def _worker_status() -> dict[str, Any]:
+    if not should_use_parallels_runtime():
+        return {"enabled": False, "configured": False, "status": "local"}
+    client = TdxWorkerClient(timeout_seconds=0.5)
+    try:
+        health = client.health()
+    except WorkerUnavailable as exc:
+        return {"enabled": True, "configured": True, "status": "unavailable", "url": client.base_url, "message": str(exc)}
+    return {
+        "enabled": True,
+        "configured": True,
+        "status": "ok",
+        "url": client.base_url,
+        "python": health.get("python", ""),
+        "scratch_root": health.get("scratch_root", ""),
+    }

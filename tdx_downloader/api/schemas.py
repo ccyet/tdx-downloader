@@ -55,17 +55,26 @@ class SymbolMetadataRefreshPayload(BaseModel):
     target: str = ""
 
 
+class SymbolMetricsPayload(BaseModel):
+    data_root: str = DEFAULT_DATA_ROOT
+    adjust: str = DEFAULT_ADJUST
+    symbols: list[str] = Field(default_factory=list)
+    end: str = Field(default_factory=lambda: date.today().isoformat())
+
+
 class PriceBarsPayload(BaseModel):
     data_root: str = DEFAULT_DATA_ROOT
     adjust: str = DEFAULT_ADJUST
     timeframe: str = "1d"
     symbols: list[str] = Field(default_factory=list)
     asset_types: list[str] = Field(default_factory=list)
+    indicators: list[str] = Field(default_factory=list)
     start: str = Field(default_factory=lambda: (date.today() - timedelta(days=20)).isoformat())
     end: str = Field(default_factory=lambda: date.today().isoformat())
     limit: int = Field(default=PRICE_BARS_DEFAULT_LIMIT, ge=1, le=PRICE_BARS_MAX_LIMIT)
     offset: int = Field(default=0, ge=0)
     order: str = "asc"
+    compute_missing_indicators: bool = True
 
 
 class PriceSymbolsPayload(BaseModel):
@@ -76,6 +85,42 @@ class PriceSymbolsPayload(BaseModel):
     keyword: str = ""
     limit: int = Field(default=PRICE_SYMBOLS_DEFAULT_LIMIT, ge=1, le=PRICE_SYMBOLS_MAX_LIMIT)
     offset: int = Field(default=0, ge=0)
+
+
+class IndicatorFormulaPayload(BaseModel):
+    data_root: str = DEFAULT_DATA_ROOT
+    formula_id: str
+    name: str = ""
+    expression: str
+    source: str = "custom"
+    output_name: str = ""
+    tdx_program: str = ""
+
+
+class IndicatorTdxImportPayload(BaseModel):
+    data_root: str = DEFAULT_DATA_ROOT
+    text: str
+    formula_id_prefix: str = ""
+
+
+class IndicatorMappingPayload(BaseModel):
+    data_root: str = DEFAULT_DATA_ROOT
+    formula_id: str
+    stock_code: str = ""
+    asset_type: str = ""
+    timeframe: str = ""
+    enabled: bool = True
+
+
+class IndicatorComputePayload(BaseModel):
+    data_root: str = DEFAULT_DATA_ROOT
+    adjust: str = DEFAULT_ADJUST
+    timeframe: str = "1d"
+    symbols: list[str] = Field(default_factory=list)
+    formula_ids: list[str] = Field(default_factory=list)
+    start: str = Field(default_factory=lambda: (date.today() - timedelta(days=260)).isoformat())
+    end: str = Field(default_factory=lambda: date.today().isoformat())
+    force: bool = False
 
 
 class ResearchBasePayload(BaseModel):
@@ -175,7 +220,8 @@ class AICommandPayload(ResearchBasePayload):
     text: str = ""
     current_view: str = ""
     research_tab: str = ""
-    tdx_path: str = DEFAULT_TDX_PATH
+    tdx_path: str = ""
+    end: str = Field(default_factory=lambda: date.today().isoformat())
     base_url: str = ""
     api_key: str = ""
     model: str = ""
@@ -194,6 +240,6 @@ class AIStockAgentPayload(ResearchBasePayload):
     end: str = Field(default_factory=lambda: date.today().isoformat())
     temperature: float = 0.2
     timeout_seconds: int = 60
-    max_symbols: int = Field(default=20, ge=1, le=50)
-    max_rows: int = Field(default=240, ge=20, le=1000)
+    max_symbols: int | None = Field(default=None, ge=1)
+    max_rows: int | None = Field(default=None, ge=1)
     max_charts: int = Field(default=AI_STOCK_AGENT_DEFAULT_MAX_CHARTS, ge=0, le=AI_STOCK_AGENT_MAX_CHARTS)

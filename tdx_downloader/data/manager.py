@@ -13,6 +13,22 @@ from tdx_downloader.data.catalog import (
     enrich_inventory_for_catalog,
     infer_asset_type,
     query_catalog,
+    query_coverage_keys,
+    query_coverage_runs,
+)
+from tdx_downloader.data.audit import (
+    _audit_window_for_timeframe,
+    _expected_timestamps_for_window,
+    _missing_coverage_summary,
+)
+from tdx_downloader.data.indicators import (
+    IndicatorFormula,
+    IndicatorStore,
+    compute_indicator_cache,
+    indicator_cache_inventory,
+    load_indicator_values,
+    make_indicator_formula,
+    normalize_formula_ids,
 )
 from tdx_downloader.data.repository import MarketDataRepository
 from tdx_downloader.data.schema import SUPPORTED_TIMEFRAMES, ensure_supported_timeframe, normalize_symbol, unique_symbols
@@ -39,6 +55,19 @@ FORCE_DOWNLOAD_COLUMNS = [
     "end",
     "path",
     "message",
+]
+COVERAGE_QUERY_SYMBOL_BATCH_SIZE = 400
+COVERAGE_DISPLAY_COLUMNS = [
+    "coverage_status",
+    "coverage_rows_in_window",
+    "coverage_expected_rows",
+    "coverage_missing_rows",
+    "coverage_ratio",
+    "coverage_start_at",
+    "coverage_end_at",
+    "coverage_first_missing_at",
+    "coverage_last_missing_at",
+    "coverage_message",
 ]
 
 
@@ -90,15 +119,38 @@ class DataManagementService:
         tdx_path: str | Path = "",
         symbol_metadata: pd.DataFrame | None = None,
         rebuild_catalog: bool = True,
+        refresh_coverage: bool = False,
     ) -> DataCacheSnapshot:
         normalized_timeframes = normalize_timeframes(timeframes)
         normalized_symbols = normalize_symbol_tuple(symbols) if symbols is not None else None
-        inventory = self.repository.inventory(timeframes=normalized_timeframes, symbols=normalized_symbols)
+        existing_catalog = (
+            query_catalog(data_root=self.data_root, adjust=self.adjust, timeframes=normalized_timeframes)
+            if rebuild_catalog
+            else None
+        )
+        inventory = self.repository.inventory(
+            timeframes=normalized_timeframes,
+            symbols=normalized_symbols,
+            existing_catalog=existing_catalog,
+            fast_existing=rebuild_catalog,
+        )
+        indicator_inventory = indicator_cache_inventory(self.data_root)
+        if normalized_symbols is not None and not indicator_inventory.empty:
+            indicator_inventory = indicator_inventory.loc[indicator_inventory["stock_code"].isin(normalized_symbols)].copy()
+        if not indicator_inventory.empty:
+            indicator_inventory = indicator_inventory.loc[indicator_inventory["timeframe"].isin(normalized_timeframes)].copy()
+        if not indicator_inventory.empty:
+            inventory = pd.concat([inventory, indicator_inventory], ignore_index=True, sort=False)
         metadata = symbol_metadata if symbol_metadata is not None else self.repository.symbol_metadata(tdx_path=tdx_path)
         catalog = enrich_inventory_for_catalog(inventory, symbol_metadata=metadata)
         catalog_path = catalog_path_for(self.data_root)
         if rebuild_catalog:
-            catalog_path = build_catalog(data_root=self.data_root, inventory=inventory, symbol_metadata=metadata)
+            catalog_path = build_catalog(
+                data_root=self.data_root,
+                inventory=inventory,
+                symbol_metadata=metadata,
+                refresh_coverage=refresh_coverage,
+            )
         if asset_types:
             allowed = {str(item) for item in asset_types}
             catalog = catalog.loc[catalog["asset_type"].isin(allowed)].reset_index(drop=True)
@@ -158,6 +210,16 @@ class DataManagementService:
             min_coverage_ratio=config.min_coverage_ratio,
         )
 
+    def preview_download_plan(self, config: DataDownloadConfig) -> pd.DataFrame:
+        return self.repository.plan_from_tdx(
+            symbols=normalize_symbol_tuple(config.symbols),
+            timeframes=normalize_timeframes(config.timeframes),
+            start=config.start,
+            end=config.end,
+            min_coverage_ratio=config.min_coverage_ratio,
+            audit_mode="fast",
+        )
+
     def download(
         self,
         config: DataDownloadConfig,
@@ -181,6 +243,96 @@ class DataManagementService:
         else:
             table = self._force_download(config, progress_callback=progress_callback)
         return DataDownloadResult(table=table, summary=download_summary(table))
+
+    def indicator_store(self) -> IndicatorStore:
+        return IndicatorStore(self.data_root)
+
+    def list_indicator_formulas(self) -> pd.DataFrame:
+        return self.indicator_store().list_formulas()
+
+    def list_indicator_mappings(self) -> pd.DataFrame:
+        return self.indicator_store().list_mappings()
+
+    def upsert_indicator_formula(
+        self,
+        *,
+        formula_id: str,
+        name: str,
+        expression: str,
+        source: str = "custom",
+        output_name: str = "",
+        tdx_program: str = "",
+    ) -> IndicatorFormula:
+        return self.indicator_store().upsert_formula(
+            make_indicator_formula(
+                formula_id=formula_id,
+                name=name,
+                expression=expression,
+                source=source,
+                output_name=output_name,
+                tdx_program=tdx_program,
+            )
+        )
+
+    def import_tdx_indicator_formulas(self, text: str, *, formula_id_prefix: str = "") -> list[IndicatorFormula]:
+        return self.indicator_store().import_tdx_formula_text(text, formula_id_prefix=formula_id_prefix)
+
+    def upsert_indicator_mapping(
+        self,
+        *,
+        formula_id: str,
+        stock_code: str = "",
+        asset_type: str = "",
+        timeframe: str = "",
+        enabled: bool = True,
+    ) -> dict[str, object]:
+        return self.indicator_store().upsert_mapping(
+            formula_id=formula_id,
+            stock_code=stock_code,
+            asset_type=asset_type,
+            timeframe=timeframe,
+            enabled=enabled,
+        )
+
+    def compute_indicators(
+        self,
+        *,
+        symbols: tuple[str, ...] | list[str],
+        formula_ids: tuple[str, ...] | list[str],
+        timeframe: str,
+        start: str | pd.Timestamp,
+        end: str | pd.Timestamp,
+        force: bool = False,
+    ) -> pd.DataFrame:
+        return compute_indicator_cache(
+            data_root=self.data_root,
+            adjust=self.adjust,
+            timeframe=timeframe,
+            symbols=normalize_symbol_tuple(symbols),
+            formula_ids=normalize_formula_ids(list(formula_ids)),
+            start=start,
+            end=end,
+            force=force,
+        )
+
+    def load_indicators(
+        self,
+        *,
+        symbols: tuple[str, ...] | list[str],
+        formula_ids: tuple[str, ...] | list[str],
+        timeframe: str,
+        start: str | pd.Timestamp,
+        end: str | pd.Timestamp,
+    ) -> pd.DataFrame:
+        return load_indicator_values(
+            data_root=self.data_root,
+            adjust=self.adjust,
+            timeframe=timeframe,
+            symbols=normalize_symbol_tuple(symbols),
+            formula_ids=normalize_formula_ids(list(formula_ids)),
+            start=start,
+            end=end,
+        )
 
     def _force_download(
         self,
@@ -341,6 +493,112 @@ def cache_summary(catalog: pd.DataFrame) -> dict[str, object]:
     return summary
 
 
+def annotate_catalog_coverage(
+    catalog: pd.DataFrame,
+    *,
+    data_root: str | Path,
+    adjust: str,
+    start: str = "",
+    end: str = "",
+) -> pd.DataFrame:
+    """Add requested-window coverage columns without changing file availability status."""
+    result = _ensure_catalog_coverage_columns(catalog.copy())
+    if result.empty or not start or not end:
+        return result
+    price_mask = (
+        result.get("status", pd.Series([""] * len(result))).fillna("").astype(str).eq("cached")
+        & result.get("data_kind", pd.Series([""] * len(result))).fillna("").astype(str).eq("price")
+        & result.get("indicator", pd.Series([""] * len(result))).fillna("").astype(str).eq("ohlcv")
+    )
+    if not bool(price_mask.any()):
+        return result
+    price_rows = result.loc[price_mask]
+    timeframes = _coverage_catalog_timeframes(price_rows)
+    symbols = _coverage_catalog_symbols(price_rows)
+    if not symbols:
+        return result
+    coverage_timeframes = tuple(sorted(set(timeframes) | {"1d"}, key=_timeframe_sort_key))
+    window_by_timeframe: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
+    for timeframe in coverage_timeframes:
+        try:
+            window_by_timeframe[timeframe] = _audit_window_for_timeframe(timeframe, start=start, end=end)
+        except (TypeError, ValueError):
+            continue
+    query_start, query_end = _coverage_query_window(window_by_timeframe.values())
+    coverage = _query_coverage_runs_for_symbols(
+        data_root=data_root,
+        symbols=symbols,
+        adjust=adjust,
+        timeframes=coverage_timeframes,
+        start=query_start,
+        end=query_end,
+    )
+    coverage_by_key = _coverage_runs_by_key(coverage)
+    indexed_keys = _query_coverage_keys_for_symbols(
+        data_root=data_root,
+        symbols=symbols,
+        adjust=adjust,
+        timeframes=coverage_timeframes,
+    )
+    daily_sessions = _daily_sessions_from_coverage(coverage, start=start, end=end)
+    expected_cache: dict[tuple[str, tuple[pd.Timestamp, ...]], list[pd.Timestamp]] = {}
+    state_cache: dict[tuple[str, str], dict[str, object]] = {}
+
+    for index, row in result.loc[price_mask].iterrows():
+        symbol = normalize_symbol(row.get("stock_code", ""))
+        timeframe = str(row.get("timeframe", "") or "")
+        if not symbol or not timeframe:
+            continue
+        cache_key = (symbol, timeframe)
+        cached_state = state_cache.get(cache_key)
+        if cached_state is not None:
+            for column, value in cached_state.items():
+                result.at[index, column] = value
+            continue
+        runs = coverage_by_key.get((symbol, timeframe), [])
+        if not runs and cache_key not in indexed_keys:
+            cached_state = _coverage_status_state(
+                status="coverage_unknown",
+                message="本地文件可读，但尚未建立覆盖索引；请刷新缓存索引后检查完整性。",
+            )
+            state_cache[cache_key] = cached_state
+            for column, value in cached_state.items():
+                result.at[index, column] = value
+            continue
+        window = window_by_timeframe.get(timeframe)
+        if window is None:
+            cached_state = _coverage_status_state(status="coverage_unknown", message="检查窗口无效，无法计算覆盖完整性。")
+            state_cache[cache_key] = cached_state
+            for column, value in cached_state.items():
+                result.at[index, column] = value
+            continue
+        start_ts, end_ts = window
+        coverage_state = _coverage_window_state(
+            timeframe=timeframe,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            coverage_runs=runs,
+            expected_sessions=daily_sessions.get(symbol),
+            expected_cache=expected_cache,
+        )
+        missing = int(coverage_state["coverage_missing_rows"])
+        expected = int(coverage_state["coverage_expected_rows"])
+        rows_in_window = int(coverage_state["coverage_rows_in_window"])
+        status = "coverage_ready"
+        if expected <= 0:
+            status = "coverage_empty"
+        elif rows_in_window <= 0:
+            status = "coverage_empty"
+        elif missing > 0:
+            status = "coverage_partial"
+        coverage_state["coverage_status"] = status
+        coverage_state["coverage_message"] = _coverage_display_message(status, missing, expected)
+        state_cache[cache_key] = coverage_state
+        for column, value in coverage_state.items():
+            result.at[index, column] = value
+    return result
+
+
 def cache_by_timeframe(catalog: pd.DataFrame) -> pd.DataFrame:
     columns = ["timeframe", "cached_count", "unavailable_count", "rows", "file_size_bytes", "latest_modified_at"]
     if catalog.empty:
@@ -361,6 +619,225 @@ def cache_by_timeframe(catalog: pd.DataFrame) -> pd.DataFrame:
     )
     grouped["unavailable_count"] = grouped["row_count"] - grouped["cached_count"]
     return grouped.reset_index().loc[:, columns]
+
+
+def _ensure_catalog_coverage_columns(catalog: pd.DataFrame) -> pd.DataFrame:
+    for column in COVERAGE_DISPLAY_COLUMNS:
+        if column not in catalog.columns:
+            catalog[column] = _coverage_column_default(column, len(catalog))
+    return catalog
+
+
+def _coverage_column_default(column: str, length: int) -> object:
+    if column in {"coverage_rows_in_window", "coverage_expected_rows", "coverage_missing_rows"}:
+        return pd.Series([0] * length)
+    if column == "coverage_ratio":
+        return pd.Series([0.0] * length)
+    if column.endswith("_at"):
+        return pd.Series([pd.NaT] * length)
+    if column == "coverage_status":
+        return pd.Series(["not_checked"] * length)
+    return pd.Series([""] * length)
+
+
+def _coverage_catalog_timeframes(catalog: pd.DataFrame) -> tuple[str, ...]:
+    result: list[str] = []
+    for value in catalog.get("timeframe", pd.Series(dtype=object)).dropna().astype(str):
+        try:
+            result.append(ensure_supported_timeframe(value))
+        except ValueError:
+            continue
+    return tuple(dict.fromkeys(result))
+
+
+def _coverage_catalog_symbols(catalog: pd.DataFrame) -> tuple[str, ...]:
+    result: list[str] = []
+    for value in catalog.get("stock_code", pd.Series(dtype=object)).dropna().astype(str):
+        symbol = normalize_symbol(value)
+        if symbol:
+            result.append(symbol)
+    return tuple(dict.fromkeys(result))
+
+
+def _query_coverage_runs_for_symbols(
+    *,
+    data_root: str | Path,
+    symbols: tuple[str, ...],
+    adjust: str,
+    timeframes: tuple[str, ...],
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for offset in range(0, len(symbols), COVERAGE_QUERY_SYMBOL_BATCH_SIZE):
+        batch = symbols[offset : offset + COVERAGE_QUERY_SYMBOL_BATCH_SIZE]
+        frames.append(
+            query_coverage_runs(
+                data_root=data_root,
+                symbols=batch,
+                adjust=adjust,
+                timeframes=timeframes,
+                start=start,
+                end=end,
+            )
+        )
+    non_empty = [frame for frame in frames if not frame.empty]
+    if not non_empty:
+        return pd.DataFrame()
+    return pd.concat(non_empty, ignore_index=True)
+
+
+def _query_coverage_keys_for_symbols(
+    *,
+    data_root: str | Path,
+    symbols: tuple[str, ...],
+    adjust: str,
+    timeframes: tuple[str, ...],
+) -> set[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    for offset in range(0, len(symbols), COVERAGE_QUERY_SYMBOL_BATCH_SIZE):
+        batch = symbols[offset : offset + COVERAGE_QUERY_SYMBOL_BATCH_SIZE]
+        keys.update(query_coverage_keys(data_root=data_root, symbols=batch, adjust=adjust, timeframes=timeframes))
+    return keys
+
+
+def _coverage_runs_by_key(coverage: pd.DataFrame) -> dict[tuple[str, str], list[object]]:
+    result: dict[tuple[str, str], list[object]] = {}
+    if coverage.empty:
+        return result
+    for row in coverage.itertuples(index=False):
+        symbol = normalize_symbol(getattr(row, "stock_code", ""))
+        timeframe = str(getattr(row, "timeframe", "") or "")
+        if not symbol or not timeframe:
+            continue
+        result.setdefault((symbol, timeframe), []).append(row)
+    return result
+
+
+def _daily_sessions_from_coverage(coverage: pd.DataFrame, *, start: str, end: str) -> dict[str, list[pd.Timestamp]]:
+    if coverage.empty:
+        return {}
+    daily = coverage.loc[coverage["timeframe"].astype(str).eq("1d")].copy()
+    if daily.empty:
+        return {}
+    start_day = pd.Timestamp(start).normalize()
+    end_day = pd.Timestamp(end).normalize()
+    sessions: dict[str, set[pd.Timestamp]] = {}
+    for row in daily.itertuples(index=False):
+        symbol = normalize_symbol(getattr(row, "stock_code", ""))
+        if not symbol:
+            continue
+        run_start = pd.to_datetime(getattr(row, "start_at", pd.NaT), errors="coerce")
+        run_end = pd.to_datetime(getattr(row, "end_at", pd.NaT), errors="coerce")
+        if pd.isna(run_start) or pd.isna(run_end):
+            continue
+        session_start = max(start_day, pd.Timestamp(run_start).normalize())
+        session_end = min(end_day, pd.Timestamp(run_end).normalize())
+        if session_start > session_end:
+            continue
+        sessions.setdefault(symbol, set()).update(pd.Timestamp(item) for item in pd.bdate_range(session_start, session_end))
+    return {symbol: sorted(values) for symbol, values in sessions.items()}
+
+
+def _coverage_window_state(
+    *,
+    timeframe: str,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    coverage_runs: list[object],
+    expected_sessions: list[pd.Timestamp] | None,
+    expected_cache: dict[tuple[str, tuple[pd.Timestamp, ...]], list[pd.Timestamp]],
+) -> dict[str, object]:
+    expected = _expected_timestamps_for_window(
+        timeframe=timeframe,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        expected_sessions=expected_sessions,
+        expected_cache=expected_cache,
+    )
+    if not expected:
+        return {
+            "coverage_rows_in_window": 0,
+            "coverage_expected_rows": 0,
+            "coverage_missing_rows": 0,
+            "coverage_ratio": 0.0,
+            "coverage_start_at": pd.NaT,
+            "coverage_end_at": pd.NaT,
+            "coverage_first_missing_at": pd.NaT,
+            "coverage_last_missing_at": pd.NaT,
+        }
+    available = _available_timestamps_from_coverage_runs(expected, coverage_runs=coverage_runs, timeframe=timeframe)
+    missing = [timestamp for timestamp in expected if timestamp not in available]
+    minutes = 1440 if ensure_supported_timeframe(timeframe) == "1d" else int(timeframe.removesuffix("m"))
+    missing_summary = _missing_coverage_summary(expected, missing=set(missing), minutes=minutes)
+    available_sorted = sorted(available)
+    return {
+        "coverage_rows_in_window": int(len(available)),
+        "coverage_expected_rows": int(len(expected)),
+        "coverage_missing_rows": int(len(missing)),
+        "coverage_ratio": round(len(available) / len(expected), 12),
+        "coverage_start_at": available_sorted[0] if available_sorted else pd.NaT,
+        "coverage_end_at": available_sorted[-1] if available_sorted else pd.NaT,
+        "coverage_first_missing_at": missing_summary["first_missing_at"],
+        "coverage_last_missing_at": missing_summary["last_missing_at"],
+    }
+
+
+def _available_timestamps_from_coverage_runs(
+    expected: list[pd.Timestamp],
+    *,
+    coverage_runs: list[object],
+    timeframe: str,
+) -> set[pd.Timestamp]:
+    available: set[pd.Timestamp] = set()
+    normalized_timeframe = ensure_supported_timeframe(timeframe)
+    for run in coverage_runs:
+        run_start = pd.to_datetime(getattr(run, "start_at", pd.NaT), errors="coerce")
+        run_end = pd.to_datetime(getattr(run, "end_at", pd.NaT), errors="coerce")
+        if pd.isna(run_start) or pd.isna(run_end):
+            continue
+        if normalized_timeframe == "1d":
+            available.update(
+                timestamp
+                for timestamp in expected
+                if pd.Timestamp(run_start).normalize() <= pd.Timestamp(timestamp).normalize() <= pd.Timestamp(run_end).normalize()
+            )
+        else:
+            available.update(timestamp for timestamp in expected if pd.Timestamp(run_start) <= timestamp <= pd.Timestamp(run_end))
+    return available
+
+
+def _set_coverage_values(catalog: pd.DataFrame, index: object, *, status: str, message: str) -> None:
+    catalog.at[index, "coverage_status"] = status
+    catalog.at[index, "coverage_message"] = message
+
+
+def _coverage_status_state(*, status: str, message: str) -> dict[str, object]:
+    return {"coverage_status": status, "coverage_message": message}
+
+
+def _coverage_query_window(windows: object) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    valid = [(start, end) for start, end in windows if not pd.isna(start) and not pd.isna(end)]
+    if not valid:
+        return None, None
+    return min(start for start, _ in valid), max(end for _, end in valid)
+
+
+def _coverage_display_message(status: str, missing_rows: int, expected_rows: int) -> str:
+    if status == "coverage_ready":
+        return "当前检查窗口覆盖完整。"
+    if status == "coverage_partial":
+        return f"当前检查窗口缺失 {missing_rows} / {expected_rows} 根 K。"
+    if status == "coverage_empty":
+        return "当前检查窗口没有可用 K 线。"
+    return "尚未检查覆盖完整性。"
+
+
+def _timeframe_sort_key(value: str) -> int:
+    try:
+        return SUPPORTED_TIMEFRAMES.index(ensure_supported_timeframe(value))
+    except ValueError:
+        return len(SUPPORTED_TIMEFRAMES)
 
 
 def cache_by_status(catalog: pd.DataFrame) -> pd.DataFrame:
@@ -503,7 +980,8 @@ def _cache_readiness_message(status: str, missing_count: object) -> str:
 def _force_download_frame(written: pd.DataFrame, *, timeframe: str, adjust: str) -> pd.DataFrame:
     if written.empty:
         return pd.DataFrame(columns=FORCE_DOWNLOAD_COLUMNS)
-    frame = written.rename(columns={"symbol": "stock_code", "rows": "rows_written"}).copy()
+    frame = written.rename(columns={"symbol": "stock_code"}).copy()
+    frame["rows_written"] = pd.to_numeric(frame.get("new_rows", 0), errors="coerce").fillna(0).astype(int)
     frame["timeframe"] = timeframe
     frame["adjust"] = adjust
     frame["action"] = "fetched"
