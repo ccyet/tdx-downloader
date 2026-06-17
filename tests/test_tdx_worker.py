@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 
 import pandas as pd
+import pytest
 
 from tdx_downloader.data.audit import audit_local_data, data_gap_episodes
 from tdx_downloader.data.catalog import query_coverage_runs, query_market_data_part_symbols, refresh_coverage_runs
@@ -11,6 +12,7 @@ from tdx_downloader.data.inventory import inventory_local_data
 from tdx_downloader.data.storage import load_local_bars
 from tdx_downloader.data.manager import DataDownloadConfig, DataManagementService
 from tdx_downloader.data.repository import clear_fast_plan_cache
+from tdx_downloader.data.schema import empty_bars
 from tdx_downloader.data.tdx_worker import (
     WorkerJob,
     _fetch_windows_to_manifest,
@@ -895,6 +897,47 @@ def test_fetch_windows_writes_each_group_as_part(tmp_path: Path, monkeypatch) ->
     assert tdx_event["window_step_index"] == 1
     assert tdx_event["window_step_count"] == 2
     assert tdx_event["window_start"] == "2026-06-01 09:35:00"
+
+
+def test_fetch_windows_stops_after_initial_empty_tdx_windows(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    store = TdxWorkerStore(scratch_root=tmp_path / "jobs")
+    service = DataManagementService(tmp_path / "data", adjust="qfq")
+    calls = 0
+    events: list[dict[str, object]] = []
+
+    def fake_fetch_tdx_bars(**_: object) -> pd.DataFrame:
+        nonlocal calls
+        calls += 1
+        return empty_bars()
+
+    monkeypatch.setattr("tdx_downloader.data.tdx.fetch_tdx_bars", fake_fetch_tdx_bars)
+
+    with pytest.raises(RuntimeError, match="TDX 连续返回 0 行"):
+        _fetch_windows_to_manifest(
+            job_id="job-empty",
+            store=store,
+            service=service,
+            payload={
+                "groups_by_timeframe": {
+                    "1d": [
+                        {"symbols": ["000001.SZ"], "start": "2026-06-15", "end": "2026-06-15"},
+                        {"symbols": ["000002.SZ"], "start": "2026-06-15", "end": "2026-06-15"},
+                        {"symbols": ["000003.SZ"], "start": "2026-06-15", "end": "2026-06-15"},
+                        {"symbols": ["000004.SZ"], "start": "2026-06-15", "end": "2026-06-15"},
+                    ]
+                }
+            },
+            config=DataDownloadConfig(
+                symbols=("000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ"),
+                timeframes=("1d",),
+                start="2026-06-15",
+                end="2026-06-15",
+            ),
+            progress_callback=events.append,
+        )
+
+    assert calls == 3
+    assert [event.get("stage") for event in events].count("tdx_no_rows") == 3
 
 
 def test_fetch_windows_honors_cancel_between_groups(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

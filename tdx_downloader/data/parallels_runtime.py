@@ -93,9 +93,14 @@ def download_with_runtime(
             _emit_progress(
                 progress_callback,
                 stage="tdx_connection_skipped",
-                message="本地缓存已覆盖当前任务，无需连接 Windows 通达信。",
+                message="快速预检查未生成下载窗口，跳过 Windows 通达信；随后执行本地结果汇总。",
             )
-            return service.download(config, mode=mode, progress_callback=progress_callback)
+            return _download_locally_with_quality_retry(
+                service,
+                config,
+                mode=mode,
+                progress_callback=progress_callback,
+            )
         return download_with_parallels_cli(
             service,
             config,
@@ -103,8 +108,23 @@ def download_with_runtime(
             progress_callback=progress_callback,
             cancel_check=cancel_check,
         )
+    _raise_if_cancelled(cancel_check)
+    return _download_locally_with_quality_retry(
+        service,
+        config,
+        mode=mode,
+        progress_callback=progress_callback,
+    )
+
+
+def _download_locally_with_quality_retry(
+    service: DataManagementService,
+    config: DataDownloadConfig,
+    *,
+    mode: str,
+    progress_callback=None,
+) -> DataDownloadResult:
     try:
-        _raise_if_cancelled(cancel_check)
         return service.download(config, mode=mode, progress_callback=progress_callback)
     except (RuntimeError, ValueError) as exc:
         if not _is_quality_gate_error(exc) or not config.strict_after_update:
@@ -268,7 +288,7 @@ def download_with_parallels_cli(
             progress_callback=progress_callback,
             cancel_check=cancel_check,
         )
-    except (WorkerUnavailable, WorkerJobFailed) as exc:
+    except WorkerUnavailable as exc:
         if not _worker_cli_fallback_enabled():
             raise RuntimeError(
                 "Windows Worker 不可用，已禁止自动回退 prlctl exec。"
@@ -280,6 +300,8 @@ def download_with_parallels_cli(
             message=f"Windows Worker 不可用，回退 prlctl exec：{exc}",
             error=str(exc),
         )
+    except WorkerJobFailed as exc:
+        raise RuntimeError(f"Windows Worker 任务失败：{exc}") from exc
     verify_parallels_tdx_connection(service, config, progress_callback=progress_callback, cancel_check=cancel_check)
     if mode == "smart":
         table = _download_smart_with_parallels_fetch(
@@ -691,8 +713,37 @@ def download_with_worker(
     if mode == "smart":
         payload, before_audits = _worker_smart_payload(service, config, progress_callback=progress_callback)
         if not payload["groups_by_timeframe"] and not payload.get("derive_targets_by_timeframe"):
-            _emit_progress(progress_callback, stage="tdx_connection_skipped", message="本地缓存已覆盖当前任务，无需连接 Windows Worker。")
-            return service.download(config, mode=mode, progress_callback=progress_callback)
+            table = _worker_prepare_table(
+                service=service,
+                config=config,
+                before_audits=before_audits,
+                committed=pd.DataFrame(),
+                requested_symbols_by_timeframe={},
+            )
+            failures = _worker_local_prepare_failures(table)
+            if not failures.empty:
+                samples = "; ".join(
+                    f"{row.stock_code}/{row.timeframe}={row.after_status}({row.message})"
+                    for row in failures.head(10).itertuples(index=False)
+                )
+                raise RuntimeError(
+                    "Worker 计划为空，但本地结果仍有未覆盖缺口；"
+                    f"请刷新覆盖索引或清理过期 provider gap 记录。样例：{samples}"
+                )
+            summary = download_summary(table)
+            unresolved_count = int(table["action"].astype(str).eq("unresolved").sum()) if "action" in table.columns else 0
+            cached_count = int(table["action"].astype(str).eq("cached").sum()) if "action" in table.columns else 0
+            _emit_progress(
+                progress_callback,
+                stage="tdx_connection_skipped",
+                message=(
+                    "Worker 计划无可执行下载窗口："
+                    f"{cached_count} 项本地已缓存，{unresolved_count} 项为已知供应商缺口。"
+                ),
+                cached_count=cached_count,
+                unresolved_count=unresolved_count,
+            )
+            return DataDownloadResult(table=table, summary=summary)
         if payload["groups_by_timeframe"]:
             job_payload = _base_worker_payload(service, config, mode="fetch-windows")
             job_payload.update(payload)
@@ -1061,6 +1112,22 @@ def _worker_prepare_table(
         start=config.start,
         end=config.end,
     )
+
+
+def _worker_local_prepare_failures(table: pd.DataFrame) -> pd.DataFrame:
+    if table.empty or not {"action", "after_status", "missing_rows"}.issubset(table.columns):
+        return pd.DataFrame()
+    action = table["action"].fillna("").astype(str)
+    after_status = table["after_status"].fillna("").astype(str)
+    missing_rows = pd.to_numeric(table["missing_rows"], errors="coerce").fillna(0)
+    failed = table.loc[
+        action.ne("unresolved")
+        & (
+            after_status.ne("ok")
+            | missing_rows.gt(0)
+        )
+    ].copy()
+    return failed
 
 
 def _derive_worker_targets_after_commit(

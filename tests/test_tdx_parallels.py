@@ -8,6 +8,8 @@ import pandas as pd
 from tdx_downloader import cli
 from tdx_downloader.cli import DEFAULT_DATA_ROOT, _forward_args, _metadata_symbols_by_asset_type
 from tdx_downloader.data import tdx_parallels
+from tdx_downloader.data.manager import DataDownloadConfig, DataDownloadResult
+from tdx_downloader.data import parallels_runtime
 from tdx_downloader.data.tdx_parallels import (
     ParallelsTdxConfig,
     build_parallels_tdx_command,
@@ -202,6 +204,61 @@ def test_cli_daily_check_reports_plan_and_risks(tmp_path: Path, monkeypatch, cap
     output = capsys.readouterr().out
     assert "plan_fetch" in output
     assert "risk_count" in output
+
+
+def test_runtime_local_skip_retries_quality_gate_as_incomplete(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    events: list[dict[str, object]] = []
+
+    class FakeService:
+        data_root = Path("/tmp/data")
+        adjust = "qfq"
+
+        def __init__(self) -> None:
+            self.calls: list[bool] = []
+
+        def preview_download_plan(self, config: DataDownloadConfig) -> pd.DataFrame:
+            return pd.DataFrame(
+                {
+                    "stock_code": ["159006.SZ"],
+                    "timeframe": ["1d"],
+                    "action": ["cached"],
+                }
+            )
+
+        def download(
+            self,
+            config: DataDownloadConfig,
+            *,
+            mode: str,
+            progress_callback=None,
+        ) -> DataDownloadResult:
+            self.calls.append(bool(config.strict_after_update))
+            if config.strict_after_update:
+                raise ValueError("本地行情数据未通过质量门禁：159006.SZ/1d=missing_index")
+            return DataDownloadResult(
+                table=pd.DataFrame({"stock_code": ["159006.SZ"], "timeframe": ["1d"], "action": ["unresolved"]}),
+                summary={"fetched_count": 0, "rows_written": 0},
+            )
+
+    service = FakeService()
+    monkeypatch.setattr(parallels_runtime, "should_use_parallels_runtime", lambda: True)
+
+    result = parallels_runtime.download_with_runtime(
+        service,  # type: ignore[arg-type]
+        DataDownloadConfig(
+            symbols=("159006.SZ",),
+            timeframes=("1d",),
+            start="2026-06-05",
+            end="2026-06-10",
+            strict_after_update=True,
+        ),
+        mode="smart",
+        progress_callback=events.append,
+    )
+
+    assert service.calls == [True, False]
+    assert result.summary["fetched_count"] == 0
+    assert any(event.get("stage") == "local_quality_gate_retry_incomplete" for event in events)
 
 
 def test_cli_daily_check_fails_when_worker_is_unavailable(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1081,6 +1138,24 @@ def test_start_parallels_tdx_worker_uses_background_cmd(monkeypatch, tmp_path: P
     assert 'start "tdx-worker" /min cmd.exe' in text
     assert "tdx-worker" in (tmp_path / PARALLELS_RUNNER_DIR_NAME).joinpath(command_files[-1].with_suffix(".json").name).read_text(encoding="utf-8")
     assert calls[-1][:4] == ["prlctl", "exec", "Windows 11", "--current-user"]
+
+
+def test_worker_config_defaults_to_windows_local_repo(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv(tdx_parallels.PARALLELS_TDX_REPO_ENV_VAR, raising=False)
+    monkeypatch.setattr(
+        tdx_parallels,
+        "default_parallels_tdx_config",
+        lambda *, cwd: ParallelsTdxConfig(
+            vm_name="Windows 11",
+            windows_python=r"D:\Python\python.exe",
+            windows_repo=r"\\psf\ccOUT 1\tdx-downloader",
+            worker_scratch=r"C:\tdx_jobs",
+        ),
+    )
+
+    config = tdx_parallels.default_parallels_tdx_worker_config()
+
+    assert config.windows_repo == r"C:\tdx-downloader-app"
 
 
 def test_start_parallels_tdx_worker_reports_background_traceback(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]

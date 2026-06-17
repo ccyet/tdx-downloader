@@ -36,6 +36,7 @@ DEFAULT_WORKER_PORT = 8765
 DEFAULT_WORKER_SCRATCH = r"C:\tdx_jobs" if sys.platform == "win32" else str(Path.home() / "tdx_jobs")
 WORKER_PROTOCOL_VERSION = 1
 WORKER_EVENT_LIMIT = 500
+MAX_INITIAL_EMPTY_FETCH_WINDOWS = 3
 PART_FILE_NAME = "part-000.parquet"
 MANIFEST_FILE_NAME = "manifest.json"
 
@@ -439,6 +440,8 @@ def _fetch_windows_to_manifest(
         raise ValueError("groups_by_timeframe 必须是对象。")
     step_count = sum(len(groups or []) for groups in groups_by_timeframe.values())
     step_index = 0
+    initial_empty_windows = 0
+    total_rows = 0
     for timeframe, groups in groups_by_timeframe.items():
         _raise_if_cancelled(cancel_check)
         if not isinstance(groups, list):
@@ -477,6 +480,32 @@ def _fetch_windows_to_manifest(
                     end=end,
                 ),
             )
+            if bars.empty and total_rows <= 0:
+                initial_empty_windows += 1
+                progress_callback(
+                    {
+                        "stage": "tdx_no_rows",
+                        "timeframe": str(timeframe),
+                        "step_index": step_index,
+                        "step_count": step_count,
+                        "symbol_count": len(symbols),
+                        "start": start,
+                        "end": end,
+                        "empty_windows": initial_empty_windows,
+                        "message": (
+                            "TDX 本窗口返回 0 行。若连续为空，将停止任务，避免通达信未实际下载时继续空跑。"
+                        ),
+                    }
+                )
+                if initial_empty_windows >= MAX_INITIAL_EMPTY_FETCH_WINDOWS:
+                    raise RuntimeError(
+                        "TDX 连续返回 0 行，已停止任务。"
+                        f"前 {initial_empty_windows} 个窗口均无数据，最近窗口 {timeframe} {start} 至 {end}，"
+                        f"{len(symbols)} 只标的。请确认 Windows 通达信已登录、K 线下载端口/插件可用，"
+                        "并检查所选日期是否已有可下载数据。"
+                    )
+            else:
+                total_rows += int(len(bars))
             _raise_if_cancelled(cancel_check)
             write_started_at = time.perf_counter()
             part = _write_part(

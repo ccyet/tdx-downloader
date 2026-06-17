@@ -1446,7 +1446,7 @@ def test_task_events_enrich_progress_and_hide_internal_batch_noise() -> None:
     assert event["progress_current"] == 7
     assert event["progress_total"] == 20
     assert event["progress_ratio"] == 0.35
-    assert event["label"] == "批次请求 · 5m · 窗口 7/20"
+    assert event["label"] == "读取批次 · 5m · 窗口 7/20"
 
 
 def test_task_control_endpoints_update_download_task_state() -> None:

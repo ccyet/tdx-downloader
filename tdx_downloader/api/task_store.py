@@ -14,6 +14,8 @@ from .serialization import _json_dict
 PROGRESS_ONLY_STAGES = {
     "tdx_request_start",
     "tdx_request_done",
+    "tdx_refresh_start",
+    "tdx_refresh_done",
     "tdx_batch_start",
     "tdx_batch_done",
     "worker_fetch_window_start",

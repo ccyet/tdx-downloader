@@ -73,6 +73,26 @@ def test_fetch_tdx_bars_maps_adjust_to_tdx_dividend_type() -> None:
         assert fake.market_calls[0]["dividend_type"] == expected_dividend_type
 
 
+def test_refresh_kline_uses_smaller_internal_batches() -> None:
+    dates = pd.date_range("2026-05-25", periods=1, freq="D")
+    payload = _tdx_payload(dates, opens=[10], highs=[11], lows=[9], closes=[10.5])
+    fake = _PeriodFakeTq({"1d": payload})
+    symbols = tuple(f"{index:06d}.SZ" for index in range(120))
+
+    tdx.fetch_tdx_bars(
+        symbols=symbols,
+        timeframe="1d",
+        adjust="qfq",
+        start="2026-05-25",
+        end="2026-05-25",
+        tq_client=fake,
+        batch_size=120,
+    )
+
+    assert [len(stock_list) for stock_list, _ in fake.refresh_calls] == [50, 50, 20]
+    assert [period for _, period in fake.refresh_calls] == ["1d", "1d", "1d"]
+
+
 def test_fetch_tdx_bars_derives_5m_from_1m_when_native_5m_empty() -> None:
     fake = _PeriodFakeTq(
         {
@@ -159,7 +179,9 @@ def test_fetch_tdx_bars_reports_batch_timing_metrics() -> None:
     )
 
     done = next(event for event in events if event["stage"] == "tdx_batch_done")
+    assert fake.refresh_calls == [(["000001.SZ"], "1d")]
     assert done["rows_returned"] == 1
+    assert done["refreshed"] is True
     assert "tdx_call_ms" in done
     assert "normalize_ms" in done
     assert "total_ms" in done

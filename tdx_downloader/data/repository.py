@@ -60,6 +60,7 @@ from tdx_downloader.data.summary import (
 )
 from tdx_downloader.data.storage import load_daily_bars, load_local_bars, resolve_daily_root, write_local_bars
 from tdx_downloader.data.symbols import load_symbol_metadata, resolve_symbol_names
+from tdx_downloader.data.trading_calendar import last_completed_trade_date
 
 ProgressCallback = Callable[[dict[str, object]], None]
 _LOGGER = logging.getLogger(__name__)
@@ -153,6 +154,7 @@ PLAN_COLUMNS = [
 UNLOADABLE_AUDIT_STATUSES = frozenset({"read_error", "missing_columns"})
 DAILY_DEPENDENCY_FAILURE_STATUSES = frozenset({"read_error", "missing_columns", "quality_error"})
 TDX_BOUNDARY_GAP_TOLERANCE = pd.Timedelta(days=7)
+PROVIDER_NO_DATA_RETRY_SETTLE_HOUR = 16
 PLAN_PARALLEL_SYMBOL_THRESHOLD = 500
 PLAN_PARALLEL_MAX_WORKERS = 4
 PLAN_FAST_CACHE_TTL_SECONDS = 300
@@ -1318,12 +1320,19 @@ def _apply_unresolved_gaps_to_plan(
     for row in unresolved.itertuples(index=False):
         key = (str(row.stock_code), str(row.timeframe), str(row.adjust))
         unresolved_by_key.setdefault(key, []).append(row)
+    completed_daily_session = _completed_daily_session_for_unresolved_retry(data_root)
     result = plan.copy()
     for index, row in result.iterrows():
         if str(row.get("action", "")) != "fetch":
             continue
         key = (str(row.get("stock_code", "")), str(row.get("timeframe", "")), str(row.get("adjust", "")))
-        matches = _matching_unresolved_gap_records(row, unresolved_by_key.get(key, []))
+        matches = _matching_unresolved_gap_records(
+            row,
+            unresolved_by_key.get(key, []),
+            completed_daily_session=completed_daily_session,
+            fallback_start=start,
+            fallback_end=end,
+        )
         if not matches:
             continue
         latest = max(matches, key=lambda item: str(getattr(item, "updated_at", "")))
@@ -1368,12 +1377,23 @@ def _apply_unresolved_gaps_to_prepare_result(
     for row in unresolved.itertuples(index=False):
         key = (str(row.stock_code), str(row.timeframe), str(row.adjust))
         unresolved_by_key.setdefault(key, []).append(row)
+    completed_daily_session = _completed_daily_session_for_unresolved_retry(data_root)
     prepared = result.copy()
     for index, row in prepared.iterrows():
         if str(row.get("action", "")) == "fetched":
             continue
+        after_status = str(row.get("after_status", "") or "")
+        missing_rows = _safe_int(row.get("missing_rows", 0))
+        if after_status == "ok" and missing_rows <= 0:
+            continue
         key = (str(row.get("stock_code", "")), str(row.get("timeframe", "")), str(row.get("adjust", "")))
-        matches = _matching_unresolved_gap_records(row, unresolved_by_key.get(key, []))
+        matches = _matching_unresolved_gap_records(
+            row,
+            unresolved_by_key.get(key, []),
+            completed_daily_session=completed_daily_session,
+            fallback_start=start,
+            fallback_end=end,
+        )
         if not matches:
             continue
         latest = max(matches, key=lambda item: str(getattr(item, "updated_at", "")))
@@ -1389,7 +1409,14 @@ def _apply_unresolved_gaps_to_prepare_result(
     return prepared
 
 
-def _matching_unresolved_gap_records(plan_row: object, records: list[object]) -> list[object]:
+def _matching_unresolved_gap_records(
+    plan_row: object,
+    records: list[object],
+    *,
+    completed_daily_session: pd.Timestamp | None = None,
+    fallback_start: str | pd.Timestamp | None = None,
+    fallback_end: str | pd.Timestamp | None = None,
+) -> list[object]:
     if not records:
         return []
     first_missing = _optional_timestamp(_row_value(plan_row, "first_missing_at"))
@@ -1398,6 +1425,9 @@ def _matching_unresolved_gap_records(plan_row: object, records: list[object]) ->
         first_missing = _optional_timestamp(_row_value(plan_row, "requested_start"))
         last_missing = _optional_timestamp(_row_value(plan_row, "requested_end"))
     if pd.isna(first_missing) or pd.isna(last_missing):
+        first_missing = _optional_timestamp(fallback_start)
+        last_missing = _optional_timestamp(fallback_end)
+    if pd.isna(first_missing) or pd.isna(last_missing):
         return []
     result: list[object] = []
     for record in records:
@@ -1405,9 +1435,50 @@ def _matching_unresolved_gap_records(plan_row: object, records: list[object]) ->
         end_at = _optional_timestamp(getattr(record, "end_at", pd.NaT))
         if pd.isna(start_at) or pd.isna(end_at):
             continue
-        if end_at >= first_missing and start_at <= last_missing:
+        if start_at <= first_missing and end_at >= last_missing and not _unresolved_record_should_retry(
+            plan_row,
+            record,
+            completed_daily_session=completed_daily_session,
+            first_missing=first_missing,
+            last_missing=last_missing,
+        ):
             result.append(record)
     return result
+
+
+def _unresolved_record_should_retry(
+    plan_row: object,
+    record: object,
+    *,
+    completed_daily_session: pd.Timestamp | None,
+    first_missing: pd.Timestamp,
+    last_missing: pd.Timestamp,
+) -> bool:
+    status = str(getattr(record, "status", "") or "")
+    timeframe = str(_row_value(plan_row, "timeframe") or getattr(record, "timeframe", ""))
+    if (
+        status != "provider_no_data"
+        or ensure_supported_timeframe(timeframe) != "1d"
+        or completed_daily_session is None
+        or pd.isna(completed_daily_session)
+    ):
+        return False
+    completed_day = pd.Timestamp(completed_daily_session).normalize()
+    return first_missing.normalize() <= completed_day <= last_missing.normalize()
+
+
+def _completed_daily_session_for_unresolved_retry(data_root: str | Path | None) -> pd.Timestamp | None:
+    if data_root is None:
+        return None
+    try:
+        return pd.Timestamp(
+            last_completed_trade_date(
+                data_root=data_root,
+                settle_hour=PROVIDER_NO_DATA_RETRY_SETTLE_HOUR,
+            )
+        ).normalize()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _row_value(row: object, column: str) -> object:
@@ -2993,12 +3064,19 @@ def _fetch_window_groups_from_audit(
         start=start,
         end=end,
     )
+    completed_daily_session = _completed_daily_session_for_unresolved_retry(data_root)
     groups: dict[tuple[str, str], list[str]] = {}
     for row in audit.itertuples(index=False):
         if not _audit_row_requires_tdx_update(row, min_coverage_ratio=min_coverage_ratio):
             continue
         key = (str(row.stock_code), str(row.timeframe), str(row.adjust))
-        if _matching_unresolved_gap_records(row, unresolved_by_key.get(key, [])):
+        if _matching_unresolved_gap_records(
+            row,
+            unresolved_by_key.get(key, []),
+            completed_daily_session=completed_daily_session,
+            fallback_start=start,
+            fallback_end=end,
+        ):
             continue
         symbol = str(row.stock_code)
         if str(getattr(row, "status", "")) == "coverage_unknown":

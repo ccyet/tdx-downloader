@@ -8,10 +8,16 @@
 /Volumes/ccOUT 1/tdx-data
 ```
 
-默认 Web/API 地址：
+源码默认 Web/API 地址：
 
 ```text
 http://127.0.0.1:8622
+```
+
+这台机器当前用于下载数据的 launchd Web 服务入口是：
+
+```text
+http://127.0.0.1:8767
 ```
 
 ## 1. 本地启动 Web 服务
@@ -26,6 +32,18 @@ python -m tdx_downloader.web_api
 
 ```text
 http://127.0.0.1:8622
+```
+
+如果要按本机下载服务端口启动：
+
+```bash
+TDX_API_PORT=8767 python -m tdx_downloader.web_api
+```
+
+launchd 管理的下载 Web 服务：
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.local.tdx-downloader.web-api"
 ```
 
 如果需要前端开发模式：
@@ -46,12 +64,14 @@ http://127.0.0.1:5173
 
 高速下载路径推荐使用 Windows 常驻 Worker。`prlctl exec` 只作为启动、修复或兜底诊断，不作为高频下载通道。
 
-Windows 侧启动：
+Windows Worker 默认运行在 Windows 本地仓库，不从 Parallels 共享目录启动：
 
 ```powershell
-cd C:\path\to\tdx-downloader
+cd C:\tdx-downloader-app
 python -m tdx_downloader.cli tdx-worker --host 0.0.0.0 --port 8765 --scratch-root C:\tdx_jobs
 ```
+
+如果显式设置 `TDX_PARALLELS_REPO`，必须指向 Windows 本地目录。不要把常驻 Worker 指到 `\\psf\...` 共享目录；共享目录适合少量文件交接，不适合高频 Python import 和行情写入。
 
 Mac 侧默认访问：
 
@@ -66,6 +86,17 @@ http://127.0.0.1:18765
 ```bash
 curl http://127.0.0.1:18765/health
 ```
+
+`/health` 只能证明 Worker、Python、项目 import 和基础路径可用，不等于 TDX 终端已经成功下载。判断是否真正触发通达信刷新要看任务事件里的 `tdx_refresh_start`、`tdx_refresh_done` 和 `refresh_ms`。
+
+关键事件语义：
+
+- `tdx_refresh_start` / `tdx_refresh_done`：实际触发 `refresh_kline()`。
+- `tdx_batch_start` / `tdx_batch_done`：读取 TDX 或本地缓存批次，不代表一定发生下载。
+- `tdx_no_rows`：该窗口无返回数据。
+- `refresh_ms=0`：没有触发刷新，不能当作下载耗时。
+
+当前 `1d`、`1m`、`5m` 会触发刷新；连续 3 个初始窗口都无数据时，Worker 会提前失败，避免 UI 假进度跑完整个市场。
 
 常用环境变量：
 
@@ -145,7 +176,7 @@ scripts/manage-local-update-launchd.sh status
 scripts/manage-local-update-launchd.sh run-once
 ```
 
-验证最近一次自动更新：
+验证上一次自动更新：
 
 ```bash
 TDX_WRITE_VERIFY_RESULT=1 scripts/manage-local-update-launchd.sh verify
@@ -218,10 +249,11 @@ python -m tdx_downloader.cli tdx-doctor \
   --output table
 ```
 
-常见判断：
+排障判断：
 
 - Web 能打开但不能下载：先查 `TDX_WORKER_URL` 和 `curl /health`。
 - 预览慢：先查 coverage 是否过期，再运行 `coverage-refresh`。
+- UI 显示进度但通达信端口无通信：查 `/api/tasks` 的 `refresh_ms`、`rows`、`tdx_refresh_*` 事件，并确认 Windows `C:\tdx-downloader-app` 已同步当前代码。
 - 某些缺口反复存在：如果日志是 `provider_no_data` 或 `provider_partial_gap`，说明真实请求后 provider 未返回完整数据，系统会记录并避免无限重抓。
 - Docker 里不能选择本机 TDX 目录：容器只能看到已挂载路径；通达信和 Parallels Windows C 盘建议由 Mac 本地服务/Worker 处理。
 
@@ -254,4 +286,21 @@ docker compose up -d --build
 python -m compileall -q tdx_downloader
 python -m pytest tests/test_update_scheduler.py tests/test_tdx_worker.py -q
 python -m pytest tests/test_data_manager.py -q -k "coverage or delta or catalog"
+```
+
+本机服务冒烟：
+
+```bash
+curl http://127.0.0.1:8767/api/config
+curl http://127.0.0.1:18765/health
+```
+
+Windows Worker 版本检查：
+
+```powershell
+cd C:\tdx-downloader-app
+Select-String -Path tdx_downloader\data\tdx.py -Pattern 'REFRESHABLE_KLINE_PERIODS = {"1d", "1m", "5m"}'
+Select-String -Path tdx_downloader\data\tdx_worker.py -Pattern 'MAX_INITIAL_EMPTY_FETCH_WINDOWS = 3'
+Select-String -Path tdx_downloader\data\tdx_parallels.py -Pattern 'DEFAULT_WINDOWS_WORKER_REPO = r"C:\tdx-downloader-app"'
+C:\Users\Public\venvs\tdx-downloader\Scripts\python.exe -m compileall -q tdx_downloader
 ```

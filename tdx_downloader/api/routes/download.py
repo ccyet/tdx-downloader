@@ -173,9 +173,12 @@ def _run_download_task(task_id: str, payload: DownloadPayload, mode: str) -> Non
         if should_use_parallels_runtime():
             rows_written = int(float(result.summary.get("rows_written") or 0))
             fetched_count = int(float(result.summary.get("fetched_count") or 0))
+            unresolved_count = int(float(result.summary.get("unresolved_count") or 0))
             message = (
                 f"Parallels/Windows 下载完成：{fetched_count} 项 fetch，写入 {rows_written} 行。"
                 if fetched_count or rows_written
+                else f"本轮无可执行下载窗口：{unresolved_count} 项为已知供应商缺口，未建立 TDX 取数连接。"
+                if unresolved_count
                 else "本地缓存已覆盖当前任务，未建立 TDX 取数连接。"
             )
             _append_event(task_id, {"stage": "task_summary", "message": message})

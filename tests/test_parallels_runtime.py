@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from tdx_downloader.data import parallels_runtime
+from tdx_downloader.data.catalog import upsert_unresolved_gaps
 from tdx_downloader.data.manager import DataDownloadConfig, DataDownloadResult
 from tdx_downloader.data.parallels_runtime import (
     download_with_parallels_cli,
@@ -407,6 +408,32 @@ def test_parallels_worker_unavailable_does_not_fallback_by_default(monkeypatch) 
         raise AssertionError("Worker failure should be explicit by default")
 
 
+def test_parallels_worker_job_failure_is_not_reported_as_unavailable(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class Service:
+        data_root = Path("/Volumes/ccOUT 1/tdx-data")
+        adjust = "qfq"
+
+    monkeypatch.delenv(parallels_runtime.WORKER_CLI_FALLBACK_ENV_VAR, raising=False)
+    monkeypatch.setattr(
+        parallels_runtime,
+        "download_with_worker",
+        lambda *args, **kwargs: (_ for _ in ()).throw(parallels_runtime.WorkerJobFailed("TDX K线缓存刷新失败：接口无返回")),
+    )
+
+    try:
+        download_with_parallels_cli(
+            Service(),  # type: ignore[arg-type]
+            DataDownloadConfig(symbols=("000001.SZ",), timeframes=("1d",), start="2026-06-01", end="2026-06-02"),
+            mode="smart",
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "Windows Worker 任务失败" in message
+        assert "Windows Worker 不可用" not in message
+    else:
+        raise AssertionError("Worker job failure should be reported as job failure")
+
+
 def test_parallels_download_uses_worker_before_cli(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class Service:
         data_root = Path("/Volumes/ccOUT 1/tdx-data")
@@ -530,6 +557,65 @@ def test_worker_smart_payload_does_not_fetch_implicit_daily_for_minute_request(t
     assert "1d" not in payload["groups_by_timeframe"]
     assert "1d" not in before_audits
     assert list(payload["groups_by_timeframe"]) == ["5m"]
+
+
+def test_worker_smart_payload_retries_completed_daily_provider_no_data(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    data_root = tmp_path / "market"
+    write_local_bars(
+        data_root=data_root,
+        timeframe="1d",
+        adjust="qfq",
+        bars=pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-06-13"]),
+                "stock_code": ["000001.SZ"],
+                "open": [10.0],
+                "high": [10.2],
+                "low": [9.9],
+                "close": [10.1],
+                "volume": [1000.0],
+                "amount": [10100.0],
+            }
+        ),
+        refresh_coverage=True,
+    )
+    upsert_unresolved_gaps(
+        data_root=data_root,
+        records=pd.DataFrame(
+            [
+                {
+                    "stock_code": "000001.SZ",
+                    "timeframe": "1d",
+                    "adjust": "qfq",
+                    "start_at": pd.Timestamp("2026-06-15"),
+                    "end_at": pd.Timestamp("2026-06-15"),
+                    "missing_rows": 1,
+                    "status": "provider_no_data",
+                    "last_fetch_rows": 0,
+                    "message": "provider returned no data",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr("tdx_downloader.data.repository.last_completed_trade_date", lambda **_: "2026-06-15")
+
+    payload, before_audits = parallels_runtime._worker_smart_payload(
+        parallels_runtime.DataManagementService(data_root, adjust="qfq"),
+        DataDownloadConfig(
+            symbols=("000001.SZ",),
+            timeframes=("1d",),
+            start="2026-06-13",
+            end="2026-06-15",
+        ),
+    )
+
+    assert payload["groups_by_timeframe"] == {
+        "1d": [{"symbols": ["000001.SZ"], "start": "2026-06-15", "end": "2026-06-15"}]
+    }
+    assert before_audits["1d"].loc[0, "missing_rows"] == 1
 
 
 def test_worker_smart_payload_derives_high_timeframes_without_worker_fetch_when_5m_cached(tmp_path: Path) -> None:
@@ -725,6 +811,92 @@ def test_worker_prepare_table_marks_zero_row_request_as_fetched(tmp_path: Path, 
     assert "本次写入 0 根" in str(table.loc[0, "message"])
     assert recorded
     assert recorded[0]["fetched_symbols_by_timeframe"] == {"1d": ["000668.SZ"]}
+
+
+def test_worker_empty_plan_returns_known_provider_gaps_without_local_strict_download(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class Service:
+        data_root = Path("/tmp/tdx-data")
+        adjust = "qfq"
+
+        def download(self, *_: object, **__: object) -> DataDownloadResult:
+            raise AssertionError("empty worker plan must not rerun strict local download")
+
+    table = pd.DataFrame(
+        {
+            "stock_code": ["159006.SZ", "000001.SZ"],
+            "timeframe": ["1d", "1d"],
+            "adjust": ["qfq", "qfq"],
+            "action": ["unresolved", "cached"],
+            "after_status": ["provider_no_data", "ok"],
+            "missing_rows": [1, 0],
+            "rows_written": [0, 0],
+        }
+    )
+    events: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        parallels_runtime,
+        "_worker_smart_payload",
+        lambda *_, **__: ({"groups_by_timeframe": {}, "derive_targets_by_timeframe": {}}, {}),
+    )
+    monkeypatch.setattr(parallels_runtime, "_worker_prepare_table", lambda **_: table)
+    monkeypatch.setattr(
+        parallels_runtime.TdxWorkerClient,
+        "health",
+        lambda self: (_ for _ in ()).throw(AssertionError("empty worker plan must not check worker health")),
+    )
+
+    result = parallels_runtime.download_with_worker(
+        Service(),  # type: ignore[arg-type]
+        DataDownloadConfig(symbols=("159006.SZ", "000001.SZ"), timeframes=("1d",), start="2026-06-05", end="2026-06-10"),
+        mode="smart",
+        progress_callback=events.append,
+    )
+
+    assert int(result.table["action"].astype(str).eq("unresolved").sum()) == 1
+    assert int(result.table["action"].astype(str).eq("cached").sum()) == 1
+    assert result.summary["fetched_count"] == 0.0
+    assert any(
+        event.get("stage") == "tdx_connection_skipped" and event.get("unresolved_count") == 1
+        for event in events
+    )
+
+
+def test_worker_empty_plan_fails_when_unmatched_local_gap_remains(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class Service:
+        data_root = Path("/tmp/tdx-data")
+        adjust = "qfq"
+
+    table = pd.DataFrame(
+        {
+            "stock_code": ["159006.SZ"],
+            "timeframe": ["1d"],
+            "adjust": ["qfq"],
+            "action": ["cached"],
+            "after_status": ["missing_index"],
+            "missing_rows": [1],
+            "message": ["本地文件索引缺失"],
+        }
+    )
+
+    monkeypatch.setattr(
+        parallels_runtime,
+        "_worker_smart_payload",
+        lambda *_, **__: ({"groups_by_timeframe": {}, "derive_targets_by_timeframe": {}}, {}),
+    )
+    monkeypatch.setattr(parallels_runtime, "_worker_prepare_table", lambda **_: table)
+
+    try:
+        parallels_runtime.download_with_worker(
+            Service(),  # type: ignore[arg-type]
+            DataDownloadConfig(symbols=("159006.SZ",), timeframes=("1d",), start="2026-06-05", end="2026-06-10"),
+            mode="smart",
+        )
+    except RuntimeError as exc:
+        assert "Worker 计划为空" in str(exc)
+        assert "159006.SZ/1d=missing_index" in str(exc)
+    else:
+        raise AssertionError("empty worker plan with unmatched gap must fail explicitly")
 
 
 def test_cancellable_parallels_command_terminates_running_process(monkeypatch) -> None:  # type: ignore[no-untyped-def]

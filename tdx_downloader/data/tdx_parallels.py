@@ -19,6 +19,7 @@ PARALLELS_PROGRESS_ENV_VAR = "TDX_PROGRESS_JSONL"
 PARALLELS_PROGRESS_PREFIX = "__TDX_PROGRESS__="
 DEFAULT_PARALLELS_VM = "Windows 11"
 DEFAULT_WINDOWS_PYTHON = r"C:\Users\Public\venvs\tdx-downloader\Scripts\python.exe"
+DEFAULT_WINDOWS_WORKER_REPO = r"C:\tdx-downloader-app"
 PARALLELS_VM_START_TIMEOUT_SECONDS = 60
 WINDOWS_PYTHON_SETUP_TIMEOUT_SECONDS = 300
 PARALLELS_WORKER_START_TIMEOUT_SECONDS = 15
@@ -224,7 +225,7 @@ def start_parallels_tdx_worker(
     host: str = "0.0.0.0",
     port: int = 8765,
 ) -> subprocess.CompletedProcess[str]:
-    resolved = config or default_parallels_tdx_config(cwd=Path.cwd())
+    resolved = config or default_parallels_tdx_worker_config()
     if _is_parallels_shared_repo_path(resolved.windows_repo):
         return subprocess.CompletedProcess(
             args=["tdx-worker"],
@@ -306,6 +307,18 @@ def start_parallels_tdx_worker(
         returncode=result.returncode if result.returncode != 0 else _worker_start_returncode(log_path),
         stdout=_decode_windows_output(result.stdout),
         stderr=_worker_start_stderr(log_path, _decode_windows_output(result.stderr)),
+    )
+
+
+def default_parallels_tdx_worker_config() -> ParallelsTdxConfig:
+    base = default_parallels_tdx_config(cwd=Path.cwd())
+    if os.getenv(PARALLELS_TDX_REPO_ENV_VAR, "").strip():
+        return base
+    return ParallelsTdxConfig(
+        vm_name=base.vm_name,
+        windows_python=base.windows_python,
+        windows_repo=DEFAULT_WINDOWS_WORKER_REPO,
+        worker_scratch=base.worker_scratch,
     )
 
 

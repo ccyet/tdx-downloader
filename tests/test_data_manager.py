@@ -3117,6 +3117,190 @@ def test_prepare_keeps_current_fetch_action_when_provider_gap_is_recorded(tmp_pa
     assert result.loc[0, "after_status"] == "provider_no_data"
 
 
+def test_preview_plan_matches_unresolved_gap_with_request_window_when_plan_lacks_missing_dates(tmp_path: Path) -> None:
+    data_root = tmp_path / "market"
+    plan = pd.DataFrame(
+        [
+            {
+                "stock_code": "159006.SZ",
+                "timeframe": "1d",
+                "adjust": "qfq",
+                "action": "fetch",
+                "reason": "missing_index",
+                "catalog_status": "missing_index",
+                "coverage_status": "coverage_missing_index",
+                "before_status": "missing_index",
+                "rows_in_window": 0,
+                "expected_rows": 0,
+                "missing_rows": 0,
+                "coverage_ratio": 0.0,
+                "max_missing_gap_minutes": 0,
+                "first_missing_at": pd.NaT,
+                "last_missing_at": pd.NaT,
+                "max_missing_gap_start_at": pd.NaT,
+                "max_missing_gap_end_at": pd.NaT,
+                "path": "",
+                "message": "本地文件索引缺失",
+            }
+        ]
+    )
+    upsert_unresolved_gaps(
+        data_root=data_root,
+        records=pd.DataFrame(
+            [
+                {
+                    "stock_code": "159006.SZ",
+                    "timeframe": "1d",
+                    "adjust": "qfq",
+                    "start_at": pd.Timestamp("2026-06-05"),
+                    "end_at": pd.Timestamp("2026-06-10"),
+                    "missing_rows": 1,
+                    "status": "provider_no_data",
+                    "last_fetch_rows": 0,
+                    "message": "provider returned no data",
+                }
+            ]
+        ),
+    )
+
+    result = repository_module._apply_unresolved_gaps_to_plan(
+        plan,
+        data_root=data_root,
+        adjust="qfq",
+        symbols=["159006.SZ"],
+        timeframes=["1d"],
+        start="2026-06-05",
+        end="2026-06-10",
+    )
+
+    assert result.loc[0, "action"] == "unresolved"
+    assert result.loc[0, "coverage_status"] == "provider_unresolved"
+
+
+def test_provider_no_data_does_not_hide_later_missing_daily_session(tmp_path: Path) -> None:
+    data_root = tmp_path / "market"
+    plan = pd.DataFrame(
+        [
+            {
+                "stock_code": "000001.SZ",
+                "timeframe": "1d",
+                "adjust": "qfq",
+                "action": "fetch",
+                "reason": "coverage_gap",
+                "catalog_status": "cached",
+                "coverage_status": "coverage_partial",
+                "before_status": "coverage_gap",
+                "rows_in_window": 1,
+                "expected_rows": 3,
+                "missing_rows": 2,
+                "coverage_ratio": 1 / 3,
+                "max_missing_gap_minutes": 2880,
+                "first_missing_at": pd.Timestamp("2026-06-15"),
+                "last_missing_at": pd.Timestamp("2026-06-16"),
+                "max_missing_gap_start_at": pd.Timestamp("2026-06-15"),
+                "max_missing_gap_end_at": pd.Timestamp("2026-06-16"),
+                "path": "",
+                "message": "missing",
+            }
+        ]
+    )
+    upsert_unresolved_gaps(
+        data_root=data_root,
+        records=pd.DataFrame(
+            [
+                {
+                    "stock_code": "000001.SZ",
+                    "timeframe": "1d",
+                    "adjust": "qfq",
+                    "start_at": pd.Timestamp("2026-06-15"),
+                    "end_at": pd.Timestamp("2026-06-15"),
+                    "missing_rows": 1,
+                    "status": "provider_no_data",
+                    "last_fetch_rows": 0,
+                    "message": "provider returned no data",
+                }
+            ]
+        ),
+    )
+
+    result = repository_module._apply_unresolved_gaps_to_plan(
+        plan,
+        data_root=data_root,
+        adjust="qfq",
+        symbols=["000001.SZ"],
+        timeframes=["1d"],
+        start="2026-06-13",
+        end="2026-06-16",
+    )
+
+    assert result.loc[0, "action"] == "fetch"
+    assert result.loc[0, "coverage_status"] == "coverage_partial"
+
+
+def test_provider_no_data_for_completed_daily_session_is_retried_after_settle(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    data_root = tmp_path / "market"
+    plan = pd.DataFrame(
+        [
+            {
+                "stock_code": "000001.SZ",
+                "timeframe": "1d",
+                "adjust": "qfq",
+                "action": "fetch",
+                "reason": "coverage_gap",
+                "catalog_status": "cached",
+                "coverage_status": "coverage_partial",
+                "before_status": "coverage_gap",
+                "rows_in_window": 0,
+                "expected_rows": 1,
+                "missing_rows": 1,
+                "coverage_ratio": 0.0,
+                "max_missing_gap_minutes": 1440,
+                "first_missing_at": pd.Timestamp("2026-06-15"),
+                "last_missing_at": pd.Timestamp("2026-06-15"),
+                "max_missing_gap_start_at": pd.Timestamp("2026-06-15"),
+                "max_missing_gap_end_at": pd.Timestamp("2026-06-15"),
+                "path": "",
+                "message": "missing",
+            }
+        ]
+    )
+    upsert_unresolved_gaps(
+        data_root=data_root,
+        records=pd.DataFrame(
+            [
+                {
+                    "stock_code": "000001.SZ",
+                    "timeframe": "1d",
+                    "adjust": "qfq",
+                    "start_at": pd.Timestamp("2026-06-15"),
+                    "end_at": pd.Timestamp("2026-06-15"),
+                    "missing_rows": 1,
+                    "status": "provider_no_data",
+                    "last_fetch_rows": 0,
+                    "message": "provider returned no data",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(repository_module, "last_completed_trade_date", lambda **_: "2026-06-15")
+
+    result = repository_module._apply_unresolved_gaps_to_plan(
+        plan,
+        data_root=data_root,
+        adjust="qfq",
+        symbols=["000001.SZ"],
+        timeframes=["1d"],
+        start="2026-06-15",
+        end="2026-06-15",
+    )
+
+    assert result.loc[0, "action"] == "fetch"
+    assert result.loc[0, "coverage_status"] == "coverage_partial"
+
+
 def test_fetch_window_groups_skip_known_unresolved_provider_gap(tmp_path: Path) -> None:
     data_root = tmp_path / "market"
     rows = [

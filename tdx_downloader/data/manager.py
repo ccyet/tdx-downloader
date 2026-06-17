@@ -978,7 +978,14 @@ def cache_readiness(catalog: pd.DataFrame) -> pd.DataFrame:
 
 def download_summary(table: pd.DataFrame) -> dict[str, object]:
     if table.empty:
-        return {"row_count": 0.0, "fetched_count": 0.0, "cached_count": 0.0, "new_rows": 0.0, "rows_written": 0.0}
+        return {
+            "row_count": 0.0,
+            "fetched_count": 0.0,
+            "cached_count": 0.0,
+            "unresolved_count": 0.0,
+            "new_rows": 0.0,
+            "rows_written": 0.0,
+        }
     action = table["action"].fillna("").astype(str) if "action" in table.columns else pd.Series([""] * len(table))
     new_rows = pd.to_numeric(table.get("new_rows", pd.Series([0] * len(table))), errors="coerce").fillna(0)
     rows_written = pd.to_numeric(table.get("rows_written", pd.Series([0] * len(table))), errors="coerce").fillna(0)
@@ -986,6 +993,7 @@ def download_summary(table: pd.DataFrame) -> dict[str, object]:
         "row_count": float(len(table)),
         "fetched_count": float(action.eq("fetched").sum()),
         "cached_count": float(action.eq("cached").sum()),
+        "unresolved_count": float(action.eq("unresolved").sum()),
         "new_rows": float(new_rows.sum()),
         "rows_written": float(rows_written.sum()),
     }

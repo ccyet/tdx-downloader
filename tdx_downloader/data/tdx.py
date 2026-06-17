@@ -30,6 +30,7 @@ TDX_ALLOW_MAC_TQCENTER_ENV_VAR = "TDX_ALLOW_MAC_TQCENTER"
 TDX_TERMINAL_PATH_ENV_VAR = "TDX_TERMINAL_PATH"
 TDX_AUTOSTART_ENV_VAR = "TDX_AUTOSTART"
 TDX_REQUEST_BATCH_SIZE = 100
+TDX_REFRESH_BATCH_SIZE = 50
 TDX_TERMINAL_START_WAIT_SECONDS = 5
 DEFAULT_WINDOWS_TDX_ROOTS = (
     Path(r"C:\new_tdx64"),
@@ -38,7 +39,7 @@ DEFAULT_WINDOWS_TDX_ROOTS = (
     Path(r"D:\new_tdx64"),
     Path(r"D:\new_tdx"),
 )
-REFRESHABLE_KLINE_PERIODS = {"1m", "5m"}
+REFRESHABLE_KLINE_PERIODS = {"1d", "1m", "5m"}
 TDX_PERIOD_MAP = {"1d": "1d", "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "60m": "1h"}
 DERIVABLE_FROM_5M_TIMEFRAMES = {"15m", "30m", "60m"}
 ADJUST_MAP = {"": "none", "qfq": "front", "hfq": "back"}
@@ -403,7 +404,7 @@ def _fetch_tdx_period_bars(
         )
         batch_started_at = time.perf_counter()
         refresh_started_at = batch_started_at
-        _refresh_tdx_kline_cache(tq, batch, period)
+        refreshed = _refresh_tdx_kline_cache(tq, batch, period, progress_callback=progress_callback, timeframe=timeframe)
         refresh_ms = int((time.perf_counter() - refresh_started_at) * 1000)
         tdx_call_started_at = time.perf_counter()
         payload = tq.get_market_data(
@@ -436,6 +437,7 @@ def _fetch_tdx_period_bars(
             symbol_count=len(batch),
             rows=rows_returned,
             rows_returned=rows_returned,
+            refreshed=refreshed,
             refresh_ms=refresh_ms,
             tdx_call_ms=tdx_call_ms,
             normalize_ms=normalize_ms,
@@ -847,19 +849,57 @@ def _ensure_initialized(tq: Any) -> None:
     _INITIALIZED_CLIENT = tq
 
 
-def _refresh_tdx_kline_cache(tq: Any, symbols: list[str], period: str) -> None:
+def _refresh_tdx_kline_cache(
+    tq: Any,
+    symbols: list[str],
+    period: str,
+    *,
+    progress_callback: ProgressCallback | None = None,
+    timeframe: str = "",
+) -> bool:
     if period not in REFRESHABLE_KLINE_PERIODS:
-        return
+        return False
     refresh = getattr(tq, "refresh_kline", None)
     if not callable(refresh):
-        return
-    try:
-        result = refresh(list(symbols), period)
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"TDX K线缓存刷新失败：{exc}") from exc
-    error = _tdx_refresh_error(result)
-    if error:
-        raise RuntimeError(f"TDX K线缓存刷新失败：{error}")
+        _emit_progress(
+            progress_callback,
+            stage="tdx_refresh_skipped",
+            timeframe=timeframe,
+            period=period,
+            symbol_count=len(symbols),
+            message="tqcenter 未提供 refresh_kline，无法主动触发通达信下载刷新。",
+        )
+        return False
+    batches = _batched_symbols(list(symbols), TDX_REFRESH_BATCH_SIZE)
+    for batch_index, batch in enumerate(batches, start=1):
+        _emit_progress(
+            progress_callback,
+            stage="tdx_refresh_start",
+            timeframe=timeframe,
+            period=period,
+            symbol_count=len(batch),
+            refresh_batch_index=batch_index,
+            refresh_batch_count=len(batches),
+            message=f"触发 Windows 通达信刷新 K 线：{period}，{len(batch)} 只。",
+        )
+        try:
+            result = refresh(batch, period)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"TDX K线缓存刷新失败：{exc}") from exc
+        error = _tdx_refresh_error(result)
+        if error:
+            raise RuntimeError(f"TDX K线缓存刷新失败：{error}")
+        _emit_progress(
+            progress_callback,
+            stage="tdx_refresh_done",
+            timeframe=timeframe,
+            period=period,
+            symbol_count=len(batch),
+            refresh_batch_index=batch_index,
+            refresh_batch_count=len(batches),
+            message=f"Windows 通达信刷新 K 线完成：{period}，{len(batch)} 只。",
+        )
+    return True
 
 
 def _tdx_refresh_error(result: object) -> str:
